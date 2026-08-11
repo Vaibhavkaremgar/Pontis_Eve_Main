@@ -1,0 +1,30 @@
+{
+  "summary": "Tested new Eve onboarding deltas: resume parsing (backend + frontend), searchable country dropdown, multi-cert upload, red asterisk, typewriter buffer, framer-motion transitions, and localStorage save-progress. Backend 4/4 pytest pass (parse-resume happy path + rejects non-PDF/empty/garbage). Frontend happy-path end-to-end works: IN dial detection, valid IN number formatting '98765 43210', multi-cert add/remove, real reportlab PDF -> POST /api/onboarding/parse-resume -> 200 -> Step 4 -> Step 5 summary populated from parsed profile -> Dashboard header seeded from localStorage renders parsed name/headline. Save-progress verified at Step 2 (clamped, phone/country restored) and Step 5 (parsedProfile persisted, resumes on Step 5).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StepParsing auto-advance", "issue": "When /api/onboarding/parse-resume fails (e.g., invalid PDF returns 400), the frontend never advances to Step 4. The useEffect gating auto-advance requires `!parsingError`, so setting parsingError blocks the setTimeout(onComplete, 900) even though the code also does setTimeout(setParsingReady, 2000). Per the spec's graceful-failure behavior, the flow should still auto-advance to Step 4 after ~2s and show a toast (toast is fired). User is stuck on Step 3 forever on parse failure.", "selector": "[data-testid=onboarding-step-3]", "priority": "HIGH"},
+      {"component": "PhoneInput US validity", "issue": "Spec claims '9876543210 is a valid US number', but libphonenumber-js's isValidPhoneNumber('9876543210','US') returns false because 987 is not an assigned NANP area code, so Continue stays disabled after switching from IN->US. This is technically correct per libphonenumber but conflicts with the stated acceptance criterion. If the intent is 'do not force re-entry on country switch when digit-length still matches', consider using a length-based fallback (see EXPECTED_LENGTHS already exported from countries.js) or use isPossiblePhoneNumber instead of isValidPhoneNumber.", "selector": "[data-testid=onboarding-continue-phone]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_resume_parse.py", "/app/backend/tests/test_eve_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix StepParsing auto-advance on error: change effect to advance when (typewriterDone && parsingReady) regardless of parsingError, OR clear parsingError once the 2s fallback fires.",
+    "Decide policy for phone validity on country switch: use isPossiblePhoneNumber (looser) OR the exported EXPECTED_LENGTHS map to keep Continue enabled when digit-length matches a plausible length for the new country."
+  ],
+  "critical_code_review_comments": [
+    "Onboarding.jsx StepParsing effect: `if (typewriterDone && parsingReady && !parsingError) onComplete()` — the !parsingError branch orphans users on parse failure. The 2s fallback sets parsingReady=true but parsingError stays truthy so onComplete never fires.",
+    "PhoneInput uses only isValidPhoneNumber which is stricter than the review-spec expects (US area 987 rejected). Consider isPossiblePhoneNumber for smoother UX on country switch.",
+    "Backend /api/onboarding/parse-resume correctly returns 400 for non-PDF, malformed PDF, and empty PDF; normalizes missing keys to '' / []; strips code fences; robust to LLM commentary. Good.",
+    "Onboarding.jsx useEffect that persists state does not include `resumeMeta`/`certsMeta` if arrays/objects are unchanged references — currently fine because state changes trigger the write. OK."
+  ],
+  "updated_files": ["/app/backend/tests/test_resume_parse.py"],
+  "success_rate": {"backend": "100%", "frontend": "88%"},
+  "seed_data_creation": "Generated /tmp/resume.pdf via reportlab for end-to-end resume-parse test (persisted in-container only).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend parse endpoint verified live with reportlab-generated PDF; LLM returns valid JSON with all normalized keys. Frontend happy path works end-to-end (IN +91, valid 10-digit number, PDF upload, Step3 typewriter, Step4 auto-advance, Step5 summary populated with parsed fields, LS save/restore). Two open issues for main agent: (1) parse-failure auto-advance broken; (2) libphonenumber-js strictness on US area 987 makes the 'country-switch stays valid' criterion fail — this may or may not be an actual bug depending on product intent. All other criteria confirmed: pinned US/GB/IN then AF alphabetical, ind filter finds India+Indonesia, letters blocked, formatting '98765 43210', red asterisk present, no 'Mandatory' word, Add left-of Upload, multi-cert list add+remove, AnimatePresence in tree, typewriter renders progressively.",
+  "rca of the issue": "StepParsing auto-advance bug RCA: /api/onboarding/parse-resume rejects invalid PDFs with HTTP 400 (correct). kickOffParsing catches error, sets parsingError and schedules setParsingReady(true) after 2s. However, the advance effect `typewriterDone && parsingReady && !parsingError` never satisfies the third clause because parsingError remains truthy. Fix: either drop the `!parsingError` guard so advancement happens after the 2s fallback, or additionally clear parsingError (or gate advancement on either successful parse OR fallback-timer expiration)."
+}

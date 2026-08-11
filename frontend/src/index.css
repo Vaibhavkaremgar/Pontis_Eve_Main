@@ -1,0 +1,128 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+        "Inter", "Segoe UI", "Helvetica Neue", "Helvetica", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    letter-spacing: -0.005em;
+    background: #fbfbf9;
+    color: #1f1f1f;
+}
+
+code {
+    font-family:
+        "SF Mono", ui-monospace, "Menlo", Monaco, Consolas, "Courier New",
+        monospace;
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 0 0% 3.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 3.9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 3.9%;
+        --primary: 0 0% 9%;
+        --primary-foreground: 0 0% 98%;
+        --secondary: 0 0% 96.1%;
+        --secondary-foreground: 0 0% 9%;
+        --muted: 0 0% 96.1%;
+        --muted-foreground: 0 0% 45.1%;
+        --accent: 0 0% 96.1%;
+        --accent-foreground: 0 0% 9%;
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 89.8%;
+        --input: 0 0% 89.8%;
+        --ring: 0 0% 3.9%;
+        --radius: 0.5rem;
+    }
+}
+
+@layer base {
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* ---------- Minimal auto-hiding scrollbars ---------- */
+/* Default: hidden. Show only on hover of the scrollable container, thin & subtle. */
+.eve-scroll {
+    scrollbar-width: none; /* Firefox: hidden by default */
+    scrollbar-color: transparent transparent;
+    transition: scrollbar-color 0.2s ease;
+}
+.eve-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+}
+.eve-scroll::-webkit-scrollbar-track {
+    background: transparent;
+    border: 0;
+}
+.eve-scroll::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+    transition: background-color 0.2s ease;
+}
+.eve-scroll:hover {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.14) transparent;
+}
+.eve-scroll:hover::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.14);
+}
+.eve-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.24);
+}
+.eve-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Hover row utility — extremely subtle */
+.eve-hover-row {
+    transition: background-color 120ms ease;
+    border-radius: 10px;
+}
+.eve-hover-row:hover {
+    background-color: rgba(15, 15, 15, 0.03);
+}
+
+/* Voice visualizer pulse rings (Step 4) */
+@keyframes pulse-ring {
+    0% {
+        transform: scale(0.55);
+        opacity: 0.55;
+    }
+    80% {
+        transform: scale(1.35);
+        opacity: 0;
+    }
+    100% {
+        transform: scale(1.35);
+        opacity: 0;
+    }
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
+    }
+}

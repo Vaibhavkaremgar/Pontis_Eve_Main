@@ -1,0 +1,24 @@
+{
+  "summary": "Verified both new features end-to-end: (1) Backend OCR fallback for image-based PDFs, and (2) Frontend welcome-back toast with all 4 required cases. Backend: 4/4 pytest pass on /app/backend/tests/test_resume_parse.py including a new test_image_pdf_triggers_ocr_fallback which builds a PDF containing ONLY a Pillow-rendered PNG via reportlab canvas.drawImage (pypdf.extract_text yields <40 chars locally as asserted), and confirms /api/onboarding/parse-resume returns 200 with _meta.used_ocr === true. Text-based PDF path also confirmed to return _meta.used_ocr === false. Empty PDF returns 400 with updated message 'Resume appears empty. Try a text-based PDF or a clearer scan.' Non-PDF filename returns 400 'Only PDF resumes are supported right now.' Frontend: Playwright against the preview URL with programmatic localStorage seeding — POSITIVE (step=3 + parsedProfile) shows toast text 'Welcome back — picking up on Step 3' with white bg (rgb(255,255,255)), turquoise border (rgba(45,212,191,0.45)), border-radius 9999px (rounded-full), and turquoise dot bg (rgb(45,212,191)). CLAMP (step=4 without parsedProfile) correctly clamps to Step 2 in toast text. NEGATIVE fresh visit (localStorage cleared) — no toast within 3s. NEGATIVE no-meaningful-progress (step=1, phoneDigits='') — no toast. All matches spec.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_resume_parse.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend parse_resume correctly caps OCR at 6 pages (dpi=220) — good latency guard for scanned PDFs.",
+    "Backend uses text.strip() length as gate (<40 chars) both pre- and post-OCR; consistent and matches the updated 400 error copy.",
+    "Frontend welcome-back useEffect uses [] deps and computes hasProgress from persisted phoneDigits/parsedProfile/resumeMeta — correctly fires once per mount and skips fresh-visit users.",
+    "Toast markup uses data-testid=welcome-back-toast, rounded-full, turquoise dot + border/shadow exactly per spec.",
+    "resumableStep() clamps step to 2 when parsedProfile is missing — verified via CLAMP test; initial step and toast copy stay consistent."
+  ],
+  "updated_files": ["/app/backend/tests/test_resume_parse.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "In-test only: image-based PDF built via Pillow ImageDraw -> PNG -> reportlab canvas.drawImage (asserted pypdf yields <40 chars). Also text PDF and empty PDF built via reportlab. Frontend seed via page.evaluate localStorage.setItem for the 4 toast cases.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both new features are green. test_resume_parse.py now has 4 tests including OCR fallback (uses tesseract+poppler system pkgs; ~30-40s runtime for the OCR test). Welcome-back toast selector: [data-testid=welcome-back-toast]. Note that Playwright localStorage seeding pattern used here: goto once, evaluate localStorage.setItem, goto again — required because the app reads localStorage synchronously in a useMemo on mount.",
+  "rca of the issue": "N/A — no defects found this iteration."
+}

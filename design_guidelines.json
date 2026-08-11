@@ -1,0 +1,86 @@
+{
+  "typography": {
+    "headline": "Plus Jakarta Sans, sans-serif",
+    "body": "Inter, sans-serif",
+    "weights": {
+      "light": "font-light",
+      "normal": "font-normal",
+      "medium": "font-medium",
+      "semibold": "font-semibold",
+      "bold": "font-bold",
+      "black": "font-black"
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl lg:text-5xl tracking-tight",
+      "h2": "text-2xl sm:text-3xl tracking-tight",
+      "h3": "text-xl sm:text-2xl",
+      "h4": "text-lg font-semibold",
+      "body": "text-base text-slate-600",
+      "small": "text-xs sm:text-sm text-slate-500"
+    }
+  },
+  "colors": {
+    "archetype": "Classic Navy Blue (Professional & Corporate) with off-white/beige tones",
+    "palette": {
+      "primary": "#0F172A",
+      "primary_hover": "#1E293B",
+      "navy_accent": "#1E40AF",
+      "navy_light": "#EFF6FF",
+      "surface": "#FFFFFF",
+      "surface_alt": "#F8FAFC",
+      "background": "#F1F5F9",
+      "border": "#E2E8F0",
+      "text_main": "#0F172A",
+      "text_muted": "#64748B",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "badge_bg": "#DBEAFE",
+      "badge_text": "#1E40AF"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-xl bg-white/80 border border-slate-200/60 shadow-lg",
+    "card_style": "bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200",
+    "badge_style": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-800",
+    "border_radius_default": "rounded-xl"
+  },
+  "grids": {
+    "dashboard_3_column": "grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[calc(100vh-5rem)]",
+    "left_sidebar": "lg:col-span-3 flex flex-col gap-6",
+    "center_chat_hub": "lg:col-span-6 flex flex-col gap-6",
+    "right_profile": "lg:col-span-3 flex flex-col gap-6"
+  },
+  "layouts": {
+    "responsive": true,
+    "mobile_first": true,
+    "max_width": "max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8"
+  },
+  "motion": {
+    "transition": "transition-all duration-200 ease-in-out",
+    "hover_lift": "hover:-translate-y-0.5"
+  },
+  "accessibility": {
+    "contrast_ratio": "WCAG AA compliant (>4.5:1 for normal text)",
+    "data_testid_required": true,
+    "focus_states": "focus:ring-2 focus:ring-blue-600 focus:outline-none"
+  },
+  "component_path": "/app/frontend/src/components/",
+  "instructions_to_main_agent": "Build a React and Tailwind CSS dashboard for 'Eve', the candidate-side AI agent for Pontis recruitment platform. Implement a strict 3-column responsive layout: Left sidebar navigation & gamification tracker, Center AI interaction hub with chat & job match cards, and Right column reconciled living profile with profile strength & verification. Add rich interactive features including voice call summary playback, job match apply/dismiss actions, live editing living profile, and onboarding gamification checklist.",
+  "image_urls": [
+    {
+      "category": "candidate_avatar",
+      "description": "Professional candidate portrait",
+      "image_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80"
+    },
+    {
+      "category": "agent_avatar",
+      "description": "AI Agent Eve avatar",
+      "image_url": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=200&q=80"
+    },
+    {
+      "category": "company_logos",
+      "description": "Matching company logos",
+      "image_url": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=100&q=80"
+    }
+  ]
+}

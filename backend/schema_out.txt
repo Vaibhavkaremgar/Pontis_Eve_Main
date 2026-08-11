@@ -1,0 +1,1399 @@
+TABLES: ['activity_logs', 'agencies', 'agency_discounts', 'alembic_version', 'allowed_users', 'analytics_widgets', 'ats_export_retries', 'ats_exports', 'audit_events', 'automation_jobs', 'booking_links', 'candidate_activity_feed', 'candidate_certificates', 'candidate_feedback', 'candidate_job_recommendations', 'candidate_lifecycle_events', 'candidate_preferences', 'candidate_selection_sessions', 'candidate_voice_intakes', 'candidate_voice_sessions', 'candidates', 'clients', 'company_registry', 'email_communications', 'email_templates', 'embedding_version_registry', 'enterprise_leads', 'feed_access_logs', 'inbound_email_attachments', 'inbound_email_replies', 'internal_candidate_resumes', 'interview_evaluations', 'interview_sessions', 'interview_share_access_logs', 'interview_share_links', 'interview_slots', 'interviews', 'job_applications', 'job_descriptions', 'job_distribution_logs', 'job_intakes', 'job_portal_mapping', 'job_portals', 'job_sources', 'job_sync_runs', 'linkedin_accounts', 'linkedin_attachments', 'linkedin_connections', 'linkedin_conversations', 'linkedin_jobs', 'linkedin_messages', 'notification_events', 'notification_workflow_tokens', 'orchestration_events', 'orchestration_sessions', 'otps', 'outreach_events', 'pg_stat_statements', 'pg_stat_statements_info', 'plan_limits', 'plans', 'ranking_explanations', 'ranking_runs', 'recording_retry_queue', 'recruiter_experience_preferences', 'recruiter_interest_requests', 'recruiter_notes', 'recruiter_role_preferences', 'recruiter_skill_preferences', 'recruiter_tasks', 'scheduler_jobs', 'scoring_profiles', 'slack_installations', 'slack_users', 'subscription_activity_logs', 'subscriptions', 'test_write', 'usage_logs', 'usage_tracking', 'user_dashboard_preferences', 'users', 'wallet_transactions', 'wallets', 'webhook_events']
+
+--- activity_logs ---
+  id: bigint
+  action: text
+  entity_type: text
+  entity_id: bigint
+  details: json
+  created_at: timestamp with time zone
+  agency_id: uuid
+  user_id: uuid
+
+--- agencies ---
+  name: text
+  slug: text
+  is_active: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  new_id: uuid
+  id: uuid
+  linkedin_email: character varying
+  linkedin_connected: boolean
+  linkedin_connected_at: timestamp with time zone
+  linkedin_last_verified_at: timestamp with time zone
+  linkedin_profile_path: text
+  linkedin_connection_status: character varying
+  ats_type: character varying
+  ats_identifier: character varying
+
+--- agency_discounts ---
+  id: integer
+  agency_id: uuid
+  discount_type: character varying
+  discount_value: double precision
+  currency: character varying
+  set_by_user_id: uuid
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- alembic_version ---
+  version_num: character varying
+
+--- allowed_users ---
+  id: uuid
+  email: character varying
+  added_by: uuid
+  note: text
+  is_active: boolean
+  created_at: timestamp with time zone
+  agency_id: uuid
+
+--- analytics_widgets ---
+  id: bigint
+  widget_name: text
+  metric_key: text
+  role_access: text
+  is_default: boolean
+  created_at: timestamp with time zone
+
+--- ats_export_retries ---
+  id: uuid
+  job_id: uuid
+  candidate_ids: jsonb
+  provider: character varying
+  attempt_count: integer
+  last_error: text
+  next_retry_at: timestamp with time zone
+  status: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- ats_exports ---
+  id: uuid
+  job_id: uuid
+  candidate_id: character varying
+  candidate_ids: jsonb
+  provider: character varying
+  status: character varying
+  external_reference: character varying
+  error: text
+  response_payload: jsonb
+  exported_at: timestamp with time zone
+
+--- audit_events ---
+  id: uuid
+  actor_id: uuid
+  actor_type: character varying
+  action: character varying
+  entity_type: character varying
+  entity_id: character varying
+  metadata: json
+  ip_address: character varying
+  user_agent: character varying
+  request_id: character varying
+  created_at: timestamp with time zone
+  agency_id: uuid
+  user_id: uuid
+  slack_user_id: character varying
+  action_type: character varying
+  payload: json
+
+--- automation_jobs ---
+  id: uuid
+  job_id: uuid
+  candidate_id: character varying
+  automation_type: character varying
+  automation_key: character varying
+  status: character varying
+  scheduled_at: timestamp with time zone
+  started_at: timestamp with time zone
+  completed_at: timestamp with time zone
+  attempt_count: integer
+  max_attempts: integer
+  last_error: text
+  automation_payload: json
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- booking_links ---
+  id: uuid
+  token: text
+  agency_id: uuid
+  candidate_id: uuid
+  job_id: uuid
+  user_id: uuid
+  expires_at: timestamp with time zone
+  used: boolean
+  created_at: timestamp with time zone
+
+--- candidate_activity_feed ---
+  id: uuid
+  candidate_id: uuid
+  activity_type: character varying
+  title: text
+  description: text
+  metadata: jsonb
+  is_read: boolean
+  created_at: timestamp with time zone
+
+--- candidate_certificates ---
+  id: uuid
+  candidate_id: uuid
+  file_name: character varying
+  file_path: character varying
+  created_at: timestamp with time zone
+
+--- candidate_feedback ---
+  id: uuid
+  job_id: uuid
+  candidate_id: character varying
+  feedback: character varying
+  accepted: boolean
+  rejected: boolean
+  recruiter_id: uuid
+  session_id: uuid
+  updated_at: timestamp with time zone
+  created_at: timestamp with time zone
+  slack_installation_id: uuid
+  slack_team_id: character varying
+  slack_user_id: character varying
+  agency_id: uuid
+
+--- candidate_job_recommendations ---
+  id: uuid
+  candidate_id: uuid
+  job_id: uuid
+  match_score: numeric
+  recommendation_rank: integer
+  recommendation_status: character varying
+  match_reason: jsonb
+  viewed_at: timestamp with time zone
+  applied_at: timestamp with time zone
+  hidden_at: timestamp with time zone
+  generated_at: timestamp with time zone
+  created_at: timestamp with time zone
+
+--- candidate_lifecycle_events ---
+  id: uuid
+  agency_id: uuid
+  job_id: uuid
+  candidate_id: uuid
+  from_status: character varying
+  to_status: character varying
+  source: character varying
+  actor_id: uuid
+  transition_key: character varying
+  event_metadata: jsonb
+  slack_installation_id: uuid
+  slack_team_id: character varying
+  slack_user_id: character varying
+  created_at: timestamp with time zone
+
+--- candidate_preferences ---
+  id: uuid
+  candidate_id: uuid
+  expected_salary: character varying
+  current_salary: character varying
+  preferred_locations: jsonb
+  preferred_roles: jsonb
+  preferred_industries: jsonb
+  preferred_companies: jsonb
+  employment_types: jsonb
+  remote_preference: character varying
+  notice_period: character varying
+  willing_to_relocate: boolean
+  open_to_opportunities: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- candidate_selection_sessions ---
+  id: uuid
+  job_id: uuid
+  status: character varying
+  current_batch_index: integer
+  batch_size: integer
+  total_batches: integer
+  candidate_pool_snapshot: jsonb
+  batch_plan: jsonb
+  selected_candidate_ids: jsonb
+  rejected_candidate_ids: jsonb
+  batch_history: jsonb
+  selection_analysis: jsonb
+  final_candidate_snapshot: jsonb
+  completed_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  created_at: timestamp with time zone
+
+--- candidate_voice_intakes ---
+  id: uuid
+  candidate_id: uuid
+  transcript: text
+  voice_notes: jsonb
+  status: text
+  created_at: timestamp with time zone
+  completed_at: timestamp with time zone
+
+--- candidate_voice_sessions ---
+  id: uuid
+  candidate_id: uuid
+  interview_session_id: uuid
+  vapi_session_id: text
+  transcript: text
+  transcript_json: jsonb
+  ai_summary: text
+  extracted_entities: jsonb
+  duration_seconds: integer
+  completion_status: character varying
+  created_at: timestamp with time zone
+
+--- candidates ---
+  candidate_id: text
+  name: text
+  email: text
+  phone: text
+  current_company: text
+  current_role: text
+  experience_years: double precision
+  location: text
+  linkedin_url: text
+  resume_file_path: text
+  resume_text: text
+  parsing_status: text
+  resume_score: double precision
+  score_threshold: double precision
+  skills: json
+  education: json
+  work_experience: json
+  stage: text
+  stage_updated_at: timestamp with time zone
+  source: text
+  decline_reason: text
+  offer_status: text
+  synced_to_sheets: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  summary: text
+  display_status: text
+  predefined_questions: text
+  interview_transcript: text
+  interview_ai_summary: text
+  interview_technical_score: double precision
+  interview_communication_score: double precision
+  interview_culture_fit_score: double precision
+  interview_video_url: text
+  stage_entered_at: timestamp with time zone
+  applied_at: timestamp with time zone
+  internal_notes: text
+  review_status: text
+  reviewed_at: timestamp without time zone
+  reviewed_by_user_id: uuid
+  id: uuid
+  assigned_to_user_id: uuid
+  created_by: uuid
+  agency_id: uuid
+  job_id: uuid
+  created_by_source: character varying
+  updated_by_source: character varying
+  raw_data: jsonb
+  candidate_status: character varying
+  resume_received_at: timestamp with time zone
+  github_url: character varying
+  parsed_resume_json: jsonb
+  parsed_resume_text: text
+  fit_score: double precision
+  decision: character varying
+  strategy: character varying
+  last_scored_at: timestamp with time zone
+  last_refreshed_at: timestamp with time zone
+  ats_status: character varying
+  ats_status_source: character varying
+  ats_status_reason: text
+  ats_status_updated_at: timestamp with time zone
+  ats_metadata: jsonb
+  workflow_token: character varying
+  company_id: character varying
+  total_experience_years: double precision
+  current_title: character varying
+  talent_pool_ready_at: timestamp with time zone
+  acquisition_status: character varying
+  acquisition_status_reason: text
+  acquisition_discovered_at: timestamp with time zone
+  acquisition_queued_at: timestamp with time zone
+  acquisition_sending_at: timestamp with time zone
+  acquisition_sent_at: timestamp with time zone
+  acquisition_pending_acceptance_at: timestamp with time zone
+  acquisition_accepted_at: timestamp with time zone
+  acquisition_declined_at: timestamp with time zone
+  acquisition_failed_at: timestamp with time zone
+  acquisition_blocked_at: timestamp with time zone
+  acquisition_retrying_at: timestamp with time zone
+  acquisition_last_error: text
+  acquisition_queue_job_id: character varying
+  acquisition_idempotency_key: character varying
+  acquisition_retry_count: integer
+  acquisition_priority: integer
+  acquisition_account_id: uuid
+  acquisition_updated_at: timestamp with time zone
+  embedding_status: character varying
+  embedding_version: character varying
+  embedding_text_hash: character varying
+  embedding_indexed_at: timestamp with time zone
+
+--- clients ---
+  company_name: text
+  industry: text
+  contact_person: text
+  contact_email: text
+  contact_phone: text
+  total_positions: bigint
+  positions_filled: bigint
+  positions_open: bigint
+  avg_time_to_hire: double precision
+  retention_rate: double precision
+  acceptance_rate: double precision
+  is_active: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  id: uuid
+  agency_id: uuid
+
+--- company_registry ---
+  id: uuid
+  company_name: character varying
+  ats_type: character varying
+  identifier: character varying
+  career_url: text
+  is_active: boolean
+  last_synced_at: timestamp without time zone
+  created_at: timestamp without time zone
+  updated_at: timestamp without time zone
+
+--- email_communications ---
+  id: bigint
+  candidate_name: text
+  candidate_email: text
+  email_type: text
+  status: text
+  sent_at: timestamp with time zone
+  created_at: timestamp with time zone
+  candidate_id: uuid
+  agency_id: uuid
+  template_id: integer
+  subject: character varying
+  body: text
+  trigger_stage: character varying
+  trigger_source: character varying
+  error_message: text
+  placeholder_payload: json
+  workflow_token: character varying
+  provider_message_id: character varying
+  cc_email: character varying
+  responded_at: timestamp with time zone
+  slot_booked_at: timestamp with time zone
+
+--- email_templates ---
+  id: bigint
+  name: text
+  subject: text
+  body: text
+  template_type: text
+  variables: json
+  is_active: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  agency_id: uuid
+  created_by_user_id: uuid
+  automation_enabled: boolean
+  trigger_stage: character varying
+  description: text
+  status: character varying
+  is_html: boolean
+  is_default: boolean
+  is_selected: boolean
+
+--- embedding_version_registry ---
+  id: uuid
+  embedding_version: character varying
+  status: character varying
+  vector_size: integer
+  details: json
+  activated_at: timestamp with time zone
+  retired_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- enterprise_leads ---
+  id: integer
+  agency_id: uuid
+  company_name: character varying
+  contact_name: character varying
+  email: character varying
+  phone: character varying
+  expected_users: integer
+  notes: text
+  source: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- feed_access_logs ---
+  id: uuid
+  portal_name: character varying
+  ip_address: character varying
+  user_agent: character varying
+  accessed_at: timestamp with time zone
+
+--- inbound_email_attachments ---
+  id: uuid
+  reply_id: uuid
+  provider_attachment_id: character varying
+  filename: character varying
+  content_type: character varying
+  size_bytes: integer
+  storage_path: character varying
+  public_url: character varying
+  sha256: character varying
+  created_at: timestamp with time zone
+
+--- inbound_email_replies ---
+  id: uuid
+  svix_id: character varying
+  event_type: character varying
+  email_id: character varying
+  provider_message_id: character varying
+  candidate_id: character varying
+  job_id: uuid
+  agency_id: uuid
+  outreach_event_id: uuid
+  sender_email: character varying
+  sender_name: character varying
+  subject: character varying
+  body_text: text
+  body_html: text
+  received_at: timestamp with time zone
+  webhook_created_at: timestamp with time zone
+  processing_status: character varying
+  match_status: character varying
+  intent: character varying
+  attachment_count: integer
+  raw_payload: jsonb
+  processing_error: text
+  processed_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  created_at: timestamp with time zone
+  company_id: character varying
+
+--- internal_candidate_resumes ---
+  id: uuid
+  candidate_id: character varying
+  resume_fingerprint: character varying
+  source_filename: character varying
+  source_path: character varying
+  source_metadata: jsonb
+  full_name: character varying
+  headline: character varying
+  years_experience: double precision
+  skills: jsonb
+  companies: jsonb
+  education: jsonb
+  projects: jsonb
+  certifications: jsonb
+  location: character varying
+  summary: text
+  domain_experience: jsonb
+  raw_resume_text: text
+  parsed_data: jsonb
+  embedding_version: character varying
+  vector_version: character varying
+  qdrant_point_id: character varying
+  indexed_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- interview_evaluations ---
+  id: uuid
+  job_id: uuid
+  candidate_id: character varying
+  interviewer_id: uuid
+  stage_name: character varying
+  status: character varying
+  summary: text
+  recommendation: character varying
+  competency_scores: jsonb
+  notes: text
+  metadata: jsonb
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- interview_sessions ---
+  id: uuid
+  agency_id: uuid
+  job_id: uuid
+  candidate_id: uuid
+  user_id: uuid
+  slot_id: uuid
+  candidate_name: text
+  email: text
+  job_role: text
+  jd_text: text
+  resume_text: text
+  session_token: text
+  status: text
+  created_at: timestamp with time zone
+  recording_path: text
+  vapi_recording_url: text
+  recording_size_bytes: integer
+  last_transcript_snapshot: text
+  recording_data: bytea
+  interview_questions: jsonb
+  skills: text
+  agency_name: text
+  recording_format: text
+  recording_duration_seconds: integer
+  recording_created_at: timestamp with time zone
+  started_at: timestamp with time zone
+  ended_at: timestamp with time zone
+  last_activity_at: timestamp with time zone
+  disconnected_at: timestamp with time zone
+  connection_status: text
+  vapi_call_id: text
+  vapi_conversation_state: jsonb
+  recording_status: text
+  recording_status_detail: text
+  recording_status_updated_at: timestamp with time zone
+  recording_status_events: jsonb
+  recording_error: text
+  ai_summary: text
+  end_reason: text
+  reconnect_deadline_at: timestamp without time zone
+  recording_finalized_at: timestamp with time zone
+  booking_token: text
+  booked_at: timestamp with time zone
+  last_booked_at: timestamp with time zone
+  proctoring_events: jsonb
+  created_by_source: character varying
+  updated_by_source: character varying
+  company_id: character varying
+  outreach_event_id: character varying
+  stage: character varying
+  booking_status: character varying
+  scheduled_at: timestamp with time zone
+  available_slots: json
+  timezone: character varying
+  interviewer_metadata: json
+  scheduling_metadata: json
+  evaluation_status: character varying
+  evaluation_ready_at: timestamp with time zone
+  booking_url: character varying
+
+--- interview_share_access_logs ---
+  id: bigint
+  share_token: character varying
+  access_type: character varying
+  ip_address: character varying
+  user_agent: text
+  accessed_at: timestamp without time zone
+
+--- interview_share_links ---
+  id: bigint
+  interview_id: uuid
+  share_token: character varying
+  created_by: character varying
+  expires_at: timestamp without time zone
+  is_active: boolean
+  created_at: timestamp without time zone
+  password_hash: text
+  last_viewed_at: timestamp with time zone
+  view_count: integer
+  revoked: boolean
+  revoked_at: timestamp with time zone
+
+--- interview_slots ---
+  id: uuid
+  agency_id: uuid
+  slot_date: date
+  slot_time: time without time zone
+  max_concurrent: integer
+  current_bookings: integer
+  created_at: timestamp with time zone
+
+--- interviews ---
+  interview_type: text
+  scheduled_at: timestamp with time zone
+  duration_minutes: bigint
+  meeting_link: text
+  status: text
+  video_url: text
+  transcript: text
+  ai_summary: text
+  interview_score: double precision
+  feedback: text
+  interviewer_notes: text
+  technical_score: double precision
+  communication_score: double precision
+  culture_fit_score: double precision
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  is_async: boolean
+  async_link: text
+  async_token: text
+  async_expires_at: timestamp with time zone
+  async_started_at: timestamp with time zone
+  async_completed_at: timestamp with time zone
+  async_answers: json
+  id: uuid
+  candidate_id: uuid
+  agency_id: uuid
+  interview_score_reason: text
+  technical_score_reason: text
+  communication_score_reason: text
+  culture_fit_score_reason: text
+  created_by_source: character varying
+  updated_by_source: character varying
+  source_app: character varying
+  job_id: uuid
+
+--- job_applications ---
+  id: uuid
+  job_id: uuid
+  full_name: character varying
+  email: character varying
+  phone: character varying
+  resume_url: character varying
+  cover_letter: text
+  created_at: timestamp with time zone
+  original_filename: character varying
+  stored_filename: character varying
+  uploaded_at: timestamp with time zone
+  linkedin_url: text
+  source: character varying
+  status: character varying
+  resume_content_type: character varying
+  resume_text: text
+  job_role: character varying
+
+--- job_descriptions ---
+  job_id: text
+  title: text
+  company_name: text
+  department: text
+  location: text
+  employment_type: text
+  experience_required: text
+  salary_range: text
+  vacancies: bigint
+  description: text
+  requirements: text
+  responsibilities: text
+  skills: json
+  is_active: boolean
+  status: text
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  interview_questions: json
+  min_passing_score: bigint
+  id: uuid
+  agency_id: uuid
+  city: character varying
+  state: character varying
+  country: character varying
+  category: character varying
+  remote: boolean
+  company_website_url: character varying
+  company_logo_url: character varying
+  industry: character varying
+  valid_through: timestamp with time zone
+  shortlist_email_template_type: character varying
+  shortlist_email_template_html: text
+  email_template_id: bigint
+  created_by: uuid
+  created_by_source: character varying
+  updated_by_source: character varying
+  source_app: character varying
+  job_status: character varying
+  vetting_mode: character varying
+  last_candidate_attempt_at: timestamp with time zone
+  skills_required: json
+  experience_level: character varying
+  structured_data: json
+  ats_job_id: character varying
+  remote_policy: character varying
+  company_registry_id: uuid
+  ats_type: character varying
+  job_url: text
+  last_synced_at: timestamp with time zone
+
+--- job_distribution_logs ---
+  id: uuid
+  job_id: uuid
+  portal_name: character varying
+  status: character varying
+  message: text
+  posted_at: timestamp with time zone
+
+--- job_intakes ---
+  id: uuid
+  job_id: uuid
+  agency_id: uuid
+  transcript: text
+  structured_data_json: jsonb
+  intake_status: character varying
+  completed_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  created_at: timestamp with time zone
+  company_id: character varying
+
+--- job_portal_mapping ---
+  id: uuid
+  job_id: uuid
+  portal_name: character varying
+
+--- job_portals ---
+  id: uuid
+  portal_name: character varying
+  is_enabled: boolean
+  feed_url: character varying
+  created_at: timestamp with time zone
+
+--- job_sources ---
+  id: uuid
+  source_name: character varying
+  source_type: character varying
+  api_endpoint: text
+  base_url: text
+  enabled: boolean
+  sync_frequency_minutes: integer
+  last_sync_started_at: timestamp with time zone
+  last_sync_completed_at: timestamp with time zone
+  last_sync_status: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- job_sync_runs ---
+  id: uuid
+  source_id: uuid
+  sync_type: character varying
+  status: character varying
+  started_at: timestamp with time zone
+  completed_at: timestamp with time zone
+  jobs_fetched: integer
+  jobs_inserted: integer
+  jobs_updated: integer
+  jobs_expired: integer
+  jobs_failed: integer
+  error_message: text
+  metadata: jsonb
+
+--- linkedin_accounts ---
+  id: uuid
+  agency_id: uuid
+  display_name: character varying
+  linkedin_email: character varying
+  browser_profile_name: character varying
+  status: character varying
+  daily_connection_limit: integer
+  daily_message_limit: integer
+  connections_sent_today: integer
+  messages_sent_today: integer
+  cookies_updated_at: timestamp with time zone
+  last_login_at: timestamp with time zone
+  health: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- linkedin_attachments ---
+  id: uuid
+  message_id: uuid
+  candidate_id: character varying
+  filename: character varying
+  mime_type: character varying
+  storage_path: character varying
+  download_status: character varying
+  downloaded_at: timestamp with time zone
+  created_at: timestamp with time zone
+
+--- linkedin_connections ---
+  id: uuid
+  candidate_id: character varying
+  account_id: uuid
+  linkedin_url: character varying
+  connection_status: character varying
+  request_sent_at: timestamp with time zone
+  accepted_at: timestamp with time zone
+  last_checked_at: timestamp with time zone
+  profile_snapshot_json: jsonb
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- linkedin_conversations ---
+  id: uuid
+  candidate_id: character varying
+  account_id: uuid
+  conversation_id: character varying
+  conversation_status: character varying
+  last_message_at: timestamp with time zone
+  last_synced_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- linkedin_jobs ---
+  id: uuid
+  candidate_id: character varying
+  account_id: uuid
+  job_type: character varying
+  status: character varying
+  priority: integer
+  retry_count: integer
+  max_retries: integer
+  scheduled_at: timestamp with time zone
+  started_at: timestamp with time zone
+  completed_at: timestamp with time zone
+  last_error: text
+  worker_id: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- linkedin_messages ---
+  id: uuid
+  conversation_id: uuid
+  candidate_id: character varying
+  sender_type: character varying
+  message_type: character varying
+  message_text: text
+  linkedin_message_id: character varying
+  attachment_count: integer
+  sent_at: timestamp with time zone
+  created_at: timestamp with time zone
+
+--- notification_events ---
+  id: uuid
+  job_id: uuid
+  agency_id: uuid
+  candidate_id: character varying
+  actor_id: uuid
+  recipient_type: character varying
+  recipient: character varying
+  channel: character varying
+  title: character varying
+  body: text
+  status: character varying
+  notification_type: character varying
+  notification_key: character varying
+  delivery_reference: character varying
+  notification_metadata: jsonb
+  delivered_at: timestamp with time zone
+  failed_at: timestamp with time zone
+  read_at: timestamp with time zone
+  is_read: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- notification_workflow_tokens ---
+  id: uuid
+  agency_id: uuid
+  candidate_id: uuid
+  job_id: uuid
+  user_id: uuid
+  token: character varying
+  token_type: character varying
+  payload: json
+  is_active: boolean
+  expires_at: timestamp with time zone
+  consumed_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  booked_at: timestamp with time zone
+  rebook_until: timestamp with time zone
+  workflow_name: character varying
+  used_at: timestamp with time zone
+
+--- orchestration_events ---
+  id: uuid
+  session_id: uuid
+  event_type: character varying
+  event_payload: jsonb
+  source: character varying
+  created_at: timestamp with time zone
+
+--- orchestration_sessions ---
+  id: uuid
+  session_token: character varying
+  source: character varying
+  current_stage: character varying
+  slack_team_id: character varying
+  slack_channel_id: character varying
+  slack_thread_ts: character varying
+  slack_user_id: character varying
+  intake_mode: character varying
+  selected_path: character varying
+  current_question: text
+  current_question_key: character varying
+  current_question_type: character varying
+  current_question_schema: jsonb
+  structured_context: jsonb
+  raw_conversation: jsonb
+  normalized_intake: jsonb
+  voice_context: jsonb
+  slack_context: jsonb
+  voice_handoff_token: character varying
+  voice_handoff_expires_at: timestamp with time zone
+  voice_handoff_consumed_at: timestamp with time zone
+  voice_token_used: boolean
+  expires_at: timestamp with time zone
+  completed_at: timestamp with time zone
+  state_version: integer
+  last_processed_message_ts: character varying
+  last_processed_action_hash: character varying
+  last_processed_transcript_hash: character varying
+  intake_version: character varying
+  agency_id: uuid
+  job_id: uuid
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  company_id: character varying
+
+--- otps ---
+  id: uuid
+  email: character varying
+  otp_hash: character varying
+  expires_at: timestamp with time zone
+  used: boolean
+  created_at: timestamp with time zone
+
+--- outreach_events ---
+  id: uuid
+  source_app: character varying
+  job_id: uuid
+  agency_id: uuid
+  candidate_id: character varying
+  provider: character varying
+  to_email: character varying
+  subject: character varying
+  body: text
+  status: character varying
+  reply_state: character varying
+  archive_reason: character varying
+  attempt_count: integer
+  follow_up_count: integer
+  open_count: integer
+  reply_count: integer
+  provider_message_id: character varying
+  last_error: text
+  sent_at: timestamp with time zone
+  last_sent_at: timestamp with time zone
+  last_contacted_at: timestamp with time zone
+  last_opened_at: timestamp with time zone
+  last_replied_at: timestamp with time zone
+  next_follow_up_at: timestamp with time zone
+  message_text: text
+  resume_url: character varying
+  reply_intent: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  company_id: character varying
+  responded_at: timestamp with time zone
+  engagement_score: double precision
+  reply_likelihood_score: double precision
+  responsiveness_score: double precision
+  learning_applied: boolean
+
+--- pg_stat_statements ---
+  userid: oid
+  dbid: oid
+  toplevel: boolean
+  queryid: bigint
+  query: text
+  plans: bigint
+  total_plan_time: double precision
+  min_plan_time: double precision
+  max_plan_time: double precision
+  mean_plan_time: double precision
+  stddev_plan_time: double precision
+  calls: bigint
+  total_exec_time: double precision
+  min_exec_time: double precision
+  max_exec_time: double precision
+  mean_exec_time: double precision
+  stddev_exec_time: double precision
+  rows: bigint
+  shared_blks_hit: bigint
+  shared_blks_read: bigint
+  shared_blks_dirtied: bigint
+  shared_blks_written: bigint
+  local_blks_hit: bigint
+  local_blks_read: bigint
+  local_blks_dirtied: bigint
+  local_blks_written: bigint
+  temp_blks_read: bigint
+  temp_blks_written: bigint
+  shared_blk_read_time: double precision
+  shared_blk_write_time: double precision
+  local_blk_read_time: double precision
+  local_blk_write_time: double precision
+  temp_blk_read_time: double precision
+  temp_blk_write_time: double precision
+  wal_records: bigint
+  wal_fpi: bigint
+  wal_bytes: numeric
+  wal_buffers_full: bigint
+  jit_functions: bigint
+  jit_generation_time: double precision
+  jit_inlining_count: bigint
+  jit_inlining_time: double precision
+  jit_optimization_count: bigint
+  jit_optimization_time: double precision
+  jit_emission_count: bigint
+  jit_emission_time: double precision
+  jit_deform_count: bigint
+  jit_deform_time: double precision
+  parallel_workers_to_launch: bigint
+  parallel_workers_launched: bigint
+  stats_since: timestamp with time zone
+  minmax_stats_since: timestamp with time zone
+
+--- pg_stat_statements_info ---
+  dealloc: bigint
+  stats_reset: timestamp with time zone
+
+--- plan_limits ---
+  id: integer
+  plan_id: uuid
+  feature_name: character varying
+  total_limit: integer
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- plans ---
+  id: uuid
+  name: character varying
+  price: double precision
+  duration: character varying
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  plan_name: character varying
+  billing_cycle: character varying
+  base_price: double precision
+  credits: integer
+  seat_limit: integer
+  job_posting_limit: integer
+  feature_config: json
+
+--- ranking_explanations ---
+  id: uuid
+  job_id: uuid
+  agency_id: uuid
+  candidate_id: character varying
+  existing_score: double precision
+  recruiter_score: double precision
+  session_signal: double precision
+  final_score: double precision
+  recruiter_capped: boolean
+  updated_at: timestamp with time zone
+  created_at: timestamp with time zone
+
+--- ranking_runs ---
+  id: uuid
+  job_id: uuid
+  recruiter_id: uuid
+  run_type: character varying
+  avg_existing_score: double precision
+  avg_final_score: double precision
+  avg_recruiter_score: double precision
+  percent_recruiter_capped: double precision
+  candidate_count: integer
+  drift_delta: double precision
+  created_at: timestamp with time zone
+
+--- recording_retry_queue ---
+  id: integer
+  session_token: text
+  file_name: text
+  attempts: integer
+  last_error: text
+  created_at: timestamp with time zone
+
+--- recruiter_experience_preferences ---
+  id: uuid
+  recruiter_id: uuid
+  experience_bucket: character varying
+  weight: double precision
+  updated_at: timestamp with time zone
+
+--- recruiter_interest_requests ---
+  id: uuid
+  candidate_id: uuid
+  agency_id: uuid
+  recruiter_user_id: uuid
+  job_id: uuid
+  interview_session_id: uuid
+  request_status: character varying
+  recruiter_message: text
+  candidate_response: character varying
+  candidate_response_at: timestamp with time zone
+  recruiter_requested_at: timestamp with time zone
+  expires_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- recruiter_notes ---
+  id: character varying
+  job_id: character varying
+  candidate_id: character varying
+  recruiter_id: character varying
+  note_type: character varying
+  body: text
+  status: character varying
+  metadata: jsonb
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- recruiter_role_preferences ---
+  id: uuid
+  recruiter_id: uuid
+  role: character varying
+  weight: double precision
+  positive_count: integer
+  negative_count: integer
+  updated_at: timestamp with time zone
+
+--- recruiter_skill_preferences ---
+  id: uuid
+  recruiter_id: uuid
+  skill: character varying
+  weight: double precision
+  positive_count: integer
+  negative_count: integer
+  updated_at: timestamp with time zone
+
+--- recruiter_tasks ---
+  id: character varying
+  job_id: character varying
+  candidate_id: character varying
+  recruiter_id: character varying
+  title: character varying
+  body: text
+  status: character varying
+  priority: character varying
+  due_at: timestamp with time zone
+  completed_at: timestamp with time zone
+  metadata: jsonb
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- scheduler_jobs ---
+  id: uuid
+  job_name: character varying
+  job_type: character varying
+  description: text
+  enabled: boolean
+  cron_expression: character varying
+  interval_minutes: integer
+  last_run_at: timestamp with time zone
+  next_run_at: timestamp with time zone
+  last_status: character varying
+  retry_count: integer
+  max_retries: integer
+  timeout_seconds: integer
+  metadata: jsonb
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- scoring_profiles ---
+  id: uuid
+  job_id: uuid
+  weight_pdl: double precision
+  weight_semantic: double precision
+  weight_skill: double precision
+  weight_recency: double precision
+  feedback_bias: double precision
+  elite_reasoning_bonus: double precision
+  updated_at: timestamp with time zone
+
+--- slack_installations ---
+  id: uuid
+  agency_id: uuid
+  team_id: character varying
+  team_name: character varying
+  enterprise_id: character varying
+  bot_user_id: character varying
+  bot_access_token: text
+  scope_list: jsonb
+  installed_by_user_id: uuid
+  installed_at: timestamp with time zone
+  revoked_at: timestamp with time zone
+  is_active: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- slack_users ---
+  id: uuid
+  agency_id: uuid
+  slack_installation_id: uuid
+  slack_user_id: character varying
+  email: character varying
+  display_name: character varying
+  internal_user_id: uuid
+  role: character varying
+  first_seen_at: timestamp with time zone
+  last_seen_at: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- subscription_activity_logs ---
+  id: bigint
+  client_id: uuid
+  action_type: character varying
+  previous_value: character varying
+  added_value: character varying
+  new_value: character varying
+  performed_by: uuid
+  created_at: timestamp with time zone
+
+--- subscriptions ---
+  id: integer
+  legacy_user_id: integer
+  plan_name: character varying
+  billing_type: character varying
+  price_per_user: numeric
+  total_price: numeric
+  interview_credits_total: integer
+  interview_credits_used: integer
+  max_job_posts: integer
+  used_job_posts: integer
+  max_users: integer
+  current_users: integer
+  resume_scoring_limit: integer
+  resume_scoring_used: integer
+  is_unlimited_resume_scoring: boolean
+  is_unlimited_jobs: boolean
+  expires_at: timestamp without time zone
+  created_at: timestamp without time zone
+  cycle_anchor_at: timestamp with time zone
+  last_monthly_reset_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  user_id: uuid
+  plan_id: uuid
+  status: character varying
+  agency_id: uuid
+  payment_provider: character varying
+  payment_status: character varying
+  razorpay_order_id: character varying
+  razorpay_payment_id: character varying
+  razorpay_signature: character varying
+  payment_payload: json
+  previous_subscription_id: integer
+  original_price: double precision
+  discount_percent: double precision
+  discount_amount: double precision
+  custom_price_override: double precision
+  final_price: double precision
+  interview_topup_total: integer
+  interview_topup_used: integer
+  trial_start_at: timestamp with time zone
+  trial_end_at: timestamp with time zone
+  trial_status: character varying
+  admin_seat_limit: integer
+  user_seat_limit: integer
+  user_count: integer
+
+--- test_write ---
+  id: integer
+
+--- usage_logs ---
+  id: integer
+  agency_id: uuid
+  subscription_id: integer
+  wallet_id: integer
+  user_id: uuid
+  feature_name: character varying
+  action: character varying
+  amount: integer
+  before_used: integer
+  after_used: integer
+  before_remaining: integer
+  after_remaining: integer
+  details: json
+  created_at: timestamp with time zone
+
+--- usage_tracking ---
+  id: integer
+  user_id: uuid
+  feature_name: character varying
+  used_count: integer
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- user_dashboard_preferences ---
+  id: bigint
+  widget_id: bigint
+  position: bigint
+  size: text
+  is_enabled: boolean
+  created_at: timestamp with time zone
+  user_id: uuid
+
+--- users ---
+  email: text
+  hashed_password: text
+  full_name: text
+  role: character varying
+  is_active: boolean
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+  phone: text
+  department: text
+  bio: text
+  avatar_url: text
+  last_login_at: timestamp without time zone
+  wallet_balance: real
+  id: uuid
+  agency_id: uuid
+
+--- wallet_transactions ---
+  id: bigint
+  amount: double precision
+  transaction_type: text
+  description: text
+  balance_after: double precision
+  created_at: timestamp with time zone
+  agency_id: uuid
+  user_id: uuid
+  provider: character varying
+  razorpay_order_id: character varying
+  razorpay_payment_id: character varying
+  razorpay_signature: character varying
+  payment_status: character varying
+  provider_payload: json
+
+--- wallets ---
+  id: integer
+  agency_id: uuid
+  subscription_id: integer
+  interview_total: integer
+  interview_used: integer
+  interview_remaining: integer
+  is_interview_unlimited: boolean
+  resume_total: integer
+  resume_used: integer
+  resume_remaining: integer
+  is_resume_unlimited: boolean
+  job_post_total: integer
+  job_post_used: integer
+  job_post_remaining: integer
+  is_job_post_unlimited: boolean
+  user_seat_total: integer
+  user_seat_used: integer
+  user_seat_remaining: integer
+  is_user_seat_unlimited: boolean
+  last_reset_date: timestamp with time zone
+  created_at: timestamp with time zone
+  updated_at: timestamp with time zone
+
+--- webhook_events ---
+  id: integer
+  event_id: character varying
+  event_type: character varying
+  payment_id: character varying
+  raw_payload: json
+  processed_at: timestamp with time zone
+  created_at: timestamp with time zone
