@@ -573,7 +573,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
   );
 }
 
-function OpportunitiesTab({ candidateId }) {
+function OpportunitiesTab({ candidateId, onInterested }) {
   const [opps, setOpps] = React.useState(null);
   const [selected, setSelected] = React.useState(null);
   const [responding, setResponding] = React.useState(false);
@@ -601,6 +601,7 @@ function OpportunitiesTab({ candidateId }) {
         prev.map((o) => o.id === recId ? { ...o, candidate_response: updated } : o)
       );
       if (selected?.id === recId) setSelected((s) => ({ ...s, candidate_response: updated }));
+      if (response === "interested" && onInterested) onInterested();
     } catch {
       setError("Failed to save your response. Please try again.");
     } finally {
@@ -785,6 +786,7 @@ export default function LivingProfile({
   onResumeReplaced,
   onCertUploaded,
   onCertReplaced,
+  onInterested,
 }) {
   return (
     <aside
@@ -832,7 +834,7 @@ export default function LivingProfile({
             />
           )}
           {activeTab === "opportunities" && (
-            <OpportunitiesTab candidateId={candidateId} />
+            <OpportunitiesTab candidateId={candidateId} onInterested={onInterested} />
           )}
         </div>
       </div>

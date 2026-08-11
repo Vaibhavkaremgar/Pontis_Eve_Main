@@ -11,11 +11,14 @@ const DEFAULT_STATE = {
   certsMeta: [], // [{ name, size }]
   parsedProfile: null, // full backend response
   candidateId: null, // UUID from the Dashboard candidate record
+  newlyOnboarded: false,
   transcription: false,
   muted: false,
   voiceElapsedMs: 0, // how long the candidate stayed on the voice-intake step
   voiceIntakeCompleted: false,
   isOpenToMatches: true,
+  linkedInAuthenticated: false,
+  linkedInProfile: null, // { name, email, picture, linkedin_id }
 };
 
 export function loadOnboardingState() {
@@ -40,11 +43,14 @@ export function saveOnboardingState(state) {
       certsMeta: state.certsMeta,
       parsedProfile: state.parsedProfile,
       candidateId: state.candidateId ?? null,
+      newlyOnboarded: state.newlyOnboarded ?? false,
       transcription: state.transcription,
       muted: state.muted,
       voiceElapsedMs: state.voiceElapsedMs,
       voiceIntakeCompleted: state.voiceIntakeCompleted ?? false,
       isOpenToMatches: state.isOpenToMatches ?? true,
+      linkedInAuthenticated: state.linkedInAuthenticated ?? false,
+      linkedInProfile: state.linkedInProfile ?? null,
     };
     localStorage.setItem(KEY, JSON.stringify(slim));
   } catch {

@@ -4,7 +4,6 @@
  */
 import React from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Mic, MicOff, Radio, PhoneOff, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
@@ -69,7 +68,6 @@ const STATE_LABELS = {
 const NOT_CONFIGURED_MSG = "Voice intake is not configured. Please contact support.";
 
 export default function VoiceIntake({ firstName, candidateId, onComplete }) {
-  const navigate = useNavigate();
   const [showTranscript, setShowTranscript] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
@@ -92,12 +90,12 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
     assistantOverrides,
   });
 
-  // Redirect to dashboard when voice intake is not configured
+  // Advance to summary when voice intake is not configured
   React.useEffect(() => {
     if (callState === VAPI_STATES.ERROR && error === NOT_CONFIGURED_MSG) {
-      navigate("/dashboard");
+      onComplete(null);
     }
-  }, [callState, error, navigate]);
+  }, [callState, error, onComplete]);
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {

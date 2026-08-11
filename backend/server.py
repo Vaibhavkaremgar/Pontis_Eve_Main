@@ -180,47 +180,60 @@ async def _get_candidate_row(candidate_id: str) -> dict:
 
 
 async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
-                             original_filename: str, existing_id: Optional[str] = None) -> str:
+                             original_filename: str, existing_id: Optional[str] = None,
+                             force_new: bool = False) -> str:
     """
     Create or update a candidate record.
-    Identity: existing_id (re-upload) > email match > new record.
+    Identity: existing_id (re-upload) > email match > fingerprint > new record.
+    When force_new=True (new-candidate onboarding), always insert a fresh record.
     Returns the candidate UUID.
     """
     skills_json = json.dumps(parsed.get("skills") or [])
     work_exp_json = json.dumps(parsed.get("work_experience") or [])
     edu_json = json.dumps(parsed.get("education") or [])
 
+    logger.info("[parse-resume] incoming existing_id=%s force_new=%s email=%s fingerprint=%s",
+                existing_id, force_new, parsed.get("email"), fingerprint[:12])
+
     async with SessionLocal() as db:
         cid = None
 
-        # 1. Prefer explicit existing_id (resume replace flow)
-        if existing_id:
-            r = await db.execute(
-                text("SELECT id FROM candidates WHERE id = :cid LIMIT 1"),
-                {"cid": existing_id},
-            )
-            if r.fetchone():
-                cid = existing_id
+        if not force_new:
+            # 1. Prefer explicit existing_id (resume replace flow)
+            if existing_id:
+                r = await db.execute(
+                    text("SELECT id FROM candidates WHERE id = :cid LIMIT 1"),
+                    {"cid": existing_id},
+                )
+                if r.fetchone():
+                    cid = existing_id
+                    logger.info("[parse-resume] matched by existing_id=%s", cid)
 
-        # 2. Match by email to avoid duplicates
-        if not cid and parsed.get("email"):
-            r = await db.execute(
-                text("SELECT id FROM candidates WHERE email = :email LIMIT 1"),
-                {"email": parsed["email"]},
-            )
-            row = r.fetchone()
-            if row:
-                cid = str(row[0])
+            # 2. Match by email to avoid duplicates
+            if not cid and parsed.get("email"):
+                r = await db.execute(
+                    text("SELECT id FROM candidates WHERE email = :email LIMIT 1"),
+                    {"email": parsed["email"]},
+                )
+                row = r.fetchone()
+                if row:
+                    cid = str(row[0])
+                    logger.info("[parse-resume] matched by email -> candidate_id=%s", cid)
 
-        # 3. Check fingerprint (same file re-uploaded)
-        if not cid:
-            r = await db.execute(
-                text("SELECT candidate_id FROM internal_candidate_resumes WHERE resume_fingerprint = :fp LIMIT 1"),
-                {"fp": fingerprint},
-            )
-            row = r.fetchone()
-            if row:
-                cid = str(row[0])
+            # 3. Check fingerprint (same file re-uploaded)
+            if not cid:
+                r = await db.execute(
+                    text("SELECT candidate_id FROM internal_candidate_resumes WHERE resume_fingerprint = :fp LIMIT 1"),
+                    {"fp": fingerprint},
+                )
+                row = r.fetchone()
+                if row:
+                    cid = str(row[0])
+                    logger.info("[parse-resume] matched by fingerprint -> candidate_id=%s", cid)
+        else:
+            logger.info("[parse-resume] force_new=True — skipping email/fingerprint lookup, will insert new record")
+
+        logger.info("[parse-resume] existing candidate found=%s candidate_id=%s", cid is not None, cid)
 
         if cid:
             # Preserve voice-derived raw_data when updating via resume
@@ -269,6 +282,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
         else:
             # INSERT new candidate
             cid = str(uuid.uuid4())
+            logger.info("[parse-resume] inserting new candidate_id=%s", cid)
             await db.execute(
                 text("""
                     INSERT INTO candidates
@@ -335,6 +349,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
 
         await db.commit()
 
+    logger.info("[parse-resume] final candidate_id returned=%s", cid)
     return cid
 
 
@@ -363,7 +378,7 @@ async def parse_resume(file: UploadFile = File(...)):
     parsed = await _parse_resume_with_llm(resume_text)
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
-    cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf")
+    cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", force_new=True)
 
     profile = _normalize_for_frontend({**parsed, "id": cid})
     profile["_meta"] = {"used_ocr": used_ocr}
@@ -615,23 +630,42 @@ VALID_UPDATE_FIELDS = {
 
 
 async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
-    """Validate and apply structured profile updates to PostgreSQL."""
+    """Validate and apply structured profile updates to PostgreSQL, merging lists."""
     safe = {k: v for k, v in updates.items() if k in VALID_UPDATE_FIELDS and v is not None}
     if not safe:
         return
 
+    # Fetch existing candidate row for merging lists
+    existing = await _get_candidate_row(candidate_id)
+
     set_clauses = []
     params: dict = {"cid": candidate_id}
+    current_role_set = False
 
     for field, value in safe.items():
-        if field in ("skills", "work_experience", "education"):
+        if field == "skills":
             if not isinstance(value, list):
                 continue
-            set_clauses.append(f"{field} = CAST(:{field} AS json)")
-            params[field] = json.dumps(value)
+            merged = _merge_skills(existing.get("skills") or [], value)
+            set_clauses.append("skills = CAST(:skills AS json)")
+            params["skills"] = json.dumps(merged)
+        elif field == "work_experience":
+            if not isinstance(value, list):
+                continue
+            merged = _merge_work_experience(existing.get("work_experience") or [], value)
+            set_clauses.append("work_experience = CAST(:work_experience AS json)")
+            params["work_experience"] = json.dumps(merged)
+        elif field == "education":
+            if not isinstance(value, list):
+                continue
+            merged = _merge_education(existing.get("education") or [], value)
+            set_clauses.append("education = CAST(:education AS json)")
+            params["education"] = json.dumps(merged)
         elif field in ("headline", "current_role"):
-            set_clauses.append('"current_role" = :current_role')
-            params["current_role"] = str(value)
+            if not current_role_set:
+                set_clauses.append('"current_role" = :current_role')
+                params["current_role"] = str(value)
+                current_role_set = True
         elif field == "bio":
             set_clauses.append("summary = :bio")
             params["bio"] = str(value)
@@ -1187,6 +1221,21 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
             """),
             {"resp": body.response, "rid": rec_id, "cid": candidate_id},
         )
+        if body.response == "interested":
+            job_row = await db.execute(
+                text("SELECT job_id FROM recruiter_interest_requests WHERE id = :rid LIMIT 1"),
+                {"rid": rec_id},
+            )
+            job_id_row = job_row.fetchone()
+            if job_id_row and job_id_row[0]:
+                await db.execute(
+                    text("""
+                        UPDATE candidate_job_recommendations
+                        SET tracked_at = now()
+                        WHERE candidate_id = :cid AND job_id = :jid AND tracked_at IS NULL
+                    """),
+                    {"cid": candidate_id, "jid": str(job_id_row[0])},
+                )
         await db.commit()
     return {"status": "ok", "candidate_response": body.response}
 
@@ -1359,6 +1408,90 @@ async def get_vapi_config():
     if not public_key or not assistant_id:
         raise HTTPException(status_code=503, detail="Voice intake is not configured.")
     return {"publicKey": public_key, "assistantId": assistant_id}
+
+
+# ---------- LinkedIn OAuth ----------
+
+import secrets
+import httpx
+
+LINKEDIN_CLIENT_ID = os.environ.get("LINKEDIN_CLIENT_ID", "")
+LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
+LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
+
+
+@api_router.get("/auth/linkedin/init")
+async def linkedin_init():
+    if not LINKEDIN_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+    state = secrets.token_urlsafe(16)
+    auth_url = (
+        "https://www.linkedin.com/oauth/v2/authorization"
+        f"?response_type=code"
+        f"&client_id={LINKEDIN_CLIENT_ID}"
+        f"&redirect_uri={LINKEDIN_REDIRECT_URI}"
+        f"&state={state}"
+        f"&scope=openid%20profile%20email"
+    )
+    return {"auth_url": auth_url, "state": state}
+
+
+@api_router.get("/auth/linkedin/callback")
+async def linkedin_callback(code: str, state: str):
+    if not LINKEDIN_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+
+    async with httpx.AsyncClient() as client:
+        # Exchange code for access token
+        token_resp = await client.post(
+            "https://www.linkedin.com/oauth/v2/accessToken",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": LINKEDIN_REDIRECT_URI,
+                "client_id": LINKEDIN_CLIENT_ID,
+                "client_secret": LINKEDIN_CLIENT_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+
+        # Fetch profile via OpenID userinfo
+        userinfo_resp = await client.get(
+            "https://api.linkedin.com/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if userinfo_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch LinkedIn profile.")
+        userinfo = userinfo_resp.json()
+
+    linkedin_id = userinfo.get("sub", "")
+    name = userinfo.get("name", "")
+    email = userinfo.get("email", "")
+    picture = userinfo.get("picture", "")
+
+    # Check if candidate already exists by email
+    is_returning = False
+    candidate_id = None
+    async with SessionLocal() as db:
+        if email:
+            row = await db.execute(
+                text("SELECT id FROM candidates WHERE email = :email LIMIT 1"),
+                {"email": email},
+            )
+            existing = row.fetchone()
+            if existing:
+                candidate_id = str(existing[0])
+                is_returning = True
+
+    return {
+        "profile": {"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id},
+        "candidate_id": candidate_id,
+        "is_returning": is_returning,
+    }
 
 
 app.include_router(api_router)

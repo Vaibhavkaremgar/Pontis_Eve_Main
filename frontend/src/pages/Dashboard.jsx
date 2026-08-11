@@ -73,13 +73,19 @@ function ResizeHandle({ testId, subtle = false }) {
   );
 }
 
-export default function Dashboard() {
+function Dashboard() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = React.useState("profile");
-
   const stored = React.useMemo(() => loadOnboardingState(), []);
-  const candidateId = stored.candidateId ?? null;
+  const [candidateId, setCandidateId] = React.useState(() => loadOnboardingState().candidateId ?? null);
   const isOpenToMatches = stored.isOpenToMatches ?? true;
+
+  const [activeTab, setActiveTab] = React.useState(() => {
+    if (stored.newlyOnboarded) {
+      saveOnboardingState({ ...stored, newlyOnboarded: false });
+      return "profile";
+    }
+    return "new-jobs";
+  });
 
   const [userProfile, setUserProfile] = React.useState(() =>
     applyStrength(buildFallbackProfile(isOpenToMatches))
@@ -88,6 +94,7 @@ export default function Dashboard() {
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
     if (!candidateId) return;
+    console.log("Current candidateId:", candidateId);
     axios
       .get(`${API}/candidate/${candidateId}/profile`)
       .then((res) => {
@@ -136,33 +143,33 @@ export default function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]);
 
-  const refreshProfile = React.useCallback(() => {
+  const refreshProfile = React.useCallback(async () => {
     if (!candidateId) return;
-    axios
-      .get(`${API}/candidate/${candidateId}/profile`)
-      .then((res) => {
-        const data = res.data;
-        setUserProfile((prev) =>
-          applyStrength({
-            ...prev,
-            name: data.name ?? prev.name,
-            email: data.email ?? prev.email,
-            phone: data.phone ?? prev.phone,
-            headline: data.headline ?? prev.headline,
-            location: data.location ?? prev.location,
-            bio: data.bio ?? prev.bio,
-            experience: data.experience ?? prev.experience,
-            education: data.education ?? prev.education,
-            keySkills: data.keySkills ?? prev.keySkills,
-            experience_years: data.experience_years ?? prev.experience_years,
-            availability: data.availability ?? prev.availability,
-            preferred_roles: data.preferred_roles ?? prev.preferred_roles,
-            certifications: data.certifications ?? prev.certifications,
-            additional_information: data.additional_information ?? prev.additional_information,
-          })
-        );
-      })
-      .catch(() => {});
+    try {
+      const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
+      const data = res.data;
+      setUserProfile((prev) =>
+        applyStrength({
+          ...prev,
+          name: data.name ?? prev.name,
+          email: data.email ?? prev.email,
+          phone: data.phone ?? prev.phone,
+          headline: data.headline ?? prev.headline,
+          location: data.location ?? prev.location,
+          bio: data.bio ?? prev.bio,
+          experience: data.experience?.length ? data.experience : prev.experience,
+          education: data.education?.length ? data.education : prev.education,
+          keySkills: data.keySkills?.length ? data.keySkills : prev.keySkills,
+          experience_years: data.experience_years != null ? data.experience_years : prev.experience_years,
+          availability: data.availability ?? prev.availability,
+          preferred_roles: data.preferred_roles?.length ? data.preferred_roles : prev.preferred_roles,
+          certifications: data.certifications?.length ? data.certifications : prev.certifications,
+          additional_information: data.additional_information ?? prev.additional_information,
+        })
+      );
+    } catch (err) {
+      console.error("refreshProfile failed", err);
+    }
   }, [candidateId]);
 
   const handleLogout = React.useCallback(() => {
@@ -287,7 +294,7 @@ export default function Dashboard() {
 
       // If LLM returned profile updates, refresh the profile panel
       if (res?.data?.profile_updates && candidateId) {
-        refreshProfile();
+        await refreshProfile();
       }
     } catch (err) {
       console.error("chat error", err);
@@ -428,9 +435,22 @@ export default function Dashboard() {
             onResumeReplaced={handleResumeReplaced}
             onCertUploaded={handleCertUploaded}
             onCertReplaced={handleCertReplaced}
+            onInterested={fetchJobs}
           />
         </Panel>
       </PanelGroup>
     </div>
   );
+}
+
+export default function DashboardGuard() {
+  const navigate = useNavigate();
+  const candidateId = loadOnboardingState().candidateId ?? null;
+
+  React.useEffect(() => {
+    if (!candidateId) navigate("/", { replace: true });
+  }, [candidateId, navigate]);
+
+  if (!candidateId) return null;
+  return <Dashboard />;
 }

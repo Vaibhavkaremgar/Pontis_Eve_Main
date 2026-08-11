@@ -512,6 +512,13 @@ function StepBridge({ profile, voiceIntakeCompleted }) {
 export default function Onboarding() {
   const persisted = React.useMemo(() => loadOnboardingState(), []);
   const [step, setStep] = React.useState(resumableStep(persisted));
+  const navigate = useNavigate();
+
+  // Guard: must have gone through LinkedIn auth
+  React.useEffect(() => {
+    if (!persisted.linkedInAuthenticated) navigate("/", { replace: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Welcome-back toast when the user actually returns mid-flow.
   React.useEffect(() => {
@@ -583,8 +590,6 @@ export default function Onboarding() {
     setStep(5);
   }, []);
 
-  const navigate = useNavigate();
-
   // Persist state whenever the shape changes
   React.useEffect(() => {
     saveOnboardingState({
@@ -634,6 +639,13 @@ export default function Onboarding() {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const { candidate_id, ...profile } = res.data;
+      console.log("Resume parsing candidate_id:", candidate_id);
+      // Immediately persist the new candidate_id to storage before any state update
+      // so Dashboard always reads the correct ID even if it mounts before the effect runs
+      if (candidate_id) {
+        const current = loadOnboardingState();
+        saveOnboardingState({ ...current, candidateId: candidate_id });
+      }
       setParsedProfile(profile);
       if (candidate_id) {
         setCandidateId(candidate_id);
@@ -692,7 +704,11 @@ export default function Onboarding() {
     if (step === 5) {
       return (
         <PrimaryButton
-          onClick={() => navigate("/dashboard")}
+          onClick={() => {
+            const s = loadOnboardingState();
+            saveOnboardingState({ ...s, newlyOnboarded: true });
+            navigate("/dashboard");
+          }}
           testId="onboarding-enter-dashboard"
         >
           Enter Dashboard
