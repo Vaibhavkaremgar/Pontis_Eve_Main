@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1588,11 +1588,23 @@ async def linkedin_callback(code: str, state: str):
                 candidate_id = str(existing[0])
                 is_returning = True
 
-    return {
-        "profile": {"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id},
-        "candidate_id": candidate_id,
-        "is_returning": is_returning,
-    }
+    if is_returning:
+      redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+    else:
+      import urllib.parse
+
+    profile_param = urllib.parse.quote_plus(
+        json.dumps({
+            "name": name,
+            "email": email,
+            "picture": picture,
+            "linkedin_id": linkedin_id,
+        })
+    )
+
+    redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
+
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 # ---------- Service-to-service auth ----------
