@@ -391,12 +391,19 @@ function TrackedTab({ jobs, onTrack }) {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => onTrack(job.id)}
-              className="text-[11.5px] font-normal text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2"
-            >
-              Untrack
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {job.applied && (
+                <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2 py-1">
+                  Applied
+                </span>
+              )}
+              <button
+                onClick={() => onTrack(job.id)}
+                className="text-[11.5px] font-normal text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2"
+              >
+                Untrack
+              </button>
+            </div>
           </div>
         ))
       )}
@@ -573,8 +580,107 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
   );
 }
 
+function ActivityNotificationCard({ notif, onRead }) {
+  const meta = notif.metadata || {};
+  const isSlotBooking = notif.activity_type === "interview_slot_booking";
+  const isSecondRound = notif.activity_type === "second_round_invite";
+
+  return (
+    <div
+      data-testid={`activity-notif-${notif.id}`}
+      className={`rounded-xl px-4 py-4 eve-hover-row transition-colors ${
+        notif.is_read ? "opacity-60" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="text-[13.5px] font-medium text-[#1F1F1F] truncate">{notif.title}</p>
+          {isSlotBooking && (
+            <span className="text-[11px] font-medium text-[#7B6FB8] bg-[#F0EEF9] rounded-full px-2 py-0.5 mt-1 inline-block">
+              Interview Slot
+            </span>
+          )}
+          {isSecondRound && (
+            <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2 py-0.5 mt-1 inline-block">
+              Second Round
+            </span>
+          )}
+        </div>
+        {!notif.is_read && (
+          <span className="shrink-0 text-[11px] font-medium text-[#C58B3E] bg-[#FDF3E3] rounded-full px-2 py-1">
+            New
+          </span>
+        )}
+      </div>
+      {notif.description && (
+        <p className="text-[12px] text-[#4A4A48] mt-2 leading-relaxed">{notif.description}</p>
+      )}
+      {isSlotBooking && meta.booking_url && (
+        <div className="mt-3">
+          <a
+            href={meta.booking_url}
+            target="_blank"
+            rel="noreferrer"
+            data-testid={`slot-booking-link-${notif.id}`}
+            className="inline-block text-[12.5px] font-medium text-white bg-[#1F1F1F] hover:bg-black rounded-xl px-4 py-2 transition-colors"
+          >
+            Book your interview slot
+          </a>
+          {meta.expires_at && (
+            <p className="text-[11px] text-[#9A9A98] mt-1.5">
+              Expires: {new Date(meta.expires_at).toLocaleString()}
+            </p>
+          )}
+        </div>
+      )}
+      {isSecondRound && (
+        <div className="mt-3 space-y-1">
+          {meta.round_name && (
+            <p className="text-[12px] text-[#4A4A48]">
+              <span className="font-medium">Round:</span> {meta.round_name}
+            </p>
+          )}
+          {meta.scheduled_at && (
+            <p className="text-[12px] text-[#4A4A48]">
+              <span className="font-medium">Scheduled:</span> {new Date(meta.scheduled_at).toLocaleString()}
+            </p>
+          )}
+          {meta.location && (
+            <p className="text-[12px] text-[#4A4A48]">
+              <span className="font-medium">Location:</span> {meta.location}
+            </p>
+          )}
+          {meta.meeting_url && (
+            <a
+              href={meta.meeting_url}
+              target="_blank"
+              rel="noreferrer"
+              data-testid={`second-round-meeting-link-${notif.id}`}
+              className="inline-block text-[12px] font-medium text-[#7B6FB8] underline underline-offset-2"
+            >
+              Join meeting
+            </a>
+          )}
+          {meta.instructions && (
+            <p className="text-[12px] text-[#4A4A48] italic">{meta.instructions}</p>
+          )}
+        </div>
+      )}
+      {!notif.is_read && (
+        <button
+          onClick={() => onRead(notif.id)}
+          className="mt-3 text-[11.5px] text-[#9A9A98] hover:text-[#4A4A48] underline underline-offset-2"
+        >
+          Mark as read
+        </button>
+      )}
+    </div>
+  );
+}
+
 function OpportunitiesTab({ candidateId, onInterested }) {
   const [opps, setOpps] = React.useState(null);
+  const [notifications, setNotifications] = React.useState([]);
   const [selected, setSelected] = React.useState(null);
   const [responding, setResponding] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -585,6 +691,10 @@ function OpportunitiesTab({ candidateId, onInterested }) {
       .get(`${API}/candidate/${candidateId}/opportunities`)
       .then((res) => setOpps(res.data))
       .catch(() => setError("Could not load opportunities. Please try again."));
+    axios
+      .get(`${API}/candidate/${candidateId}/notifications`)
+      .then((res) => setNotifications(res.data || []))
+      .catch(() => {});
   }, [candidateId]);
 
   React.useEffect(() => { load(); }, [load]);
@@ -609,13 +719,25 @@ function OpportunitiesTab({ candidateId, onInterested }) {
     }
   };
 
+  const handleMarkRead = async (notifId) => {
+    try {
+      await axios.post(`${API}/candidate/${candidateId}/notifications/${notifId}/read`);
+      setNotifications((prev) =>
+        prev.map((n) => n.id === notifId ? { ...n, is_read: true } : n)
+      );
+    } catch {
+      // silent
+    }
+  };
+
   if (error) return <p className="text-[13px] text-red-500">{error}</p>;
   if (opps === null) return <p className="text-[13px] text-[#9A9A98]">Loading…</p>;
 
   const pending = opps.filter((o) => !o.candidate_response);
   const responded = opps.filter((o) => o.candidate_response);
+  const hasActivity = notifications.length > 0;
 
-  if (opps.length === 0) {
+  if (opps.length === 0 && !hasActivity) {
     return (
       <div className="py-10 text-center">
         <p className="text-[13px] text-[#9A9A98]">No new opportunities yet.</p>
@@ -757,6 +879,16 @@ function OpportunitiesTab({ candidateId, onInterested }) {
         <div>
           <p className="text-[11px] font-normal text-[#9A9A98] mb-2 mt-4">Responded</p>
           <div className="space-y-1">{responded.map(renderCard)}</div>
+        </div>
+      )}
+      {hasActivity && (
+        <div>
+          <p className="text-[11px] font-normal text-[#9A9A98] mb-2 mt-4">Updates</p>
+          <div className="space-y-1" data-testid="activity-notifications-list">
+            {notifications.map((n) => (
+              <ActivityNotificationCard key={n.id} notif={n} onRead={handleMarkRead} />
+            ))}
+          </div>
         </div>
       )}
     </div>

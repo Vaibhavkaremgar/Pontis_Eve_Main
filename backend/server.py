@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from openai import AsyncOpenAI
 import pypdf
 import io
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -353,6 +354,18 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
     return cid
 
 
+# ---------- Semantic matching helper ----------
+
+async def _trigger_matching(candidate_id: str) -> None:
+    """Fire-and-forget: refresh semantic job matches for a candidate."""
+    try:
+        from candidate_job_matching_service import refresh_candidate_job_matches
+        candidate = await _get_candidate_row(candidate_id)
+        await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
+    except Exception as e:
+        logger.warning("[matching] Failed for candidate %s: %s", candidate_id, e)
+
+
 # ---------- Routes ----------
 
 @api_router.get("/")
@@ -379,6 +392,8 @@ async def parse_resume(file: UploadFile = File(...)):
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
     cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", force_new=True)
+
+    asyncio.ensure_future(_trigger_matching(cid))
 
     profile = _normalize_for_frontend({**parsed, "id": cid})
     profile["_meta"] = {"used_ocr": used_ocr}
@@ -445,6 +460,8 @@ async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
     await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", existing_id=candidate_id)
+
+    asyncio.ensure_future(_trigger_matching(candidate_id))
 
     profile = _normalize_for_frontend({**parsed, "id": candidate_id})
     return {"status": "replaced", "filename": file.filename, "profile": profile}
@@ -739,6 +756,7 @@ async def chat(request: ChatRequest):
     if profile_updates and request.candidate_id:
         try:
             await _apply_profile_updates(request.candidate_id, profile_updates)
+            asyncio.ensure_future(_trigger_matching(request.candidate_id))
         except Exception as e:
             logger.warning("Profile update failed: %s", e)
             profile_updates = None
@@ -789,23 +807,32 @@ async def _ensure_voice_intake_table():
         await db.commit()
 
 
-ADD_TRACKED_AT_COLUMN = """
-ALTER TABLE candidate_job_recommendations
-ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMPTZ NULL
-"""
-
-
 async def _ensure_schema():
+    """Only manages tables not covered by Alembic (voice intake).
+    Production schema (adam_event_id, eve_outbound_events) is managed by Alembic.
+    """
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
-        await db.execute(text(ADD_TRACKED_AT_COLUMN))
+        await db.execute(text("""
+            ALTER TABLE candidate_job_recommendations
+            ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMPTZ NULL
+        """))
         await db.commit()
 
 
 @app.on_event("startup")
 async def on_startup():
     await _ensure_schema()
+    asyncio.ensure_future(_retry_worker())
+    from app.job_ingestion.scheduler import start_scheduler
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    from app.job_ingestion.scheduler import stop_scheduler
+    stop_scheduler()
 
 # ---------- Voice extraction prompt ----------
 
@@ -1113,6 +1140,8 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     logger.info("Voice intake completed for candidate %s (intake %s)", request.candidate_id, intake_id)
 
+    asyncio.ensure_future(_trigger_matching(request.candidate_id))
+
     # Return updated profile so dashboard can refresh immediately
     updated_candidate = await _get_candidate_row(request.candidate_id)
     updated_profile = _normalize_for_frontend(updated_candidate)
@@ -1194,12 +1223,14 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
     Store the candidate's interest/rejection for a specific opportunity.
     Enforces candidate_id ownership — a candidate cannot respond on behalf of another.
     Prevents duplicate responses.
+    On first response, durably enqueues an eve_outbound_events row and triggers delivery to Adam.
     """
     await _get_candidate_row(candidate_id)
+
     async with SessionLocal() as db:
         row = await db.execute(
             text("""
-                SELECT id, candidate_response
+                SELECT id, candidate_response, adam_event_id, job_id, agency_id
                 FROM recruiter_interest_requests
                 WHERE id = :rid AND candidate_id = :cid
                 LIMIT 1
@@ -1211,6 +1242,8 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
             raise HTTPException(status_code=404, detail="Opportunity not found.")
         if rec["candidate_response"] is not None:
             return {"status": "already_responded", "candidate_response": rec["candidate_response"]}
+
+        # Update candidate response state (existing logic — unchanged)
         await db.execute(
             text("""
                 UPDATE recruiter_interest_requests
@@ -1222,21 +1255,45 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
             {"resp": body.response, "rid": rec_id, "cid": candidate_id},
         )
         if body.response == "interested":
-            job_row = await db.execute(
-                text("SELECT job_id FROM recruiter_interest_requests WHERE id = :rid LIMIT 1"),
-                {"rid": rec_id},
-            )
-            job_id_row = job_row.fetchone()
-            if job_id_row and job_id_row[0]:
+            if rec["job_id"]:
                 await db.execute(
                     text("""
                         UPDATE candidate_job_recommendations
                         SET tracked_at = now()
                         WHERE candidate_id = :cid AND job_id = :jid AND tracked_at IS NULL
                     """),
-                    {"cid": candidate_id, "jid": str(job_id_row[0])},
+                    {"cid": candidate_id, "jid": str(rec["job_id"])},
                 )
+
+        # Enqueue outbound event to Adam — only if adam_event_id is present
+        eve_event_id: Optional[str] = None
+        if rec["adam_event_id"] and rec["job_id"] and rec["agency_id"]:
+            eve_event_id = str(uuid.uuid4())
+            await db.execute(
+                text("""
+                    INSERT INTO eve_outbound_events
+                        (eve_event_id, adam_event_id, candidate_id, job_id, agency_id,
+                         response, status, attempt_count, next_retry_at, created_at)
+                    VALUES
+                        (:eid, :aeid, :cid, :jid, :aid,
+                         :resp, 'pending', 0, now(), now())
+                """),
+                {
+                    "eid": eve_event_id,
+                    "aeid": str(rec["adam_event_id"]),
+                    "cid": candidate_id,
+                    "jid": str(rec["job_id"]),
+                    "aid": str(rec["agency_id"]),
+                    "resp": body.response,
+                },
+            )
+
         await db.commit()
+
+    # Trigger immediate delivery attempt (fire-and-forget; retry worker handles failures)
+    if eve_event_id:
+        asyncio.ensure_future(_attempt_delivery(eve_event_id))
+
     return {"status": "ok", "candidate_response": body.response}
 
 
@@ -1244,8 +1301,24 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
 
 @api_router.get("/candidate/{candidate_id}/jobs")
 async def get_candidate_jobs(candidate_id: str):
-    """Return Adam's recommendations for this candidate, joined with job_descriptions."""
-    await _get_candidate_row(candidate_id)
+    """Return semantic job recommendations for this candidate, joined with job_descriptions."""
+    candidate = await _get_candidate_row(candidate_id)
+
+    # If no recommendations exist yet, run matching synchronously so the first load is useful
+    async with SessionLocal() as db:
+        count_row = await db.execute(
+            text("SELECT COUNT(*) FROM candidate_job_recommendations WHERE candidate_id = :cid"),
+            {"cid": candidate_id},
+        )
+        rec_count = count_row.scalar() or 0
+
+    if rec_count == 0:
+        try:
+            from candidate_job_matching_service import refresh_candidate_job_matches
+            await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
+        except Exception as e:
+            logger.warning("[matching] On-demand matching failed for %s: %s", candidate_id, e)
+
     async with SessionLocal() as db:
         rows = await db.execute(
             text("""
@@ -1256,6 +1329,7 @@ async def get_candidate_jobs(candidate_id: str):
                     cjr.recommendation_rank,
                     cjr.match_reason,
                     cjr.tracked_at,
+                    cjr.applied_at,
                     cjr.hidden_at,
                     jd.title,
                     jd.company_name,
@@ -1264,7 +1338,8 @@ async def get_candidate_jobs(candidate_id: str):
                     jd.description,
                     jd.requirements,
                     jd.skills,
-                    jd.company_logo_url
+                    jd.company_logo_url,
+                    jd.job_url
                 FROM candidate_job_recommendations cjr
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
@@ -1290,6 +1365,8 @@ async def get_candidate_jobs(candidate_id: str):
             "recommendation_rank": r["recommendation_rank"],
             "match_reason": r["match_reason"],
             "tracked": r["tracked_at"] is not None,
+            "applied": r["applied_at"] is not None,
+            "job_url": r["job_url"] or None,
         }
         for r in results
     ]
@@ -1398,6 +1475,30 @@ async def dismiss_job(candidate_id: str, rec_id: str):
     return {"status": "dismissed"}
 
 
+@api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/apply")
+async def apply_job(candidate_id: str, rec_id: str):
+    """Record application initiation: sets applied_at and tracked_at."""
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT id, job_id FROM candidate_job_recommendations WHERE id = :rid AND candidate_id = :cid LIMIT 1"),
+            {"rid": rec_id, "cid": candidate_id},
+        )
+        rec = row.mappings().fetchone()
+        if not rec:
+            raise HTTPException(status_code=404, detail="Recommendation not found.")
+        await db.execute(
+            text("""
+                UPDATE candidate_job_recommendations
+                SET applied_at = now(), tracked_at = COALESCE(tracked_at, now())
+                WHERE id = :rid AND candidate_id = :cid
+            """),
+            {"rid": rec_id, "cid": candidate_id},
+        )
+        await db.commit()
+    return {"status": "applied"}
+
+
 # ---------- Vapi browser config endpoint ----------
 
 @api_router.get("/config/vapi")
@@ -1492,6 +1593,481 @@ async def linkedin_callback(code: str, state: str):
         "candidate_id": candidate_id,
         "is_returning": is_returning,
     }
+
+
+# ---------- Service-to-service auth ----------
+
+# Adam → Eve: Adam must present this token
+EVE_INTERNAL_TOKEN = os.environ.get("EVE_INTERNAL_TOKEN", "")
+# Eve → Adam: Eve presents this token when calling Adam
+ADAM_INTERNAL_TOKEN = os.environ.get("ADAM_INTERNAL_TOKEN", "")
+
+
+def _verify_eve_token(authorization: str = "") -> None:
+    """Verify inbound requests from Adam (Adam → Eve direction)."""
+    if not EVE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="EVE_INTERNAL_TOKEN not configured")
+    if not authorization.startswith("Bearer ") or authorization[7:] != EVE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ---------- Adam → Eve: candidate notification (slot booking / second round) ----------
+
+class CandidateNotificationIn(BaseModel):
+    event_id: str
+    candidate_id: str
+    job_id: str
+    agency_id: str
+    notification_type: Literal["interview_slot_booking", "second_round_invite"]
+    title: str
+    message: str
+    booking_url: Optional[str] = None
+    expires_at: Optional[str] = None
+    round_name: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    meeting_url: Optional[str] = None
+    location: Optional[str] = None
+    instructions: Optional[str] = None
+
+
+@api_router.post("/internal/candidate-notification", status_code=201)
+async def internal_candidate_notification(
+    body: CandidateNotificationIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Adam → Eve: create a candidate-facing notification for slot booking or second round.
+    Idempotent on event_id.
+    """
+    _verify_eve_token(authorization or "")
+
+    async with SessionLocal() as db:
+        # Idempotency check
+        existing = await db.execute(
+            text("SELECT id FROM candidate_activity_feed WHERE event_id = :eid LIMIT 1"),
+            {"eid": body.event_id},
+        )
+        row = existing.fetchone()
+        if row:
+            return {"status": "duplicate", "notification_id": str(row[0])}
+
+        # Validate candidate
+        cand = await db.execute(
+            text("SELECT id FROM candidates WHERE id = :cid LIMIT 1"),
+            {"cid": body.candidate_id},
+        )
+        if not cand.fetchone():
+            raise HTTPException(status_code=404, detail="candidate not found")
+
+        # Validate job
+        job = await db.execute(
+            text("SELECT id, agency_id FROM job_descriptions WHERE id = :jid LIMIT 1"),
+            {"jid": body.job_id},
+        )
+        job_row = job.mappings().fetchone()
+        if not job_row:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Validate agency
+        agency = await db.execute(
+            text("SELECT id FROM agencies WHERE id = :aid LIMIT 1"),
+            {"aid": body.agency_id},
+        )
+        if not agency.fetchone():
+            raise HTTPException(status_code=404, detail="agency not found")
+
+        # Validate job belongs to agency
+        if str(job_row["agency_id"]) != str(body.agency_id):
+            raise HTTPException(status_code=422, detail="job does not belong to agency")
+
+        # Build type-specific metadata
+        if body.notification_type == "interview_slot_booking":
+            metadata = {k: v for k, v in {
+                "booking_url": body.booking_url,
+                "expires_at": body.expires_at,
+            }.items() if v is not None}
+        else:
+            metadata = {k: v for k, v in {
+                "round_name": body.round_name,
+                "scheduled_at": body.scheduled_at,
+                "meeting_url": body.meeting_url,
+                "location": body.location,
+                "instructions": body.instructions,
+            }.items() if v is not None}
+
+        notif_id = str(uuid.uuid4())
+        await db.execute(
+            text("""
+                INSERT INTO candidate_activity_feed
+                    (id, candidate_id, activity_type, title, description,
+                     metadata, is_read, event_id, created_at)
+                VALUES
+                    (:id, :cid, :atype, :title, :desc,
+                     CAST(:meta AS jsonb), FALSE, :eid, now())
+            """),
+            {
+                "id": notif_id,
+                "cid": body.candidate_id,
+                "atype": body.notification_type,
+                "title": body.title,
+                "desc": body.message,
+                "meta": json.dumps(metadata),
+                "eid": body.event_id,
+            },
+        )
+        await db.commit()
+
+    logger.info("[internal] candidate-notification created id=%s type=%s", notif_id, body.notification_type)
+    return {"status": "created", "notification_id": notif_id}
+
+
+@api_router.get("/candidate/{candidate_id}/notifications")
+async def get_candidate_notifications(candidate_id: str):
+    """Return candidate_activity_feed entries for this candidate, newest first."""
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        rows = await db.execute(
+            text("""
+                SELECT id, activity_type, title, description, metadata, is_read, event_id, created_at
+                FROM candidate_activity_feed
+                WHERE candidate_id = :cid
+                ORDER BY created_at DESC
+            """),
+            {"cid": candidate_id},
+        )
+        results = rows.mappings().fetchall()
+    return [
+        {
+            "id": str(r["id"]),
+            "activity_type": r["activity_type"],
+            "title": r["title"],
+            "description": r["description"],
+            "metadata": r["metadata"] or {},
+            "is_read": r["is_read"],
+            "event_id": str(r["event_id"]) if r["event_id"] else None,
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in results
+    ]
+
+
+@api_router.post("/candidate/{candidate_id}/notifications/{notif_id}/read")
+async def mark_notification_read(candidate_id: str, notif_id: str):
+    """Mark a candidate_activity_feed entry as read."""
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        result = await db.execute(
+            text("SELECT id FROM candidate_activity_feed WHERE id = :nid AND candidate_id = :cid LIMIT 1"),
+            {"nid": notif_id, "cid": candidate_id},
+        )
+        if not result.fetchone():
+            raise HTTPException(status_code=404, detail="notification not found")
+        await db.execute(
+            text("UPDATE candidate_activity_feed SET is_read = TRUE WHERE id = :nid AND candidate_id = :cid"),
+            {"nid": notif_id, "cid": candidate_id},
+        )
+        await db.commit()
+    return {"status": "ok"}
+
+
+# ---------- Adam → Eve: recruiter interest ----------
+
+class RecruiterInterestIn(BaseModel):
+    adam_event_id: str          # UUID — idempotency key from Adam
+    candidate_id: str           # candidates.id UUID
+    job_id: str                 # job_descriptions.id UUID
+    agency_id: str              # agencies.id UUID
+    recruiter_user_id: Optional[str] = None
+    recruiter_message: Optional[str] = None
+
+
+@api_router.post("/internal/recruiter-interest", status_code=201)
+async def internal_recruiter_interest(
+    body: RecruiterInterestIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Adam → Eve: notify Eve that a recruiter is interested in a candidate.
+    Validates candidate/job/agency existence and their relationship.
+    Idempotent on adam_event_id.
+    """
+    _verify_eve_token(authorization or "")
+
+    async with SessionLocal() as db:
+        # Idempotency check first (cheap)
+        existing = await db.execute(
+            text("SELECT id FROM recruiter_interest_requests WHERE adam_event_id = :eid LIMIT 1"),
+            {"eid": body.adam_event_id},
+        )
+        row = existing.fetchone()
+        if row:
+            return {"status": "duplicate", "rir_id": str(row[0])}
+
+        # Validate candidate exists
+        cand = await db.execute(
+            text("SELECT id FROM candidates WHERE id = :cid LIMIT 1"),
+            {"cid": body.candidate_id},
+        )
+        if not cand.fetchone():
+            raise HTTPException(status_code=404, detail="candidate not found")
+
+        # Validate job exists
+        job = await db.execute(
+            text("SELECT id, agency_id FROM job_descriptions WHERE id = :jid LIMIT 1"),
+            {"jid": body.job_id},
+        )
+        job_row = job.mappings().fetchone()
+        if not job_row:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Validate agency exists
+        agency = await db.execute(
+            text("SELECT id FROM agencies WHERE id = :aid LIMIT 1"),
+            {"aid": body.agency_id},
+        )
+        if not agency.fetchone():
+            raise HTTPException(status_code=404, detail="agency not found")
+
+        # Validate job belongs to agency
+        if str(job_row["agency_id"]) != str(body.agency_id):
+            raise HTTPException(status_code=422, detail="job does not belong to agency")
+
+        rir_id = str(uuid.uuid4())
+        await db.execute(
+            text("""
+                INSERT INTO recruiter_interest_requests
+                    (id, candidate_id, job_id, agency_id, recruiter_user_id,
+                     recruiter_message, request_status, adam_event_id,
+                     recruiter_requested_at, created_at, updated_at)
+                VALUES
+                    (:id, :cid, :jid, :aid, :ruid,
+                     :msg, 'pending', :eid,
+                     now(), now(), now())
+            """),
+            {
+                "id": rir_id,
+                "cid": body.candidate_id,
+                "jid": body.job_id,
+                "aid": body.agency_id,
+                "ruid": body.recruiter_user_id,
+                "msg": body.recruiter_message,
+                "eid": body.adam_event_id,
+            },
+        )
+        await db.commit()
+
+    logger.info("[internal] recruiter-interest created rir_id=%s adam_event_id=%s", rir_id, body.adam_event_id)
+    return {"status": "created", "rir_id": rir_id}
+
+
+# ---------- Eve → Adam: candidate response ----------
+
+ADAM_URL = os.environ.get("ADAM_INTERNAL_URL", os.environ.get("DASHBOARD_INTERNAL_URL", "")).rstrip("/")
+
+# Retry schedule in seconds: attempts 1-5
+_RETRY_DELAYS = [10, 30, 120, 600, 1800]
+_MAX_ATTEMPTS = 5
+
+
+class CandidateResponseIn(BaseModel):
+    eve_event_id: str           # UUID — idempotency key from Eve
+    adam_event_id: str          # original Adam event UUID
+    candidate_id: str           # candidates.id UUID
+    job_id: str                 # job_descriptions.id UUID
+    agency_id: str              # agencies.id UUID
+    response: Literal["interested", "not_interested"]
+
+
+@api_router.post("/internal/candidate-response", status_code=200)
+async def internal_candidate_response(
+    body: CandidateResponseIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Internal: enqueue a candidate response for delivery to Adam.
+    Idempotent on eve_event_id.
+    """
+    _verify_eve_token(authorization or "")
+
+    async with SessionLocal() as db:
+        # Idempotency check
+        existing = await db.execute(
+            text("SELECT id, status FROM eve_outbound_events WHERE eve_event_id = :eid LIMIT 1"),
+            {"eid": body.eve_event_id},
+        )
+        row = existing.mappings().fetchone()
+        if row:
+            return {"status": "duplicate", "delivery_status": row["status"]}
+
+        # Validate candidate
+        cand = await db.execute(
+            text("SELECT id FROM candidates WHERE id = :cid LIMIT 1"),
+            {"cid": body.candidate_id},
+        )
+        if not cand.fetchone():
+            raise HTTPException(status_code=404, detail="candidate not found")
+
+        # Validate job
+        job = await db.execute(
+            text("SELECT id, agency_id FROM job_descriptions WHERE id = :jid LIMIT 1"),
+            {"jid": body.job_id},
+        )
+        job_row = job.mappings().fetchone()
+        if not job_row:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Validate agency
+        agency = await db.execute(
+            text("SELECT id FROM agencies WHERE id = :aid LIMIT 1"),
+            {"aid": body.agency_id},
+        )
+        if not agency.fetchone():
+            raise HTTPException(status_code=404, detail="agency not found")
+
+        # Validate job/agency relationship
+        if str(job_row["agency_id"]) != str(body.agency_id):
+            raise HTTPException(status_code=422, detail="job does not belong to agency")
+
+        # Create outbound event (pending)
+        await db.execute(
+            text("""
+                INSERT INTO eve_outbound_events
+                    (eve_event_id, adam_event_id, candidate_id, job_id, agency_id,
+                     response, status, attempt_count, next_retry_at, created_at)
+                VALUES
+                    (:eid, :aeid, :cid, :jid, :aid,
+                     :resp, 'pending', 0, now(), now())
+            """),
+            {
+                "eid": body.eve_event_id,
+                "aeid": body.adam_event_id,
+                "cid": body.candidate_id,
+                "jid": body.job_id,
+                "aid": body.agency_id,
+                "resp": body.response,
+            },
+        )
+        await db.commit()
+
+    # Attempt immediate delivery
+    await _attempt_delivery(body.eve_event_id)
+    return {"status": "accepted"}
+
+
+async def _attempt_delivery(eve_event_id: str) -> bool:
+    """Try to deliver one outbound event to Adam. Returns True on success."""
+    if not ADAM_URL or not ADAM_INTERNAL_TOKEN:
+        logger.warning("[retry] ADAM_URL or ADAM_INTERNAL_TOKEN not configured")
+        return False
+
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("""
+                SELECT eve_event_id, adam_event_id, candidate_id, job_id, agency_id,
+                       response, attempt_count
+                FROM eve_outbound_events
+                WHERE eve_event_id = :eid
+                LIMIT 1
+            """),
+            {"eid": eve_event_id},
+        )
+        event = row.mappings().fetchone()
+        if not event:
+            return False
+
+    payload = {
+        "eve_event_id": str(event["eve_event_id"]),
+        "adam_event_id": str(event["adam_event_id"]),
+        "candidate_id": str(event["candidate_id"]),
+        "job_id": str(event["job_id"]),
+        "agency_id": str(event["agency_id"]),
+        "response": event["response"],
+    }
+    headers = {"Authorization": f"Bearer {ADAM_INTERNAL_TOKEN}"}
+    new_attempt = event["attempt_count"] + 1
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{ADAM_URL}/api/internal/candidate-response",
+                json=payload,
+                headers=headers,
+            )
+        if r.status_code in (200, 201, 409):
+            async with SessionLocal() as db:
+                await db.execute(
+                    text("""
+                        UPDATE eve_outbound_events
+                        SET status = 'delivered', attempt_count = :ac,
+                            delivered_at = now(), last_error = NULL
+                        WHERE eve_event_id = :eid
+                    """),
+                    {"ac": new_attempt, "eid": eve_event_id},
+                )
+                await db.commit()
+            logger.info("[delivery] delivered eve_event_id=%s attempt=%d", eve_event_id, new_attempt)
+            return True
+        error = f"HTTP {r.status_code}"
+    except Exception as e:
+        error = str(e)
+
+    # Delivery failed — schedule next retry or mark failed
+    if new_attempt >= _MAX_ATTEMPTS:
+        async with SessionLocal() as db:
+            await db.execute(
+                text("""
+                    UPDATE eve_outbound_events
+                    SET status = 'failed', attempt_count = :ac, last_error = :err
+                    WHERE eve_event_id = :eid
+                """),
+                {"ac": new_attempt, "err": error, "eid": eve_event_id},
+            )
+            await db.commit()
+        logger.error("[delivery] permanently failed eve_event_id=%s after %d attempts: %s",
+                     eve_event_id, new_attempt, error)
+    else:
+        delay = _RETRY_DELAYS[new_attempt - 1] if new_attempt - 1 < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+        async with SessionLocal() as db:
+            await db.execute(
+                text("""
+                    UPDATE eve_outbound_events
+                    SET attempt_count = :ac, last_error = :err,
+                        next_retry_at = now() + :delay * interval '1 second'
+                    WHERE eve_event_id = :eid
+                """),
+                {"ac": new_attempt, "err": error, "delay": delay, "eid": eve_event_id},
+            )
+            await db.commit()
+        logger.warning("[delivery] failed eve_event_id=%s attempt=%d next_retry_in=%ds error=%s",
+                       eve_event_id, new_attempt, delay, error)
+    return False
+
+
+async def _retry_worker() -> None:
+    """Background loop: retries pending outbound events on schedule. Recovers after restart."""
+    logger.info("[retry] worker started")
+    while True:
+        try:
+            async with SessionLocal() as db:
+                rows = await db.execute(
+                    text("""
+                        SELECT eve_event_id FROM eve_outbound_events
+                        WHERE status = 'pending'
+                          AND next_retry_at <= now()
+                          AND attempt_count < :max_attempts
+                        ORDER BY next_retry_at
+                        LIMIT 50
+                    """),
+                    {"max_attempts": _MAX_ATTEMPTS},
+                )
+                due = [str(r[0]) for r in rows.fetchall()]
+
+            for eid in due:
+                await _attempt_delivery(eid)
+        except Exception as e:
+            logger.warning("[retry] worker error: %s", e)
+
+        await asyncio.sleep(5)
 
 
 app.include_router(api_router)

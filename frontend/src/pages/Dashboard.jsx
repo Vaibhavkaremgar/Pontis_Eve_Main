@@ -7,6 +7,7 @@ import { Bell } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import ChatHub from "../components/ChatHub";
 import LivingProfile from "../components/LivingProfile";
+import SwipeJobDeck from "../components/SwipeJobCard";
 import {
   MOCK_RECENT_ACTIVITY,
   QUICK_ACTIONS,
@@ -191,17 +192,23 @@ function Dashboard() {
   ]);
 
   // Opportunities: count pending (no candidate_response) recruiter-interest notifications
+  // plus unread candidate_activity_feed entries
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
   React.useEffect(() => {
     if (!candidateId) return;
-    const fetchCount = () =>
-      axios
+    const fetchCount = () => {
+      const oppPromise = axios
         .get(`${API}/candidate/${candidateId}/opportunities`)
-        .then((res) => {
-          const pending = (res.data || []).filter((o) => !o.candidate_response).length;
-          setOpportunitiesCount(pending);
-        })
-        .catch(() => {});
+        .then((res) => (res.data || []).filter((o) => !o.candidate_response).length)
+        .catch(() => 0);
+      const notifPromise = axios
+        .get(`${API}/candidate/${candidateId}/notifications`)
+        .then((res) => (res.data || []).filter((n) => !n.is_read).length)
+        .catch(() => 0);
+      Promise.all([oppPromise, notifPromise]).then(([oppCount, notifCount]) => {
+        setOpportunitiesCount(oppCount + notifCount);
+      });
+    };
     fetchCount();
     const interval = setInterval(fetchCount, 30000);
     return () => clearInterval(interval);
@@ -225,16 +232,25 @@ function Dashboard() {
   const [selectedJob, setSelectedJob] = React.useState(null);
   const [sending, setSending] = React.useState(false);
 
+  const [jobsLoading, setJobsLoading] = React.useState(true);
+  const [jobsError, setJobsError] = React.useState(false);
+  const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat"
+
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback(() => {
     if (!candidateId) return;
+    setJobsError(false);
     axios
       .get(`${API}/candidate/${candidateId}/jobs`)
       .then((res) => {
         setAvailableJobs(res.data || []);
         setSelectedJob((prev) => prev ?? (res.data?.[0] || null));
+        setJobsLoading(false);
       })
-      .catch(() => {});
+      .catch(() => {
+        setJobsError(true);
+        setJobsLoading(false);
+      });
   }, [candidateId]);
 
   React.useEffect(() => {
@@ -407,14 +423,68 @@ function Dashboard() {
         <ResizeHandle testId="resize-handle-left" />
 
         <Panel id="center-panel" order={2} defaultSize={32} minSize={22} className="h-full">
-          <ChatHub
-            chats={chats}
-            inputValue={inputValue}
-            setInputValue={setInputValue}
-            onSend={handleSendMessage}
-            sending={sending}
-            quickActions={QUICK_ACTIONS}
-          />
+          <div className="h-full flex flex-col bg-[#FBFBF9]">
+            {/* Toggle bar */}
+            <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
+              <button
+                onClick={() => setCenterView("swipe")}
+                className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
+                  centerView === "swipe"
+                    ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
+                    : "text-[#9A9A98] hover:text-[#4A4A48]"
+                }`}
+              >
+                Jobs for you
+              </button>
+              <button
+                onClick={() => setCenterView("chat")}
+                className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
+                  centerView === "chat"
+                    ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
+                    : "text-[#9A9A98] hover:text-[#4A4A48]"
+                }`}
+              >
+                Chat with Eve
+              </button>
+            </div>
+
+            {centerView === "swipe" ? (
+              jobsLoading ? (
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="flex items-center gap-2 text-[#9A9A98]">
+                    <span className="w-2 h-2 rounded-full bg-[#B5B5B3] animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-[#B5B5B3] animate-pulse" style={{ animationDelay: "120ms" }} />
+                    <span className="w-2 h-2 rounded-full bg-[#B5B5B3] animate-pulse" style={{ animationDelay: "240ms" }} />
+                  </div>
+                </div>
+              ) : jobsError ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
+                  <p className="text-[14px] text-[#1F1F1F]">Couldn't load recommendations</p>
+                  <button
+                    onClick={fetchJobs}
+                    className="text-[12.5px] text-[#4A4A48] underline underline-offset-2 hover:text-[#1F1F1F]"
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : (
+                <SwipeJobDeck
+                  jobs={availableJobs}
+                  candidateId={candidateId}
+                  onJobsChange={fetchJobs}
+                />
+              )
+            ) : (
+              <ChatHub
+                chats={chats}
+                inputValue={inputValue}
+                setInputValue={setInputValue}
+                onSend={handleSendMessage}
+                sending={sending}
+                quickActions={QUICK_ACTIONS}
+              />
+            )}
+          </div>
         </Panel>
 
         <ResizeHandle testId="resize-handle-right" subtle />
