@@ -112,7 +112,7 @@ starlette==0.37.2
 stripe==14.4.1
 tenacity==9.1.4
 tiktoken==0.13.0
-tokenizers==0.23.1
+tokenizers==0.14.1
 tqdm==4.70.0
 typer==0.27.1
 typing-inspection==0.4.2
@@ -128,6 +128,7 @@ zipp==4.1.0
 SQLAlchemy==2.0.51
 asyncpg==0.31.0
 alembic==1.13.3
+transformers==4.35.2
 sentence-transformers==3.0.1
 qdrant-client==1.9.1
 APScheduler==3.11.3
