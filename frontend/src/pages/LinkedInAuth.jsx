@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
+import { loadOnboardingState } from "../lib/onboardingStorage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -18,53 +18,6 @@ export default function LinkedInAuth() {
     } else if (stored.linkedInAuthenticated && !stored.candidateId) {
       navigate("/onboarding", { replace: true });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Handle OAuth callback: ?code=...&state=...
-  React.useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    const state = params.get("state");
-    const storedState = sessionStorage.getItem("linkedin_oauth_state");
-
-    if (!code) return;
-
-    if (state !== storedState) {
-      setError("Authentication failed. Please try again.");
-      return;
-    }
-
-    // Clear state and URL immediately to prevent re-processing on reload
-    sessionStorage.removeItem("linkedin_oauth_state");
-    window.history.replaceState({}, document.title, "/");
-
-    setLoading(true);
-    fetch(`${BACKEND_URL}/api/auth/linkedin/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.error) throw new Error(data.error);
-        const stored = loadOnboardingState();
-        if (!data.is_returning) {
-          // New candidate: clear any stale candidateId/parsedProfile from a previous session
-          clearOnboardingState();
-        }
-        saveOnboardingState({
-          ...loadOnboardingState(),
-          linkedInProfile: data.profile,
-          candidateId: data.candidate_id ?? null,
-          linkedInAuthenticated: true,
-        });
-        if (data.is_returning) {
-          navigate("/dashboard");
-        } else {
-          navigate("/onboarding");
-        }
-      })
-      .catch((err) => {
-        setError(err.message || "Sign-in failed. Please try again.");
-        setLoading(false);
-      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -1514,15 +1514,13 @@ async def get_vapi_config():
 # ---------- LinkedIn OAuth ----------
 
 import secrets
+import urllib.parse
 import httpx
 
 LINKEDIN_CLIENT_ID = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
-FRONTEND_URL = os.environ.get(
-    "FRONTEND_URL",
-    "http://localhost:3000"
-)
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
 
 @api_router.get("/auth/linkedin/init")
@@ -1530,14 +1528,14 @@ async def linkedin_init():
     if not LINKEDIN_CLIENT_ID:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     state = secrets.token_urlsafe(16)
-    auth_url = (
-        "https://www.linkedin.com/oauth/v2/authorization"
-        f"?response_type=code"
-        f"&client_id={LINKEDIN_CLIENT_ID}"
-        f"&redirect_uri={LINKEDIN_REDIRECT_URI}"
-        f"&state={state}"
-        f"&scope=openid%20profile%20email"
-    )
+    params = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": LINKEDIN_CLIENT_ID,
+        "redirect_uri": LINKEDIN_REDIRECT_URI,
+        "state": state,
+        "scope": "openid profile email",
+    })
+    auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{params}"
     return {"auth_url": auth_url, "state": state}
 
 
@@ -1547,7 +1545,6 @@ async def linkedin_callback(code: str, state: str):
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
 
     async with httpx.AsyncClient() as client:
-        # Exchange code for access token
         token_resp = await client.post(
             "https://www.linkedin.com/oauth/v2/accessToken",
             data={
@@ -1568,10 +1565,8 @@ async def linkedin_callback(code: str, state: str):
             print("CLIENT SECRET PRESENT:", bool(LINKEDIN_CLIENT_SECRET))
             print("==========================================")
             raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
-        token_data = token_resp.json()
-        access_token = token_data.get("access_token")
+        access_token = token_resp.json().get("access_token")
 
-        # Fetch profile via OpenID userinfo
         userinfo_resp = await client.get(
             "https://api.linkedin.com/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -1585,8 +1580,6 @@ async def linkedin_callback(code: str, state: str):
     email = userinfo.get("email", "")
     picture = userinfo.get("picture", "")
 
-    # Check if candidate already exists by email
-    is_returning = False
     candidate_id = None
     async with SessionLocal() as db:
         if email:
@@ -1597,23 +1590,19 @@ async def linkedin_callback(code: str, state: str):
             existing = row.fetchone()
             if existing:
                 candidate_id = str(existing[0])
-                is_returning = True
 
-    if is_returning:
-      redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+    if candidate_id:
+        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
     else:
-      import urllib.parse
-
-    profile_param = urllib.parse.quote_plus(
-        json.dumps({
-            "name": name,
-            "email": email,
-            "picture": picture,
-            "linkedin_id": linkedin_id,
-        })
-    )
-
-    redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
+        profile_param = urllib.parse.quote_plus(
+            json.dumps({
+                "name": name,
+                "email": email,
+                "picture": picture,
+                "linkedin_id": linkedin_id,
+            })
+        )
+        redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
 
     return RedirectResponse(url=redirect_url, status_code=302)
 
