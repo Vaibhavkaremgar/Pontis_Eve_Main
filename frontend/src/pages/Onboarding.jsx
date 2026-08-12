@@ -514,22 +514,33 @@ export default function Onboarding() {
   const navigate = useNavigate();
 
   // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
-  // Save to storage BEFORE reading persisted state so the guard sees it.
+  // Process the OAuth param synchronously so storage is ready before any effect runs.
   const linkedInProfileParam = searchParams.get("linkedin_profile");
   const isOAuthCallback = !!linkedInProfileParam;
-  if (linkedInProfileParam) {
-    try {
-      const profile = JSON.parse(decodeURIComponent(linkedInProfileParam));
-      saveOnboardingState({
-        ...loadOnboardingState(),
-        linkedInAuthenticated: true,
-        linkedInProfile: profile,
-        candidateId: null,
-      });
-    } catch (_) {}
-  }
 
-  const persisted = React.useMemo(() => loadOnboardingState(), []);
+  // useMemo runs synchronously during render — save to storage before effects fire.
+  const persisted = React.useMemo(() => {
+    if (linkedInProfileParam) {
+      try {
+        const profile = JSON.parse(decodeURIComponent(linkedInProfileParam));
+        const current = loadOnboardingState();
+        const next = {
+          ...current,
+          linkedInAuthenticated: true,
+          linkedInProfile: profile,
+          candidateId: null,
+        };
+        saveOnboardingState(next);
+        console.log("[LinkedIn] current URL:", window.location.href);
+        console.log("[LinkedIn] linkedin_profile exists:", true);
+        console.log("[LinkedIn] persisted state:", next);
+        return next;
+      } catch (_) {}
+    }
+    return loadOnboardingState();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [step, setStep] = React.useState(resumableStep(persisted));
 
   // Guard: must have gone through LinkedIn auth (either via storage or URL param)
@@ -541,6 +552,7 @@ export default function Onboarding() {
     }
     // Clean the URL after saving the param
     if (isOAuthCallback) {
+      console.log("[LinkedIn] redirecting to: /onboarding");
       navigate("/onboarding", { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -618,7 +630,12 @@ export default function Onboarding() {
 
   // Persist state whenever the shape changes
   React.useEffect(() => {
+    const current = loadOnboardingState();
     saveOnboardingState({
+      // Preserve auth fields — never let the persist effect wipe them
+      linkedInAuthenticated: current.linkedInAuthenticated,
+      linkedInProfile: current.linkedInProfile,
+      isOpenToMatches: current.isOpenToMatches,
       step,
       countryCode: phone.country.code,
       phoneDigits: phone.digits,

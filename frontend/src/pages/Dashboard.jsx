@@ -519,6 +519,9 @@ export default function DashboardGuard() {
 
   const candidateId = React.useMemo(() => {
     const fromUrl = searchParams.get("candidate_id");
+    console.log("[LinkedIn] current URL:", window.location.href);
+    console.log("[LinkedIn] candidate_id:", fromUrl);
+    console.log("[LinkedIn] persisted state:", loadOnboardingState());
     if (fromUrl) {
       const s = loadOnboardingState();
       saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl });
@@ -529,8 +532,8 @@ export default function DashboardGuard() {
 
   React.useEffect(() => {
     if (candidateId) {
-      // Clean the URL after saving the param
       if (searchParams.get("candidate_id")) {
+        console.log("[LinkedIn] redirecting to: /dashboard");
         navigate("/dashboard", { replace: true });
       }
       return;
