@@ -1560,8 +1560,13 @@ async def linkedin_callback(code: str, state: str):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_resp.status_code != 200:
-            print("LINKEDIN TOKEN ERROR:", token_resp.status_code)
-            print("LINKEDIN TOKEN RESPONSE:", token_resp.text)
+            print("========== LINKEDIN TOKEN ERROR ==========")
+            print("STATUS:", token_resp.status_code)
+            print("RESPONSE:", token_resp.text)
+            print("REDIRECT URI USED:", LINKEDIN_REDIRECT_URI)
+            print("CLIENT ID PRESENT:", bool(LINKEDIN_CLIENT_ID))
+            print("CLIENT SECRET PRESENT:", bool(LINKEDIN_CLIENT_SECRET))
+            print("==========================================")
             raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
         token_data = token_resp.json()
         access_token = token_data.get("access_token")
