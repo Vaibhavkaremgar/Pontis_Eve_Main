@@ -1519,6 +1519,10 @@ import httpx
 LINKEDIN_CLIENT_ID = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
+FRONTEND_URL = os.environ.get(
+    "FRONTEND_URL",
+    "http://localhost:3000"
+)
 
 
 @api_router.get("/auth/linkedin/init")
@@ -1556,6 +1560,8 @@ async def linkedin_callback(code: str, state: str):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_resp.status_code != 200:
+            print("LINKEDIN TOKEN ERROR:", token_resp.status_code)
+            print("LINKEDIN TOKEN RESPONSE:", token_resp.text)
             raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
         token_data = token_resp.json()
         access_token = token_data.get("access_token")
