@@ -13,7 +13,7 @@ import {
   QUICK_ACTIONS,
 } from "../mock";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -515,11 +515,28 @@ function Dashboard() {
 
 export default function DashboardGuard() {
   const navigate = useNavigate();
-  const candidateId = loadOnboardingState().candidateId ?? null;
+  const [searchParams] = useSearchParams();
+
+  const candidateId = React.useMemo(() => {
+    const fromUrl = searchParams.get("candidate_id");
+    if (fromUrl) {
+      const s = loadOnboardingState();
+      saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl });
+      return fromUrl;
+    }
+    return loadOnboardingState().candidateId ?? null;
+  }, [searchParams]);
 
   React.useEffect(() => {
-    if (!candidateId) navigate("/", { replace: true });
-  }, [candidateId, navigate]);
+    if (candidateId) {
+      // Clean the URL after saving the param
+      if (searchParams.get("candidate_id")) {
+        navigate("/dashboard", { replace: true });
+      }
+      return;
+    }
+    navigate("/", { replace: true });
+  }, [candidateId, navigate, searchParams]);
 
   if (!candidateId) return null;
   return <Dashboard />;

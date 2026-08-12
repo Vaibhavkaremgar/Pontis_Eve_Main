@@ -511,11 +511,12 @@ function StepBridge({ profile, voiceIntakeCompleted }) {
 
 export default function Onboarding() {
   const [searchParams] = useSearchParams();
-  const persisted = React.useMemo(() => loadOnboardingState(), []);
+  const navigate = useNavigate();
 
   // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
-  // Save to storage so the guard and downstream steps have the data.
+  // Save to storage BEFORE reading persisted state so the guard sees it.
   const linkedInProfileParam = searchParams.get("linkedin_profile");
+  const isOAuthCallback = !!linkedInProfileParam;
   if (linkedInProfileParam) {
     try {
       const profile = JSON.parse(decodeURIComponent(linkedInProfileParam));
@@ -528,14 +529,19 @@ export default function Onboarding() {
     } catch (_) {}
   }
 
+  const persisted = React.useMemo(() => loadOnboardingState(), []);
   const [step, setStep] = React.useState(resumableStep(persisted));
-  const navigate = useNavigate();
 
   // Guard: must have gone through LinkedIn auth (either via storage or URL param)
   React.useEffect(() => {
     const state = loadOnboardingState();
-    if (!state.linkedInAuthenticated && !linkedInProfileParam) {
+    if (!state.linkedInAuthenticated) {
       navigate("/", { replace: true });
+      return;
+    }
+    // Clean the URL after saving the param
+    if (isOAuthCallback) {
+      navigate("/onboarding", { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
