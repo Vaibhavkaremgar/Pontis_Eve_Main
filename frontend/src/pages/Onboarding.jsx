@@ -1,6 +1,6 @@
 import React from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast, Toaster } from "sonner";
 import {
@@ -510,13 +510,33 @@ function StepBridge({ profile, voiceIntakeCompleted }) {
 /* ---------- Main container ---------- */
 
 export default function Onboarding() {
+  const [searchParams] = useSearchParams();
   const persisted = React.useMemo(() => loadOnboardingState(), []);
+
+  // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
+  // Save to storage so the guard and downstream steps have the data.
+  const linkedInProfileParam = searchParams.get("linkedin_profile");
+  if (linkedInProfileParam) {
+    try {
+      const profile = JSON.parse(decodeURIComponent(linkedInProfileParam));
+      saveOnboardingState({
+        ...loadOnboardingState(),
+        linkedInAuthenticated: true,
+        linkedInProfile: profile,
+        candidateId: null,
+      });
+    } catch (_) {}
+  }
+
   const [step, setStep] = React.useState(resumableStep(persisted));
   const navigate = useNavigate();
 
-  // Guard: must have gone through LinkedIn auth
+  // Guard: must have gone through LinkedIn auth (either via storage or URL param)
   React.useEffect(() => {
-    if (!persisted.linkedInAuthenticated) navigate("/", { replace: true });
+    const state = loadOnboardingState();
+    if (!state.linkedInAuthenticated && !linkedInProfileParam) {
+      navigate("/", { replace: true });
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

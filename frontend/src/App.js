@@ -10,7 +10,6 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<LinkedInAuth />} />
-        <Route path="/auth/linkedin/callback" element={<LinkedInAuth />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="*" element={<Navigate to="/" replace />} />

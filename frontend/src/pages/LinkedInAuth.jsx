@@ -1,17 +1,49 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { loadOnboardingState } from "../lib/onboardingStorage";
+import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 export default function LinkedInAuth() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
 
-  // If already authenticated, skip the auth page
+  // Handle backend redirect landing on this page:
+  //   returning candidate → /?candidate_id=...
+  //   new candidate      → /?linkedin_profile=... (fallback if router sends here)
   React.useEffect(() => {
+    const candidateId = searchParams.get("candidate_id");
+    const linkedInProfile = searchParams.get("linkedin_profile");
+
+    if (candidateId) {
+      saveOnboardingState({
+        ...loadOnboardingState(),
+        linkedInAuthenticated: true,
+        candidateId,
+      });
+      navigate("/dashboard", { replace: true });
+      return;
+    }
+
+    if (linkedInProfile) {
+      try {
+        const profile = JSON.parse(decodeURIComponent(linkedInProfile));
+        clearOnboardingState();
+        saveOnboardingState({
+          ...loadOnboardingState(),
+          linkedInAuthenticated: true,
+          linkedInProfile: profile,
+          candidateId: null,
+        });
+      } catch (_) {}
+      navigate("/onboarding", { replace: true });
+      return;
+    }
+
+    // Already authenticated from a previous session
     const stored = loadOnboardingState();
     if (stored.linkedInAuthenticated && stored.candidateId) {
       navigate("/dashboard", { replace: true });
