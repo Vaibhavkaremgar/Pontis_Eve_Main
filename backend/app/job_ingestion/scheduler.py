@@ -11,10 +11,10 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 logger = logging.getLogger(__name__)
 
 PROGRESS_INTERVAL = 25
-SYNC_INTERVAL_HOURS = 6
+SYNC_INTERVAL_HOURS = int(os.environ.get("JOB_SYNC_INTERVAL_HOURS", "6"))
 
 _scheduler: AsyncIOScheduler | None = None
-_sync_lock = asyncio.Lock() if False else None  # initialised lazily in start_scheduler
+_sync_lock: asyncio.Lock | None = None
 
 
 def _get_session_local():
@@ -32,7 +32,7 @@ async def sync_jobs() -> None:
     SessionLocal = _get_session_local()
     collector = JobCollector()
 
-    logger.info("[job-sync] sync started")
+    logger.info("[job-scheduler] sync started")
 
     async with SessionLocal() as db:
         result = await db.execute(
@@ -44,7 +44,7 @@ async def sync_jobs() -> None:
         )
         companies = result.mappings().fetchall()
 
-    logger.info("[job-sync] %d active companies found", len(companies))
+    logger.info("[job-scheduler] %d active companies found", len(companies))
 
     for company in companies:
         company_id = company["id"]
@@ -52,16 +52,16 @@ async def sync_jobs() -> None:
         ats_type = company["ats_type"]
         identifier = company["identifier"]
 
-        logger.info("[job-sync] syncing company=%s ats=%s", company_name, ats_type)
+        logger.info("[job-scheduler] syncing company=%s ats=%s", company_name, ats_type)
 
         try:
             jobs = collector.collect_company_jobs(ats_type, identifier, company_name)
         except Exception as exc:
-            logger.error("[job-sync] failed to fetch jobs for company=%s: %s", company_name, exc, exc_info=True)
+            logger.error("[job-scheduler] failed to fetch jobs for company=%s: %s", company_name, exc, exc_info=True)
             continue
 
         total = len(jobs)
-        logger.info("[job-sync] fetched %d jobs for %s", total, company_name)
+        logger.info("[job-scheduler] fetched %d jobs for %s", total, company_name)
 
         processed = 0
         failed = 0
@@ -73,11 +73,11 @@ async def sync_jobs() -> None:
                     await upsert_ats_job(db, job)
                     processed += 1
                     if processed % PROGRESS_INTERVAL == 0:
-                        logger.info("[job-sync] processed %d/%d jobs for %s", processed, total, company_name)
+                        logger.info("[job-scheduler] processed %d/%d jobs for %s", processed, total, company_name)
                 except Exception as exc:
                     failed += 1
                     logger.error(
-                        "[job-sync] failed job id=%s title=%r for company=%s: %s",
+                        "[job-scheduler] failed job id=%s title=%r for company=%s: %s",
                         job_id, job.get("title"), company_name, exc,
                     )
                     try:
@@ -99,30 +99,34 @@ async def sync_jobs() -> None:
                     await db.commit()
                     synced_at_updated = True
                 except Exception as exc:
-                    logger.error("[job-sync] failed to update last_synced_at for company=%s: %s", company_name, exc)
+                    logger.error("[job-scheduler] failed to update last_synced_at for company=%s: %s", company_name, exc)
 
         logger.info(
-            "[job-sync] company=%s fetched=%d processed=%d failed=%d last_synced_at_updated=%s",
+            "[job-scheduler] company=%s fetched=%d processed=%d failed=%d last_synced_at_updated=%s",
             company_name, total, processed, failed, synced_at_updated,
         )
 
-    logger.info("[job-sync] sync completed")
+    logger.info("[job-scheduler] sync completed")
 
 
 async def _sync_jobs_guarded() -> None:
     """Wrapper that prevents overlapping runs."""
     if _sync_lock is None:
+        logger.warning("[job-scheduler] sync called before scheduler was started — skipping")
         return
     if _sync_lock.locked():
-        logger.info("[job-sync] previous sync still running — skipping this interval")
+        logger.info("[job-scheduler] previous sync still running — skipping this interval")
         return
     async with _sync_lock:
+        logger.info("[job-scheduler] Starting ATS job sync")
         await sync_jobs()
+        logger.info("[job-scheduler] Job sync completed")
+        logger.info("[job-scheduler] Next job sync in %d hours", SYNC_INTERVAL_HOURS)
 
 
 def _apscheduler_listener(event) -> None:
     if event.exception:
-        logger.error("[job-sync] scheduled run raised an exception: %s", event.exception)
+        logger.error("[job-scheduler] scheduled run raised an exception: %s", event.exception)
 
 
 def start_scheduler() -> None:
@@ -131,9 +135,11 @@ def start_scheduler() -> None:
 
     # Guard against uvicorn --reload spawning a second scheduler in the same process
     if os.environ.get("_JOB_SCHEDULER_STARTED") == str(os.getpid()):
-        logger.info("[job-sync] scheduler already started in this process — skipping")
+        logger.info("[job-scheduler] scheduler already started in this process — skipping")
         return
     os.environ["_JOB_SCHEDULER_STARTED"] = str(os.getpid())
+
+    logger.info("[job-scheduler] Starting scheduler")
 
     _sync_lock = asyncio.Lock()
 
@@ -147,7 +153,7 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     _scheduler.start()
-    logger.info("[job-sync] scheduler started — interval=%dh", SYNC_INTERVAL_HOURS)
+    logger.info("[job-scheduler] Next job sync scheduled in %d hours", SYNC_INTERVAL_HOURS)
 
     # Run once immediately without blocking startup
     asyncio.ensure_future(_sync_jobs_guarded())
@@ -158,7 +164,7 @@ def stop_scheduler() -> None:
     global _scheduler
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
-        logger.info("[job-sync] scheduler shut down")
+        logger.info("[job-scheduler] scheduler shut down")
     _scheduler = None
 
 
