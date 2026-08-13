@@ -17,7 +17,6 @@ function sanitizeHtml(str) {
 // For plain-text preview snippets (swipe card summary, job list card)
 function cleanText(str) {
   if (!str || typeof str !== "string") return "";
-  // Strip HTML tags for plain-text preview
   const stripped = str.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
   return stripped
     .split("\n")
@@ -26,6 +25,29 @@ function cleanText(str) {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// Extract 2–3 meaningful bullet points from responsibilities, requirements, or description
+function extractBullets(job) {
+  const source = job.responsibilities || job.requirements || job.description || "";
+  const text = cleanText(source);
+  if (!text) return [];
+
+  // Try splitting on list-like patterns first
+  const lines = text
+    .split(/\n|(?<=\.)\s+(?=[A-Z•\-])|[•·]\s*/)
+    .map((l) => l.replace(/^[-–—*•·\d.]+\s*/, "").trim())
+    .filter((l) => l.length > 20 && l.length < 160);
+
+  if (lines.length >= 2) return lines.slice(0, 3);
+
+  // Fallback: split into sentences
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 20 && s.length < 160);
+
+  return sentences.slice(0, 3);
 }
 
 function normalizeSkills(skills) {
@@ -215,8 +237,8 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
     ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
     : null;
 
-  const skills = normalizeSkills(job.skills).slice(0, 5);
-  const summary = cleanText(job.description);
+  const skills = normalizeSkills(job.skills).slice(0, 4);
+  const bullets = extractBullets(job);
 
   return (
     <motion.div
@@ -283,16 +305,21 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
             <p className="text-[12.5px] font-medium text-[#1F1F1F] mb-3">{job.salary}</p>
           )}
 
-          {skills.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-4">
-              {skills.map((sk) => <SkillPill key={sk} label={sk} />)}
-            </div>
+          {bullets.length > 0 && (
+            <ul className="mb-3 space-y-1.5">
+              {bullets.map((b, i) => (
+                <li key={i} className="flex items-start gap-2 text-[12.5px] text-[#4A4A48] leading-snug font-normal">
+                  <span className="mt-[5px] w-1 h-1 rounded-full bg-[#9A9A98] shrink-0" />
+                  <span className="line-clamp-2">{b}</span>
+                </li>
+              ))}
+            </ul>
           )}
 
-          {summary && (
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed line-clamp-4 font-normal">
-              {summary}
-            </p>
+          {skills.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {skills.map((sk) => <SkillPill key={sk} label={sk} />)}
+            </div>
           )}
         </div>
 
