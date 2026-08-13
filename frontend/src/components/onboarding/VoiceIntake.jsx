@@ -90,13 +90,6 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
     assistantOverrides,
   });
 
-  // Advance to summary when voice intake is not configured
-  React.useEffect(() => {
-    if (callState === VAPI_STATES.ERROR && error === NOT_CONFIGURED_MSG) {
-      onComplete(null);
-    }
-  }, [callState, error, onComplete]);
-
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {
     if (callState !== VAPI_STATES.PROCESSING) return;
@@ -105,6 +98,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
     const transcriptText = buildTranscriptText(transcript);
     if (!transcriptText.trim()) {
       // Empty transcript — skip backend call, go to completed
+      console.log("[voice-intake] navigating to summary");
       onComplete(null);
       return;
     }
@@ -117,11 +111,13 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
         candidate_id: candidateId,
       })
       .then((res) => {
+        console.log("[voice-intake] navigating to summary");
         onComplete(res.data);
       })
       .catch((err) => {
         console.error("Voice intake submission failed", err);
         toast.error("Couldn't save your voice intake — your profile is still intact.");
+        console.log("[voice-intake] navigating to summary");
         // Still advance — don't block onboarding
         onComplete(null);
       })
@@ -129,7 +125,13 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callState]);
 
+  const handleStartCall = () => {
+    console.log("[voice-intake] button clicked");
+    startCall();
+  };
+
   const handleRetry = () => {
+    console.log("[voice-intake] button clicked");
     setRetryCount((n) => n + 1);
     startCall();
   };
@@ -166,7 +168,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
       <div className="flex items-center gap-3 flex-wrap justify-center">
         {isIdle && (
           <button
-            onClick={startCall}
+            onClick={handleStartCall}
             data-testid="voice-start-call"
             className="inline-flex items-center gap-2 text-[13px] font-medium px-5 py-2.5 rounded-full bg-[#1F1F1F] text-white hover:bg-black transition-colors"
           >

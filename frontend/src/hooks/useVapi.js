@@ -66,7 +66,8 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       vapiRef.current = vapi;
 
       vapi.on("call-start", () => {
-        callIdRef.current = null; // will be set via message if available
+        callIdRef.current = null;
+        console.log("[voice-intake] Vapi call started");
         setCallState(VAPI_STATES.LISTENING);
       });
 
@@ -90,9 +91,11 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       });
 
       vapi.on("call-end", () => {
+        console.log("[voice-intake] call ended");
         setCallState(VAPI_STATES.PROCESSING);
       });
 
+      console.log("[voice-intake] starting Vapi call");
       await vapi.start(assistantId, assistantOverrides);
     } catch (err) {
       setError(err?.message || "Failed to start voice call.");

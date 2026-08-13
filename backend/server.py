@@ -1331,6 +1331,9 @@ async def get_candidate_jobs(candidate_id: str):
                     cjr.tracked_at,
                     cjr.applied_at,
                     cjr.hidden_at,
+                    cjr.status      AS application_status,
+                    cjr.agency_id   AS application_agency_id,
+                    cjr.job_role    AS application_job_role,
                     jd.title,
                     jd.company_name,
                     jd.location,
@@ -1366,6 +1369,7 @@ async def get_candidate_jobs(candidate_id: str):
             "match_reason": r["match_reason"],
             "tracked": r["tracked_at"] is not None,
             "applied": r["applied_at"] is not None,
+            "application_status": r["application_status"],
             "job_url": r["job_url"] or None,
         }
         for r in results
@@ -1477,7 +1481,10 @@ async def dismiss_job(candidate_id: str, rec_id: str):
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/apply")
 async def apply_job(candidate_id: str, rec_id: str):
-    """Record application initiation: sets applied_at and tracked_at."""
+    """Record application: sets applied_at, updated_at, status, agency_id, job_role on this
+    recommendation row only. Never touches candidates.job_id / agency_id / stage.
+    One candidate may apply to many jobs; each row is independent.
+    """
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -1487,13 +1494,33 @@ async def apply_job(candidate_id: str, rec_id: str):
         rec = row.mappings().fetchone()
         if not rec:
             raise HTTPException(status_code=404, detail="Recommendation not found.")
+
+        # Fetch agency_id and title from the job — never from the candidate row
+        job_agency_id = None
+        job_role = None
+        if rec["job_id"]:
+            jd_row = await db.execute(
+                text("SELECT agency_id, title FROM job_descriptions WHERE id = :jid LIMIT 1"),
+                {"jid": str(rec["job_id"])},
+            )
+            jd = jd_row.mappings().fetchone()
+            if jd:
+                job_agency_id = str(jd["agency_id"]) if jd["agency_id"] else None
+                job_role = jd["title"]
+
         await db.execute(
             text("""
                 UPDATE candidate_job_recommendations
-                SET applied_at = now(), tracked_at = COALESCE(tracked_at, now())
+                SET applied_at  = COALESCE(applied_at, now()),
+                    tracked_at  = COALESCE(tracked_at, now()),
+                    status      = 'applied',
+                    agency_id   = COALESCE(agency_id, :agency_id),
+                    job_role    = COALESCE(job_role, :job_role),
+                    updated_at  = now()
                 WHERE id = :rid AND candidate_id = :cid
             """),
-            {"rid": rec_id, "cid": candidate_id},
+            {"rid": rec_id, "cid": candidate_id,
+             "agency_id": job_agency_id, "job_role": job_role},
         )
         await db.commit()
     return {"status": "applied"}
