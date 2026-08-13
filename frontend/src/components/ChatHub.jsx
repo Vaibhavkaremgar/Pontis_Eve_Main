@@ -88,7 +88,7 @@ export default function ChatHub({
   return (
     <section
       data-testid="center-ai-hub"
-      className="h-full w-full flex flex-col bg-[#FBFBF9]"
+      className="h-full w-full flex flex-col bg-[#FBFBF9] min-h-0"
     >
       {/* Scrollable chat feed */}
       <div

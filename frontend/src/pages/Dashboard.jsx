@@ -423,7 +423,7 @@ function Dashboard() {
         <ResizeHandle testId="resize-handle-left" />
 
         <Panel id="center-panel" order={2} defaultSize={32} minSize={22} className="h-full">
-          <div className="h-full flex flex-col bg-[#FBFBF9]">
+          <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
             {/* Toggle bar */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
               <button
