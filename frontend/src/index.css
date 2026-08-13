@@ -105,6 +105,50 @@ code {
     background-color: rgba(15, 15, 15, 0.03);
 }
 
+/* Job description rendered HTML */
+.job-description-html p {
+    margin-bottom: 0.6em;
+    min-height: 0;
+}
+.job-description-html p:last-child {
+    margin-bottom: 0;
+}
+.job-description-html strong,
+.job-description-html b {
+    font-weight: 600;
+    color: #1f1f1f;
+}
+.job-description-html ul,
+.job-description-html ol {
+    padding-left: 1.25em;
+    margin-bottom: 0.6em;
+}
+.job-description-html ul {
+    list-style-type: disc;
+}
+.job-description-html ol {
+    list-style-type: decimal;
+}
+.job-description-html li {
+    margin-bottom: 0.25em;
+}
+.job-description-html li > p {
+    margin-bottom: 0.2em;
+}
+.job-description-html a {
+    color: #1f1f1f;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.job-description-html a:hover {
+    color: #000;
+}
+.job-description-html br {
+    display: block;
+    content: "";
+    margin-top: 0.3em;
+}
+
 /* Voice visualizer pulse rings (Step 4) */
 @keyframes pulse-ring {
     0% {

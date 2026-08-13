@@ -1,5 +1,6 @@
 import React from "react";
 import axios from "axios";
+import DOMPurify from "dompurify";
 import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { MapPin, X, Heart, ExternalLink, ChevronLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -8,11 +9,17 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const SWIPE_THRESHOLD = 100;
 
-// Normalize raw job text: strip leading/trailing whitespace, collapse blank lines,
-// remove lines that are just "{" or "}" (raw object artifacts).
+function sanitizeHtml(str) {
+  if (!str || typeof str !== "string") return "";
+  return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
+}
+
+// For plain-text preview snippets (swipe card summary, job list card)
 function cleanText(str) {
   if (!str || typeof str !== "string") return "";
-  return str
+  // Strip HTML tags for plain-text preview
+  const stripped = str.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
+  return stripped
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "{" && l !== "}" && l !== "-" && l !== "- {" && l !== "- }")
@@ -54,14 +61,24 @@ function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
     ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
     : null;
 
-  const description = cleanText(job.description);
-  const requirements = cleanText(job.requirements);
+  const MATCH_REASON_LABELS = {
+    hybrid_match: "Your skills and experience are a strong fit for this role.",
+    skill_match: "Your skills closely match what this role requires.",
+    experience_match: "Your experience aligns well with this position.",
+    location_match: "This role matches your preferred location.",
+    title_match: "Your target roles align with this position.",
+  };
 
   const getMatchReason = () => {
     const r = job.match_reason;
     if (!r) return "";
-    if (typeof r === "string") return r;
-    if (typeof r === "object") return r.type || r.reason || "";
+    if (typeof r === "string") {
+      return MATCH_REASON_LABELS[r] ?? r;
+    }
+    if (typeof r === "object") {
+      const key = r.type || r.reason || "";
+      return MATCH_REASON_LABELS[key] ?? r.explanation ?? r.description ?? key;
+    }
     return String(r);
   };
   const matchReason = getMatchReason();
@@ -119,22 +136,24 @@ function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
         )}
 
         {/* Description */}
-        {description && (
+        {job.description && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
-            <p className="text-[13px] text-[#4A4A48] leading-relaxed whitespace-pre-line font-normal">
-              {description}
-            </p>
+            <div
+              className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
+            />
           </div>
         )}
 
         {/* Requirements */}
-        {requirements && (
+        {job.requirements && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
-            <p className="text-[13px] text-[#4A4A48] leading-relaxed whitespace-pre-line font-normal">
-              {requirements}
-            </p>
+            <div
+              className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.requirements) }}
+            />
           </div>
         )}
 
