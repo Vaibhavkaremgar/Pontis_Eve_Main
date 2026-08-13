@@ -41,7 +41,7 @@ def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[
     seen: dict[str, float] = {}
     for hit in results:
         payload = hit.payload or {}
-        job_id = payload.get("jobId")
+        job_id = payload.get("job_id")
         if not job_id or not isinstance(job_id, str):
             continue
         score = float(hit.score)

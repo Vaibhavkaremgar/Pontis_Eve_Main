@@ -78,51 +78,10 @@ async def upsert_ats_job(
 
     if existing:
         job_id = existing[0]
-
-        await db.execute(
-            text("""
-                UPDATE job_descriptions
-                SET
-                    title = :title,
-                    company_name = :company_name,
-                    department = :department,
-                    location = :location,
-                    employment_type = :employment_type,
-                    salary_range = :salary_range,
-                    description = :description,
-                    job_url = :job_url,
-                    agency_id = :agency_id,
-                    company_registry_id = :company_registry_id,
-                    is_active = TRUE,
-                    job_status = 'active',
-                    updated_by_source = 'PONTIS',
-                    last_synced_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :id
-            """),
-            {
-                "id": job_id,
-                "title": job.get("title"),
-                "company_name": job.get("company_name"),
-                "department": job.get("department"),
-                "location": job.get("location"),
-                "employment_type": job.get("employment_type"),
-                "salary_range": job.get("salary_range"),
-                "description": job.get("description"),
-                "job_url": job.get("job_url"),
-                "agency_id": agency_id,
-                "company_registry_id": company_registry_id,
-            },
+        logger.debug(
+            "[job-scheduler] Skipping existing job ats_type=%s ats_job_id=%s db_id=%s",
+            ats_type, ats_job_id, job_id,
         )
-
-        await db.commit()
-
-        try:
-            ensure_collection()
-            upsert_job_embedding(str(job_id), generate_job_embedding(job), job)
-        except Exception as exc:
-            logger.error("Qdrant embedding upsert failed for job_id=%s: %s", job_id, exc)
-
         return str(job_id)
 
     # New ATS job.

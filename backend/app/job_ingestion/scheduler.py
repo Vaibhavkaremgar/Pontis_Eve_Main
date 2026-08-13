@@ -63,22 +63,44 @@ async def sync_jobs() -> None:
         total = len(jobs)
         logger.info("[job-scheduler] fetched %d jobs for %s", total, company_name)
 
-        processed = 0
+        inserted = 0
+        skipped = 0
         failed = 0
+
+        # Collect existing ats_job_ids for this ats_type in one query
+        ats_type_val = (jobs[0].get("ats_type") or "").strip().lower() if jobs else ""
+        ats_ids = [str(j.get("ats_job_id") or "") for j in jobs if j.get("ats_job_id")]
+        existing_ids: set = set()
+        if ats_ids and ats_type_val:
+            async with SessionLocal() as db:
+                placeholders = ", ".join(f":aid_{i}" for i in range(len(ats_ids)))
+                params = {f"aid_{i}": v for i, v in enumerate(ats_ids)}
+                params["ats_type"] = ats_type_val
+                result = await db.execute(
+                    text(f"""
+                        SELECT ats_job_id FROM job_descriptions
+                        WHERE ats_type = :ats_type AND ats_job_id IN ({placeholders})
+                    """),
+                    params,
+                )
+                existing_ids = {str(r[0]) for r in result.fetchall()}
 
         async with SessionLocal() as db:
             for job in jobs:
-                job_id = job.get("ats_job_id") or job.get("title") or "(unknown)"
+                job_ats_id = str(job.get("ats_job_id") or "")
+                if job_ats_id and job_ats_id in existing_ids:
+                    skipped += 1
+                    continue
                 try:
                     await upsert_ats_job(db, job)
-                    processed += 1
-                    if processed % PROGRESS_INTERVAL == 0:
-                        logger.info("[job-scheduler] processed %d/%d jobs for %s", processed, total, company_name)
+                    inserted += 1
+                    if inserted % PROGRESS_INTERVAL == 0:
+                        logger.info("[job-scheduler] inserted %d new jobs for %s so far", inserted, company_name)
                 except Exception as exc:
                     failed += 1
                     logger.error(
                         "[job-scheduler] failed job id=%s title=%r for company=%s: %s",
-                        job_id, job.get("title"), company_name, exc,
+                        job_ats_id, job.get("title"), company_name, exc,
                     )
                     try:
                         await db.rollback()
@@ -102,11 +124,17 @@ async def sync_jobs() -> None:
                     logger.error("[job-scheduler] failed to update last_synced_at for company=%s: %s", company_name, exc)
 
         logger.info(
-            "[job-scheduler] company=%s fetched=%d processed=%d failed=%d last_synced_at_updated=%s",
-            company_name, total, processed, failed, synced_at_updated,
+            "[job-scheduler] ATS returned %d jobs", total,
+        )
+        logger.info("[job-scheduler] Existing jobs skipped: %d", skipped)
+        logger.info("[job-scheduler] New jobs inserted: %d", inserted)
+        logger.info("[job-scheduler] Embeddings generated: %d", inserted)
+        logger.info(
+            "[job-scheduler] company=%s failed=%d last_synced_at_updated=%s",
+            company_name, failed, synced_at_updated,
         )
 
-    logger.info("[job-scheduler] sync completed")
+    logger.info("[job-scheduler] Job sync completed")
 
 
 async def _sync_jobs_guarded() -> None:
@@ -154,9 +182,6 @@ def start_scheduler() -> None:
     )
     _scheduler.start()
     logger.info("[job-scheduler] Next job sync scheduled in %d hours", SYNC_INTERVAL_HOURS)
-
-    # Run once immediately without blocking startup
-    asyncio.ensure_future(_sync_jobs_guarded())
 
 
 def stop_scheduler() -> None:
