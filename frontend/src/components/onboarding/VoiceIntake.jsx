@@ -8,6 +8,7 @@ import { motion } from "framer-motion";
 import { Mic, MicOff, Radio, PhoneOff, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import useVapi, { VAPI_STATES, buildTranscriptText } from "../../hooks/useVapi";
+import { loadOnboardingState, saveOnboardingState } from "../../lib/onboardingStorage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -72,6 +73,15 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
 
+  // Persist progress (number of candidate turns answered) so it survives refresh/logout
+  const persistProgress = React.useCallback((turns) => {
+    const candidateTurns = turns.filter((t) => t.role === "user").length;
+    const s = loadOnboardingState();
+    if (candidateTurns > (s.voiceIntakeProgress ?? 0)) {
+      saveOnboardingState({ ...s, voiceIntakeProgress: candidateTurns });
+    }
+  }, []);
+
   // Build assistant overrides with candidate context
   const assistantOverrides = React.useMemo(() => ({
     variableValues: {
@@ -89,6 +99,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
     assistantId: ASSISTANT_ID,
     assistantOverrides,
   });
+
+  // Persist progress whenever transcript grows
+  React.useEffect(() => {
+    if (transcript.length > 0) persistProgress(transcript);
+  }, [transcript, persistProgress]);
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {

@@ -517,6 +517,7 @@ export default function Onboarding() {
   // Process the OAuth param synchronously so storage is ready before any effect runs.
   const linkedInProfileParam = searchParams.get("linkedin_profile");
   const candidateIdParam = searchParams.get("candidate_id");
+  const resumeVoiceParam = searchParams.get("resume_voice");
   const isOAuthCallback = !!linkedInProfileParam;
 
   // useMemo runs synchronously during render — save to storage before effects fire.
@@ -542,7 +543,12 @@ export default function Onboarding() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [step, setStep] = React.useState(resumableStep(persisted));
+  const [step, setStep] = React.useState(() => {
+    const base = resumableStep(persisted);
+    // If coming from dashboard "Chat with Eve" with incomplete voice intake, jump to step 4
+    if (resumeVoiceParam && persisted.parsedProfile && !persisted.voiceIntakeCompleted) return 4;
+    return base;
+  });
 
   // Guard: must have gone through LinkedIn auth (either via storage or URL param)
   React.useEffect(() => {
@@ -552,7 +558,7 @@ export default function Onboarding() {
       return;
     }
     // Clean the URL after saving the param
-    if (isOAuthCallback) {
+    if (isOAuthCallback || resumeVoiceParam) {
       console.log("[LinkedIn] redirecting to: /onboarding");
       navigate("/onboarding", { replace: true });
     }
@@ -626,8 +632,15 @@ export default function Onboarding() {
       setVoiceElapsedMs(elapsed);
     }
     setVoiceIntakeCompleted(true);
-    setStep(5);
-  }, []);
+    // If we came from the dashboard (resume_voice flow), go back to dashboard
+    if (resumeVoiceParam) {
+      const s = loadOnboardingState();
+      saveOnboardingState({ ...s, voiceIntakeCompleted: true });
+      navigate("/dashboard");
+    } else {
+      setStep(5);
+    }
+  }, [resumeVoiceParam, navigate]);
 
   // Persist state whenever the shape changes
   React.useEffect(() => {

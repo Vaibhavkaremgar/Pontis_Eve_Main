@@ -16,6 +16,7 @@ const DEFAULT_STATE = {
   muted: false,
   voiceElapsedMs: 0, // how long the candidate stayed on the voice-intake step
   voiceIntakeCompleted: false,
+  voiceIntakeProgress: 0, // last answered question index (0 = not started)
   isOpenToMatches: true,
   linkedInAuthenticated: false,
   linkedInProfile: null, // { name, email, picture, linkedin_id }
@@ -48,6 +49,7 @@ export function saveOnboardingState(state) {
       muted: state.muted,
       voiceElapsedMs: state.voiceElapsedMs,
       voiceIntakeCompleted: state.voiceIntakeCompleted ?? false,
+      voiceIntakeProgress: state.voiceIntakeProgress ?? 0,
       isOpenToMatches: state.isOpenToMatches ?? true,
       linkedInAuthenticated: state.linkedInAuthenticated ?? false,
       linkedInProfile: state.linkedInProfile ?? null,

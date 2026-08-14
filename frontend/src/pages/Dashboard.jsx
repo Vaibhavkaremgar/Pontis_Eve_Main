@@ -14,20 +14,36 @@ import {
 } from "../mock";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import VoiceIntake from "../components/onboarding/VoiceIntake";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-function computeStrength(p) {
+// voiceCompleted: whether the candidate finished voice intake
+// Resume alone contributes at most 20%; voice intake drives the rest.
+function computeStrength(p, voiceCompleted = false) {
+  if (!voiceCompleted) {
+    // Resume-only score: 10–20% based on how much resume data was parsed
+    const fields = [p.name, p.email, p.headline, p.location];
+    const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
+    const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
+    const hasSkills = Array.isArray(p.keySkills) && p.keySkills.length > 0 ? 1 : 0;
+    const raw = filled + hasExp + hasSkills;
+    const percent = Math.round(10 + (raw / 6) * 10); // 10–20%
+    return { strengthPercent: Math.min(percent, 20), strength: "Building" };
+  }
+  // Voice-enriched score
   const fields = [p.name, p.email, p.phone, p.headline, p.location, p.bio];
   const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
   const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
   const hasEdu = Array.isArray(p.education) && p.education.length > 0 ? 1 : 0;
   const hasSkills = Array.isArray(p.keySkills) && p.keySkills.length > 0 ? 1 : 0;
-  const total = filled + hasExp + hasEdu + hasSkills;
-  const percent = Math.round((total / 9) * 100);
-  const label = percent >= 70 ? "Strong" : percent >= 40 ? "Developing" : "Building";
-  return { strengthPercent: percent, strength: label };
+  const hasAvail = p.availability ? 1 : 0;
+  const hasRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0 ? 1 : 0;
+  const total = filled + hasExp + hasEdu + hasSkills + hasAvail + hasRoles;
+  const percent = Math.round(20 + (total / 11) * 80); // 20–100%
+  const label = percent >= 75 ? "Strong" : percent >= 50 ? "Developing" : "Building";
+  return { strengthPercent: Math.min(percent, 100), strength: label };
 }
 
 function buildFallbackProfile(isOpenToMatches = true) {
@@ -53,8 +69,8 @@ function buildFallbackProfile(isOpenToMatches = true) {
   };
 }
 
-function applyStrength(profile) {
-  return { ...profile, ...computeStrength(profile) };
+function applyStrength(profile, voiceCompleted = false) {
+  return { ...profile, ...computeStrength(profile, voiceCompleted) };
 }
 
 function ResizeHandle({ testId, subtle = false }) {
@@ -79,6 +95,9 @@ function Dashboard() {
   const stored = React.useMemo(() => loadOnboardingState(), []);
   const [candidateId, setCandidateId] = React.useState(() => loadOnboardingState().candidateId ?? null);
   const isOpenToMatches = stored.isOpenToMatches ?? true;
+  const voiceCompleted = stored.voiceIntakeCompleted ?? false;
+
+  const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
 
   const [activeTab, setActiveTab] = React.useState(() => {
     if (stored.newlyOnboarded) {
@@ -89,7 +108,7 @@ function Dashboard() {
   });
 
   const [userProfile, setUserProfile] = React.useState(() =>
-    applyStrength(buildFallbackProfile(isOpenToMatches))
+    applyStrength(buildFallbackProfile(isOpenToMatches), voiceCompleted)
   );
 
   // Load real profile from PostgreSQL on mount
@@ -117,7 +136,7 @@ function Dashboard() {
           preferred_roles: data.preferred_roles ?? [],
           certifications: data.certifications ?? [],
           additional_information: data.additional_information ?? "",
-        }));
+        }, voiceCompleted));
       })
       .catch(() => {
         // Fall back to onboarding parsed profile if API fails
@@ -139,7 +158,7 @@ function Dashboard() {
           preferred_roles: parsed.preferred_roles ?? [],
           certifications: parsed.certifications ?? [],
           additional_information: parsed.additional_information ?? "",
-        }));
+        }, voiceCompleted));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]);
@@ -149,6 +168,7 @@ function Dashboard() {
     try {
       const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
       const data = res.data;
+      const vc = loadOnboardingState().voiceIntakeCompleted ?? false;
       setUserProfile((prev) =>
         applyStrength({
           ...prev,
@@ -166,7 +186,7 @@ function Dashboard() {
           preferred_roles: data.preferred_roles?.length ? data.preferred_roles : prev.preferred_roles,
           certifications: data.certifications?.length ? data.certifications : prev.certifications,
           additional_information: data.additional_information ?? prev.additional_information,
-        })
+        }, vc)
       );
     } catch (err) {
       console.error("refreshProfile failed", err);
@@ -213,6 +233,15 @@ function Dashboard() {
     const interval = setInterval(fetchCount, 30000);
     return () => clearInterval(interval);
   }, [candidateId]);
+
+  // Show weak-profile popup once profile loads if voice intake is incomplete and strength < 75
+  React.useEffect(() => {
+    if (!voiceCompleted && userProfile.strengthPercent > 0 && userProfile.strengthPercent < 75) {
+      const t = setTimeout(() => setShowWeakProfilePopup(true), 800);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile.strengthPercent]);
 
   // Update greeting once real profile loads
   React.useEffect(() => {
@@ -418,6 +447,49 @@ function Dashboard() {
         </button>
       </div>
 
+      {/* Weak profile popup */}
+      {showWeakProfilePopup && (
+        <div
+          data-testid="weak-profile-popup"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={() => setShowWeakProfilePopup(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl px-8 py-7 max-w-sm w-full mx-4 flex flex-col gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#E11D48] shrink-0" />
+              <p className="text-[15px] font-medium text-[#1F1F1F]">
+                Your profile isn't strong yet
+              </p>
+            </div>
+            <p className="text-[13px] text-[#4A4A48] leading-relaxed">
+              Your profile strength is {userProfile.strengthPercent}%. Complete a quick voice chat with Eve to unlock better job matches and reach a strong profile.
+            </p>
+            <div className="flex gap-2">
+              <button
+                data-testid="weak-profile-chat-btn"
+                onClick={() => {
+                  setShowWeakProfilePopup(false);
+                  navigate("/onboarding?resume_voice=1");
+                }}
+                className="flex-1 bg-[#1F1F1F] text-white text-[13px] font-medium rounded-full py-2.5 hover:bg-black transition-colors"
+              >
+                Chat with Eve
+              </button>
+              <button
+                data-testid="weak-profile-dismiss-btn"
+                onClick={() => setShowWeakProfilePopup(false)}
+                className="flex-1 bg-black/[0.05] text-[#1F1F1F] text-[13px] font-medium rounded-full py-2.5 hover:bg-black/[0.09] transition-colors"
+              >
+                Maybe later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <PanelGroup direction="horizontal" className="flex-1 min-h-0">
         <Panel id="left-panel" order={1} defaultSize={18} minSize={12} maxSize={28} className="h-full">
           <Sidebar
@@ -448,7 +520,14 @@ function Dashboard() {
                 Jobs for you
               </button>
               <button
-                onClick={() => setCenterView("chat")}
+                onClick={() => {
+                  if (!voiceCompleted) {
+                    // Resume voice intake from where they left off
+                    navigate("/onboarding?resume_voice=1");
+                  } else {
+                    setCenterView("chat");
+                  }
+                }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "chat"
                     ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
