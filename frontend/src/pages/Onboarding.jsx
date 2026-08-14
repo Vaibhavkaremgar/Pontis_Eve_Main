@@ -516,6 +516,7 @@ export default function Onboarding() {
   // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
   // Process the OAuth param synchronously so storage is ready before any effect runs.
   const linkedInProfileParam = searchParams.get("linkedin_profile");
+  const candidateIdParam = searchParams.get("candidate_id");
   const isOAuthCallback = !!linkedInProfileParam;
 
   // useMemo runs synchronously during render — save to storage before effects fire.
@@ -528,7 +529,7 @@ export default function Onboarding() {
           ...current,
           linkedInAuthenticated: true,
           linkedInProfile: profile,
-          candidateId: null,
+          candidateId: candidateIdParam || current.candidateId || null,
         };
         saveOnboardingState(next);
         console.log("[LinkedIn] current URL:", window.location.href);
@@ -678,7 +679,13 @@ export default function Onboarding() {
     try {
       const fd = new FormData();
       fd.append("file", resumeFile);
-      const res = await axios.post(`${API}/onboarding/parse-resume`, fd, {
+      // If we already have a candidateId (e.g. test candidate re-onboarding),
+      // pass it so the backend updates the existing record instead of creating a duplicate.
+      const existingId = candidateId || loadOnboardingState().candidateId;
+      const url = existingId
+        ? `${API}/onboarding/parse-resume?existing_id=${existingId}`
+        : `${API}/onboarding/parse-resume`;
+      const res = await axios.post(url, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const { candidate_id, ...profile } = res.data;

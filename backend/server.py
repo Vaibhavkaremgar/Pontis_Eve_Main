@@ -374,7 +374,7 @@ async def root():
 
 
 @api_router.post("/onboarding/parse-resume")
-async def parse_resume(file: UploadFile = File(...)):
+async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] = None):
     filename = (file.filename or "").lower()
     if not filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF resumes are supported right now.")
@@ -391,7 +391,12 @@ async def parse_resume(file: UploadFile = File(...)):
     parsed = await _parse_resume_with_llm(resume_text)
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
-    cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", force_new=True)
+    # If an existing_id is provided (e.g. test candidate re-onboarding), update that record.
+    # Otherwise force_new=True to create a fresh record for a genuinely new candidate.
+    if existing_id:
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", existing_id=existing_id)
+    else:
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", force_new=True)
 
     asyncio.ensure_future(_trigger_matching(cid))
 
@@ -1712,6 +1717,11 @@ async def linkedin_callback(code: str, state: str):
                 )
                 needs_onboarding = not is_complete
 
+    # Test candidate: always route to onboarding, preserving existing candidate_id
+    test_email = os.environ.get("TEST_CANDIDATE_EMAIL", "").strip()
+    if test_email and email.strip().lower() == test_email.lower():
+        needs_onboarding = True
+
     profile_param = urllib.parse.quote_plus(
         json.dumps({"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id})
     )
@@ -1719,7 +1729,7 @@ async def linkedin_callback(code: str, state: str):
     if candidate_id and not needs_onboarding:
         redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
     elif candidate_id and needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/auth/linkedin/callback?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
+        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
     else:
         redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
 
