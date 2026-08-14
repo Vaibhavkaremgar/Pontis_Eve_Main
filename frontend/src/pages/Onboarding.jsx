@@ -718,7 +718,7 @@ export default function Onboarding() {
       setTimeout(() => setParsingReady(true), 2000);
       toast.error("Resume parse failed — using defaults");
     }
-  }, [resumeFile, certsFiles]);
+  }, [resumeFile, certsFiles, candidateId]);
 
   const handleContinueUpload = () => {
     kickOffParsing();
