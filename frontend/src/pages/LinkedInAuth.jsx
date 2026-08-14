@@ -19,6 +19,22 @@ export default function LinkedInAuth() {
     const linkedInProfile = searchParams.get("linkedin_profile");
 
     if (candidateId) {
+      const needsOnboarding = searchParams.get("needs_onboarding") === "true";
+      const linkedInProfile = searchParams.get("linkedin_profile");
+      if (needsOnboarding) {
+        let profile = null;
+        if (linkedInProfile) {
+          try { profile = JSON.parse(decodeURIComponent(linkedInProfile)); } catch (_) {}
+        }
+        clearOnboardingState();
+        saveOnboardingState({
+          linkedInAuthenticated: true,
+          candidateId,
+          linkedInProfile: profile,
+        });
+        navigate("/onboarding", { replace: true });
+        return;
+      }
       saveOnboardingState({
         ...loadOnboardingState(),
         linkedInAuthenticated: true,

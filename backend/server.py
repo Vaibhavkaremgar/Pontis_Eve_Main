@@ -1693,27 +1693,34 @@ async def linkedin_callback(code: str, state: str):
     picture = userinfo.get("picture", "")
 
     candidate_id = None
+    needs_onboarding = False
     async with SessionLocal() as db:
         if email:
             row = await db.execute(
-                text("SELECT id FROM candidates WHERE email = :email LIMIT 1"),
+                text("SELECT id, name, phone, summary, parsing_status FROM candidates WHERE email = :email LIMIT 1"),
                 {"email": email},
             )
-            existing = row.fetchone()
+            existing = row.mappings().fetchone()
             if existing:
-                candidate_id = str(existing[0])
+                candidate_id = str(existing["id"])
+                # Onboarding is complete only when key profile fields are populated
+                is_complete = bool(
+                    existing["name"]
+                    and existing["phone"]
+                    and existing["summary"]
+                    and existing["parsing_status"] == "completed"
+                )
+                needs_onboarding = not is_complete
 
-    if candidate_id:
+    profile_param = urllib.parse.quote_plus(
+        json.dumps({"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id})
+    )
+
+    if candidate_id and not needs_onboarding:
         redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+    elif candidate_id and needs_onboarding:
+        redirect_url = f"{FRONTEND_URL}/auth/linkedin/callback?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
     else:
-        profile_param = urllib.parse.quote_plus(
-            json.dumps({
-                "name": name,
-                "email": email,
-                "picture": picture,
-                "linkedin_id": linkedin_id,
-            })
-        )
         redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
 
     return RedirectResponse(url=redirect_url, status_code=302)
