@@ -2194,6 +2194,156 @@ async def _retry_worker() -> None:
         await asyncio.sleep(5)
 
 
+# ---------- Test candidate reset (dev/testing only) ----------
+
+TEST_CANDIDATE_EMAIL = os.environ.get("TEST_CANDIDATE_EMAIL", "")
+TEST_RESET_SECRET = os.environ.get("TEST_RESET_SECRET", "")
+
+
+@app.post("/internal/test/reset-candidate")
+async def reset_test_candidate(
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Dev/testing only. Resets the configured test candidate's onboarding state
+    so the full flow can be demonstrated from the beginning.
+    Requires TEST_RESET_SECRET in Authorization header.
+    Only operates on the candidate identified by TEST_CANDIDATE_EMAIL.
+    """
+    if not TEST_RESET_SECRET:
+        raise HTTPException(status_code=503, detail="Test reset is not configured.")
+    if not TEST_CANDIDATE_EMAIL:
+        raise HTTPException(status_code=503, detail="TEST_CANDIDATE_EMAIL is not configured.")
+    if not authorization or authorization != f"Bearer {TEST_RESET_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT id FROM candidates WHERE email = :email LIMIT 1"),
+            {"email": TEST_CANDIDATE_EMAIL},
+        )
+        result = row.fetchone()
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Test candidate '{TEST_CANDIDATE_EMAIL}' not found. "
+                   "Complete at least one full onboarding first.",
+        )
+
+    cid = str(result[0])
+    logger.info("[test-reset] Resetting test candidate %s", cid)
+
+    async with SessionLocal() as db:
+        # Delete in FK-safe order (children before parent references)
+
+        await db.execute(
+            text("DELETE FROM eve_outbound_events WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+
+        await db.execute(
+            text("DELETE FROM recruiter_interest_requests WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+
+        await db.execute(
+            text("DELETE FROM candidate_activity_feed WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        logger.info("[test-reset] Deleted candidate notifications")
+
+        await db.execute(
+            text("DELETE FROM candidate_job_recommendations WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        logger.info("[test-reset] Reset candidate job/application state")
+
+        await db.execute(
+            text("DELETE FROM candidate_voice_intakes WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        await db.execute(
+            text("DELETE FROM candidate_voice_sessions WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        logger.info("[test-reset] Reset voice intake")
+
+        # Collect cert file paths before deleting rows
+        cert_rows = await db.execute(
+            text("SELECT file_path FROM candidate_certificates WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        cert_paths = [r[0] for r in cert_rows.fetchall()]
+        await db.execute(
+            text("DELETE FROM candidate_certificates WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        for p in cert_paths:
+            if p:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning("[test-reset] Could not delete cert file %s: %s", p, e)
+        logger.info("[test-reset] Deleted certificates")
+
+        # Collect resume file path before deleting row
+        resume_row = await db.execute(
+            text("SELECT source_path FROM internal_candidate_resumes WHERE candidate_id = :cid LIMIT 1"),
+            {"cid": cid},
+        )
+        resume_result = resume_row.fetchone()
+        await db.execute(
+            text("DELETE FROM internal_candidate_resumes WHERE candidate_id = :cid"),
+            {"cid": cid},
+        )
+        if resume_result and resume_result[0]:
+            try:
+                Path(resume_result[0]).unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning("[test-reset] Could not delete resume file %s: %s", resume_result[0], e)
+        logger.info("[test-reset] Deleted resume")
+
+        # Reset onboarding fields; preserve id + email so LinkedIn re-auth
+        # still matches this row and routes to /onboarding as a new candidate.
+        await db.execute(
+            text("""
+                UPDATE candidates SET
+                    name               = NULL,
+                    phone              = NULL,
+                    current_company    = NULL,
+                    "current_role"     = NULL,
+                    experience_years   = NULL,
+                    location           = NULL,
+                    summary            = NULL,
+                    skills             = NULL,
+                    work_experience    = NULL,
+                    education          = NULL,
+                    raw_data           = NULL,
+                    parsing_status     = NULL,
+                    resume_text        = NULL,
+                    parsed_resume_json = NULL,
+                    parsed_resume_text = NULL,
+                    stage              = NULL,
+                    stage_updated_at   = NULL,
+                    updated_by_source  = 'test_reset',
+                    updated_at         = now()
+                WHERE id = :cid
+            """),
+            {"cid": cid},
+        )
+        logger.info("[test-reset] Reset onboarding state")
+
+        await db.commit()
+
+    logger.info("[test-reset] Reset complete for candidate %s", cid)
+    return {
+        "status": "reset",
+        "candidate_id": cid,
+        "message": "Test candidate reset successfully",
+    }
+
+
 app.include_router(api_router)
 
 app.add_middleware(
