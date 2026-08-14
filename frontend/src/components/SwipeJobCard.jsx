@@ -77,7 +77,7 @@ function SkillPill({ label }) {
 
 // ─── Job Detail Modal ────────────────────────────────────────────────────────
 
-function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
+export function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
   const skills = normalizeSkills(job.skills);
   const matchPct = job.match_score != null
     ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))

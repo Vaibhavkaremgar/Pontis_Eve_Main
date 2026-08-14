@@ -1,9 +1,16 @@
 import React from "react";
 import axios from "axios";
+import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell } from "lucide-react";
+import { JobDetailModal } from "./SwipeJobCard";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+function sanitizeHtml(str) {
+  if (!str || typeof str !== "string") return "";
+  return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
+}
 
 function ProfileStrengthBar({ label, percent }) {
   return (
@@ -258,101 +265,154 @@ function ProfileTab({ user, onToggleOpenToMatches }) {
   );
 }
 
-function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob }) {
-  return (
-    <div className="space-y-4" data-testid="jobs-tab-content">
-      <p className="text-[12px] text-[#9A9A98] font-normal">
-        {jobs.length} matches ranked by fit
-      </p>
+function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed }) {
+  const [detailJob, setDetailJob] = React.useState(null);
+  const [applying, setApplying] = React.useState(false);
 
-      {jobs.length === 0 && (
-        <div className="py-10 text-center">
-          <p className="text-[13px] text-[#9A9A98] font-normal">
-            No job recommendations yet. Check back soon.
-          </p>
+  const openDetail = React.useCallback(async (job) => {
+    setDetailJob(job);
+    if (!job.viewed && candidateId) {
+      try {
+        await axios.post(`${API}/candidate/${candidateId}/jobs/${job.id}/view`);
+        onJobViewed?.(job.id);
+      } catch {
+        // silent
+      }
+    }
+  }, [candidateId, onJobViewed]);
+
+  const handleApply = React.useCallback(async () => {
+    if (!detailJob || applying) return;
+    if (!detailJob.job_url) return;
+    setApplying(true);
+    try {
+      await axios.post(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/apply`);
+      window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
+      setDetailJob((j) => ({ ...j, applied: true }));
+    } catch {
+      // silent
+    } finally {
+      setApplying(false);
+    }
+  }, [detailJob, applying, candidateId]);
+
+  const handleNotInterested = React.useCallback(async () => {
+    if (!detailJob) return;
+    const id = detailJob.id;
+    setDetailJob(null);
+    onDismiss(id);
+  }, [detailJob, onDismiss]);
+
+  return (
+    <div className="relative">
+      {detailJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
+            <JobDetailModal
+              job={detailJob}
+              onClose={() => setDetailJob(null)}
+              onApply={handleApply}
+              onNotInterested={handleNotInterested}
+              applying={applying}
+            />
+          </div>
         </div>
       )}
+      <div className="space-y-4" data-testid="jobs-tab-content">
+        <p className="text-[12px] text-[#9A9A98] font-normal">
+          {jobs.length} matches ranked by fit
+        </p>
 
-      <div className="space-y-2">
-        {jobs.map((job) => {
-          const isSelected = selectedJob?.id === job.id;
-          const matchPct = job.match_score != null
-            ? `${Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))}%`
-            : null;
-          return (
-            <button
-              key={job.id}
-              onClick={() => setSelectedJob(job)}
-              data-testid={`job-card-${job.id}`}
-              className={`text-left w-full rounded-xl px-4 py-4 transition-colors eve-hover-row ${
-                isSelected ? "bg-black/[0.04]" : ""
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3 flex-1 min-w-0">
-                  {job.logo ? (
-                    <img
-                      src={job.logo}
-                      alt={job.company}
-                      className="w-10 h-10 rounded-lg object-cover shrink-0"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-lg bg-[#E7E3F0] flex items-center justify-center shrink-0">
-                      <span className="text-[13px] font-medium text-[#7B6FB8]">
-                        {(job.company || "?")[0].toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-[13.5px] font-medium text-[#1F1F1F] truncate">
-                      {job.title}
-                    </h4>
-                    <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
-                      {job.company} · {job.location}
-                    </p>
-                    {job.salary && (
-                      <p className="text-[12px] text-[#1F1F1F] mt-1.5 font-medium">
-                        {job.salary}
-                      </p>
+        {jobs.length === 0 && (
+          <div className="py-10 text-center">
+            <p className="text-[13px] text-[#9A9A98] font-normal">
+              No job recommendations yet. Check back soon.
+            </p>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {jobs.map((job) => {
+            const isSelected = selectedJob?.id === job.id;
+            const matchPct = job.match_score != null
+              ? `${Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))}%`
+              : null;
+            return (
+              <button
+                key={job.id}
+                onClick={() => { setSelectedJob(job); openDetail(job); }}
+                data-testid={`job-card-${job.id}`}
+                className={`text-left w-full rounded-xl px-4 py-4 transition-colors eve-hover-row ${
+                  isSelected ? "bg-black/[0.04]" : ""
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                    {job.logo ? (
+                      <img
+                        src={job.logo}
+                        alt={job.company}
+                        className="w-10 h-10 rounded-lg object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-[#E7E3F0] flex items-center justify-center shrink-0">
+                        <span className="text-[13px] font-medium text-[#7B6FB8]">
+                          {(job.company || "?")[0].toUpperCase()}
+                        </span>
+                      </div>
                     )}
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-[13.5px] font-medium text-[#1F1F1F] truncate">
+                        {job.title}
+                      </h4>
+                      <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
+                        {job.company} · {job.location}
+                      </p>
+                      {job.salary && (
+                        <p className="text-[12px] text-[#1F1F1F] mt-1.5 font-medium">
+                          {job.salary}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {matchPct && (
-                  <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2 py-1 shrink-0">
-                    {matchPct}
-                  </span>
-                )}
-              </div>
-              <p className="text-[12.5px] text-[#4A4A48] mt-3 line-clamp-2 leading-relaxed font-normal">
-                {job.description}
-              </p>
-              <div className="flex items-center gap-2 mt-3">
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDismiss(job.id); }}
-                  data-testid={`job-dismiss-${job.id}`}
-                  className="flex-1 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full py-1.5 transition-colors"
-                >
-                  Not for me
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
-                  data-testid={`job-track-${job.id}`}
-                  className={`flex-1 text-[12px] font-medium rounded-full py-1.5 transition-colors flex items-center justify-center gap-1.5 ${
-                    job.tracked
-                      ? "bg-[#2E7538] text-white"
-                      : "bg-[#1F1F1F] text-white hover:bg-black"
-                  }`}
-                >
-                  {job.tracked ? (
-                    <><BookmarkCheck className="w-3.5 h-3.5" strokeWidth={2} />Tracked</>
-                  ) : (
-                    <><Bookmark className="w-3.5 h-3.5" strokeWidth={2} />Track</>
+                  {matchPct && (
+                    <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2 py-1 shrink-0">
+                      {matchPct}
+                    </span>
                   )}
-                </button>
-              </div>
-            </button>
-          );
-        })}
+                </div>
+                <div
+                  className="text-[12.5px] text-[#4A4A48] mt-3 line-clamp-2 leading-relaxed font-normal job-description-html"
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
+                />
+                <div className="flex items-center gap-2 mt-3">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDismiss(job.id); }}
+                    data-testid={`job-dismiss-${job.id}`}
+                    className="flex-1 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full py-1.5 transition-colors"
+                  >
+                    Not for me
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
+                    data-testid={`job-track-${job.id}`}
+                    className={`flex-1 text-[12px] font-medium rounded-full py-1.5 transition-colors flex items-center justify-center gap-1.5 ${
+                      job.tracked
+                        ? "bg-[#2E7538] text-white"
+                        : "bg-[#1F1F1F] text-white hover:bg-black"
+                    }`}
+                  >
+                    {job.tracked ? (
+                      <><BookmarkCheck className="w-3.5 h-3.5" strokeWidth={2} />Tracked</>
+                    ) : (
+                      <><Bookmark className="w-3.5 h-3.5" strokeWidth={2} />Track</>
+                    )}
+                  </button>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -411,11 +471,13 @@ function TrackedTab({ jobs, onTrack }) {
   );
 }
 
-function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, onCertUploaded, onCertReplaced }) {
+function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
   const resumeInputRef = React.useRef(null);
   const certInputRef = React.useRef(null);
   const certReplaceRefs = React.useRef({});
   const [busy, setBusy] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
+  const [confirmDelete, setConfirmDelete] = React.useState(null); // { type: 'resume' } | { type: 'cert', id, filename }
 
   const viewUrl = (path) => `${API}${path}`;
 
@@ -464,12 +526,67 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
     }
   };
 
+  const handleConfirmDelete = async () => {
+    if (!confirmDelete || !candidateId) return;
+    setBusy(true);
+    setDeleteError(null);
+    try {
+      if (confirmDelete.type === "resume") {
+        await axios.delete(`${API}/candidate/${candidateId}/resume`);
+        setConfirmDelete(null);
+        onResumeDeleted();
+      } else {
+        await axios.delete(`${API}/candidate/${candidateId}/certificates/${confirmDelete.id}`);
+        setConfirmDelete(null);
+        onCertDeleted(confirmDelete.id);
+      }
+    } catch {
+      setDeleteError("Deletion failed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (docsLoading) {
     return <p className="text-[13px] text-[#9A9A98] font-normal">Loading documents…</p>;
   }
 
   return (
     <div className="space-y-8" data-testid="documents-tab-content">
+      {/* Confirmation dialog */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="bg-white rounded-2xl shadow-xl px-6 py-5 max-w-sm w-full mx-4">
+            <p className="text-[14px] font-medium text-[#1F1F1F] mb-1">Delete document?</p>
+            <p className="text-[13px] text-[#4A4A48] mb-4">
+              Are you sure you want to delete{" "}
+              <span className="font-medium">
+                {confirmDelete.type === "resume" ? documents.resume?.filename : confirmDelete.filename}
+              </span>?
+            </p>
+            {deleteError && (
+              <p className="text-[12px] text-red-500 mb-3">{deleteError}</p>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setConfirmDelete(null); setDeleteError(null); }}
+                disabled={busy}
+                className="flex-1 py-2 rounded-xl bg-black/[0.05] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.09] transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={busy}
+                className="flex-1 py-2 rounded-xl bg-red-500 text-white text-[13px] font-medium hover:bg-red-600 transition-colors disabled:opacity-50"
+              >
+                {busy ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Resume */}
       <div>
         <h3 className="text-[13px] font-medium text-[#1F1F1F] mb-3">Resume</h3>
@@ -505,6 +622,13 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                 className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
               >
                 Replace
+              </button>
+              <button
+                onClick={() => setConfirmDelete({ type: "resume" })}
+                disabled={busy}
+                className="text-[12px] font-normal text-red-500 bg-red-50 hover:bg-red-100 rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+              >
+                Delete
               </button>
             </div>
           </div>
@@ -553,6 +677,13 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                     className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
                   >
                     Replace
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete({ type: "cert", id: cert.id, filename: cert.filename })}
+                    disabled={busy}
+                    className="text-[12px] font-normal text-red-500 bg-red-50 hover:bg-red-100 rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+                  >
+                    Delete
                   </button>
                 </div>
               </div>
@@ -918,7 +1049,10 @@ export default function LivingProfile({
   onResumeReplaced,
   onCertUploaded,
   onCertReplaced,
+  onResumeDeleted,
+  onCertDeleted,
   onInterested,
+  onJobViewed,
 }) {
   return (
     <aside
@@ -950,6 +1084,8 @@ export default function LivingProfile({
               onDismiss={onDismissJob}
               selectedJob={selectedJob}
               setSelectedJob={setSelectedJob}
+              candidateId={candidateId}
+              onJobViewed={onJobViewed}
             />
           )}
           {activeTab === "tracked" && (
@@ -963,6 +1099,8 @@ export default function LivingProfile({
               onResumeReplaced={onResumeReplaced}
               onCertUploaded={onCertUploaded}
               onCertReplaced={onCertReplaced}
+              onResumeDeleted={onResumeDeleted}
+              onCertDeleted={onCertDeleted}
             />
           )}
           {activeTab === "opportunities" && (

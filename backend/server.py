@@ -427,7 +427,7 @@ async def get_candidate_documents(candidate_id: str):
 
 
 @api_router.get("/candidate/{candidate_id}/resume/view")
-async def view_resume(candidate_id: str):
+async def view_resume(candidate_id: str, download: bool = False):
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -441,7 +441,37 @@ async def view_resume(candidate_id: str):
     file_path = Path(source_path) if source_path else None
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="Resume file not available.")
-    return FileResponse(str(file_path), media_type="application/pdf", filename=filename)
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        str(file_path), media_type="application/pdf", filename=filename,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@api_router.delete("/candidate/{candidate_id}/resume")
+async def delete_resume(candidate_id: str):
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT id, source_path FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        result = row.fetchone()
+    if not result:
+        raise HTTPException(status_code=404, detail="No resume found.")
+    resume_id, source_path = result[0], result[1]
+    async with SessionLocal() as db:
+        await db.execute(
+            text("DELETE FROM internal_candidate_resumes WHERE id = :rid AND candidate_id = :cid"),
+            {"rid": resume_id, "cid": candidate_id},
+        )
+        await db.commit()
+    if source_path:
+        try:
+            Path(source_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Could not delete resume file %s: %s", source_path, e)
+    return {"status": "deleted"}
 
 
 @api_router.post("/candidate/{candidate_id}/resume/replace")
@@ -492,7 +522,7 @@ async def upload_certificate(candidate_id: str, file: UploadFile = File(...)):
 
 
 @api_router.get("/candidate/{candidate_id}/certificates/{cert_id}/view")
-async def view_certificate(candidate_id: str, cert_id: str):
+async def view_certificate(candidate_id: str, cert_id: str, download: bool = False):
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -508,7 +538,37 @@ async def view_certificate(candidate_id: str, cert_id: str):
         raise HTTPException(status_code=404, detail="Certificate file not available.")
     suffix = path.suffix.lower()
     media_type = "application/pdf" if suffix == ".pdf" else f"image/{suffix.lstrip('.')}"
-    return FileResponse(str(path), media_type=media_type, filename=filename)
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        str(path), media_type=media_type, filename=filename,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@api_router.delete("/candidate/{candidate_id}/certificates/{cert_id}")
+async def delete_certificate(candidate_id: str, cert_id: str):
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT file_path FROM candidate_certificates WHERE id = :cid AND candidate_id = :owner LIMIT 1"),
+            {"cid": cert_id, "owner": candidate_id},
+        )
+        result = row.fetchone()
+    if not result:
+        raise HTTPException(status_code=404, detail="Certificate not found.")
+    file_path = result[0]
+    async with SessionLocal() as db:
+        await db.execute(
+            text("DELETE FROM candidate_certificates WHERE id = :cid AND candidate_id = :owner"),
+            {"cid": cert_id, "owner": candidate_id},
+        )
+        await db.commit()
+    if file_path:
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Could not delete certificate file %s: %s", file_path, e)
+    return {"status": "deleted"}
 
 
 @api_router.post("/candidate/{candidate_id}/certificates/{cert_id}/replace")
@@ -817,6 +877,10 @@ async def _ensure_schema():
         await db.execute(text("""
             ALTER TABLE candidate_job_recommendations
             ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMPTZ NULL
+        """))
+        await db.execute(text("""
+            ALTER TABLE candidate_job_recommendations
+            ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ NULL
         """))
         await db.commit()
 
@@ -1331,6 +1395,7 @@ async def get_candidate_jobs(candidate_id: str):
                     cjr.tracked_at,
                     cjr.applied_at,
                     cjr.hidden_at,
+                    cjr.viewed_at,
                     cjr.status      AS application_status,
                     cjr.agency_id   AS application_agency_id,
                     cjr.job_role    AS application_job_role,
@@ -1369,6 +1434,7 @@ async def get_candidate_jobs(candidate_id: str):
             "match_reason": r["match_reason"],
             "tracked": r["tracked_at"] is not None,
             "applied": r["applied_at"] is not None,
+            "viewed": r["viewed_at"] is not None,
             "application_status": r["application_status"],
             "job_url": r["job_url"] or None,
         }
@@ -1458,6 +1524,25 @@ async def untrack_job(candidate_id: str, rec_id: str):
         )
         await db.commit()
     return {"status": "untracked"}
+
+
+@api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/view")
+async def view_job(candidate_id: str, rec_id: str):
+    """Mark a recommendation as viewed by this candidate."""
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT id FROM candidate_job_recommendations WHERE id = :rid AND candidate_id = :cid LIMIT 1"),
+            {"rid": rec_id, "cid": candidate_id},
+        )
+        if not row.fetchone():
+            raise HTTPException(status_code=404, detail="Recommendation not found.")
+        await db.execute(
+            text("UPDATE candidate_job_recommendations SET viewed_at = COALESCE(viewed_at, now()) WHERE id = :rid AND candidate_id = :cid"),
+            {"rid": rec_id, "cid": candidate_id},
+        )
+        await db.commit()
+    return {"status": "viewed"}
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/dismiss")

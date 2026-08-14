@@ -339,6 +339,17 @@ function Dashboard() {
     }));
   }, []);
 
+  const handleResumeDeleted = React.useCallback(() => {
+    setDocuments((prev) => ({ ...prev, resume: null }));
+  }, []);
+
+  const handleCertDeleted = React.useCallback((certId) => {
+    setDocuments((prev) => ({
+      ...prev,
+      certificates: prev.certificates.filter((c) => c.id !== certId),
+    }));
+  }, []);
+
   const handleTrackJob = async (jobId) => {
     const job = availableJobs.find((j) => j.id === jobId);
     if (!job || !candidateId) return;
@@ -413,7 +424,7 @@ function Dashboard() {
             activeTab={activeTab}
             setActiveTab={setActiveTab}
             userProfile={userProfile}
-            jobsCount={availableJobs.length}
+            jobsCount={availableJobs.filter((j) => !j.viewed).length}
             opportunitiesCount={opportunitiesCount}
             recentActivity={MOCK_RECENT_ACTIVITY}
             onLogout={handleLogout}
@@ -505,7 +516,14 @@ function Dashboard() {
             onResumeReplaced={handleResumeReplaced}
             onCertUploaded={handleCertUploaded}
             onCertReplaced={handleCertReplaced}
+            onResumeDeleted={handleResumeDeleted}
+            onCertDeleted={handleCertDeleted}
             onInterested={fetchJobs}
+            onJobViewed={(jobId) =>
+              setAvailableJobs((prev) =>
+                prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j))
+              )
+            }
           />
         </Panel>
       </PanelGroup>
