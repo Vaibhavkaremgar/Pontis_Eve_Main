@@ -542,6 +542,7 @@ function Dashboard() {
                 <VoiceIntake
                   firstName={userProfile.name?.split(" ")[0] || "there"}
                   candidateId={candidateId}
+                  candidateProfile={userProfile}
                   onComplete={(result) => {
                     const s = loadOnboardingState();
                     saveOnboardingState({ ...s, voiceIntakeCompleted: true });

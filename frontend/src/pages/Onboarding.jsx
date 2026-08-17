@@ -808,6 +808,7 @@ export default function Onboarding() {
               firstName={firstName}
               candidateId={candidateId}
               onComplete={finishVoiceIntake}
+              candidateProfile={parsedProfile}
             />
           )}
           {step === 5 && <StepBridge profile={parsedProfile} voiceIntakeCompleted={voiceIntakeCompleted} />}

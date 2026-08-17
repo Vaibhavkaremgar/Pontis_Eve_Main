@@ -68,7 +68,7 @@ const STATE_LABELS = {
 
 const NOT_CONFIGURED_MSG = "Voice intake is not configured. Please contact support.";
 
-export default function VoiceIntake({ firstName, candidateId, onComplete }) {
+export default function VoiceIntake({ firstName, candidateId, onComplete, candidateProfile }) {
   const [showTranscript, setShowTranscript] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
@@ -83,16 +83,28 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
   }, []);
 
   // Build assistant overrides with candidate context
-  const assistantOverrides = React.useMemo(() => ({
+  const assistantOverrides = React.useMemo(() => {
+    const p = candidateProfile || {};
+    const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
+    const skillsList = Array.isArray(p.keySkills) && p.keySkills.length > 0
+      ? p.keySkills.slice(0, 10).join(", ")
+      : (Array.isArray(p.skills) && p.skills.length > 0 ? p.skills.slice(0, 10).join(", ") : "");
+    return ({
     variableValues: {
       candidateName: firstName || "there",
       candidateId: candidateId || "",
+      "candidate.name": firstName || "there",
+      "candidate.number": p.phone || "",
+      "resume.years_experience": p.experience_years != null ? String(p.experience_years) : "",
+      "resume.most_recent_title": mostRecentExp?.title || p.headline || "",
+      "resume.most_recent_company": mostRecentExp?.company || p.current_company || "",
+      "resume.skills_list": skillsList,
     },
     metadata: {
       candidateId: candidateId || "",
       source: "eve_candidate_voice_intake",
     },
-  }), [firstName, candidateId]);
+  });}, [firstName, candidateId, candidateProfile]);
 
   const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
     publicKey: PUBLIC_KEY,
