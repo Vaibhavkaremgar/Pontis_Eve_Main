@@ -61,6 +61,8 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       setCallState(VAPI_STATES.CONNECTING);
       setError(null);
       setTranscript([]);
+      setIsMuted(false);
+      isMutedRef.current = false;
 
       const vapi = new Vapi(publicKey);
       vapiRef.current = vapi;
@@ -111,15 +113,22 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
   }, []);
 
   const [isMuted, setIsMuted] = React.useState(false);
+  const isMutedRef = React.useRef(false);
 
   const toggleMute = React.useCallback(() => {
     if (!vapiRef.current) return;
     try {
-      const next = !isMuted;
+      // Read live state from the SDK if available, otherwise fall back to our ref
+      const currentMuted =
+        typeof vapiRef.current.isMuted === "function"
+          ? vapiRef.current.isMuted()
+          : isMutedRef.current;
+      const next = !currentMuted;
       vapiRef.current.setMuted(next);
+      isMutedRef.current = next;
       setIsMuted(next);
     } catch (_) {}
-  }, [isMuted]);
+  }, []); // no deps — reads live values via refs
 
   // Cleanup on unmount
   React.useEffect(() => {

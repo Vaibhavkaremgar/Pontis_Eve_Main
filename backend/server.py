@@ -31,6 +31,8 @@ openai_client = AsyncOpenAI(
     base_url="https://api.groq.com/openai/v1",
 )
 
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 DOCS_DIR = Path(os.environ.get("EVE_DOCS_DIR", "/tmp/eve_docs"))
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -101,7 +103,7 @@ Return only the JSON object, no markdown, no explanation."""
 
 async def _parse_resume_with_llm(resume_text: str) -> dict:
     resp = await openai_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": PARSE_SYSTEM},
             {"role": "user", "content": resume_text[:12000]},
@@ -806,7 +808,7 @@ async def chat(request: ChatRequest):
 
     try:
         resp = await openai_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.7,
         )
@@ -920,7 +922,7 @@ async def _extract_voice_info(transcript: str) -> dict:
     """Use LLM to extract structured candidate info from voice transcript."""
     try:
         resp = await openai_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": VOICE_EXTRACT_SYSTEM},
                 {"role": "user", "content": transcript[:8000]},
