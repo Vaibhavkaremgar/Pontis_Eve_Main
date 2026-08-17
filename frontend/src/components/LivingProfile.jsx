@@ -12,6 +12,12 @@ function sanitizeHtml(str) {
   return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
 }
 
+function stripHtml(str) {
+  if (!str || typeof str !== "string") return "";
+  const clean = DOMPurify.sanitize(str, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+  return clean.replace(/\s+/g, " ").trim();
+}
+
 function ProfileStrengthBar({ label, percent }) {
   return (
     <div
@@ -381,10 +387,9 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
                     </span>
                   )}
                 </div>
-                <div
-                  className="text-[12.5px] text-[#4A4A48] mt-3 line-clamp-2 leading-relaxed font-normal job-description-html"
-                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
-                />
+                <p className="text-[12.5px] text-[#4A4A48] mt-3 line-clamp-2 leading-relaxed font-normal">
+                  {stripHtml(job.description)}
+                </p>
                 <div className="flex items-center gap-2 mt-3">
                   <button
                     onClick={(e) => { e.stopPropagation(); onDismiss(job.id); }}
