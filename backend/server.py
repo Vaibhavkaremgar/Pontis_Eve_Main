@@ -873,20 +873,9 @@ async def _ensure_voice_intake_table():
 
 
 async def _ensure_schema():
-    """Only manages tables not covered by Alembic (voice intake).
-    Production schema (adam_event_id, eve_outbound_events) is managed by Alembic.
-    """
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
-        await db.execute(text("""
-            ALTER TABLE candidate_job_recommendations
-            ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMPTZ NULL
-        """))
-        await db.execute(text("""
-            ALTER TABLE candidate_job_recommendations
-            ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ NULL
-        """))
         await db.commit()
 
 
