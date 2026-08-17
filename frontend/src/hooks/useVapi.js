@@ -110,6 +110,17 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
     setCallState(VAPI_STATES.PROCESSING);
   }, []);
 
+  const [isMuted, setIsMuted] = React.useState(false);
+
+  const toggleMute = React.useCallback(() => {
+    if (!vapiRef.current) return;
+    try {
+      const next = !isMuted;
+      vapiRef.current.setMuted(next);
+      setIsMuted(next);
+    } catch (_) {}
+  }, [isMuted]);
+
   // Cleanup on unmount
   React.useEffect(() => {
     return () => {
@@ -126,5 +137,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
     callId: callIdRef,
     startCall,
     stopCall,
+    isMuted,
+    toggleMute,
   };
 }

@@ -263,7 +263,7 @@ function Dashboard() {
 
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
-  const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat"
+  const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
 
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback(() => {
@@ -472,7 +472,7 @@ function Dashboard() {
                 data-testid="weak-profile-chat-btn"
                 onClick={() => {
                   setShowWeakProfilePopup(false);
-                  navigate("/onboarding?resume_voice=1");
+                  setCenterView("voice");
                 }}
                 className="flex-1 bg-[#1F1F1F] text-white text-[13px] font-medium rounded-full py-2.5 hover:bg-black transition-colors"
               >
@@ -522,14 +522,13 @@ function Dashboard() {
               <button
                 onClick={() => {
                   if (!voiceCompleted) {
-                    // Resume voice intake from where they left off
-                    navigate("/onboarding?resume_voice=1");
+                    setCenterView("voice");
                   } else {
                     setCenterView("chat");
                   }
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                  centerView === "chat"
+                  centerView === "chat" || centerView === "voice"
                     ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
                     : "text-[#9A9A98] hover:text-[#4A4A48]"
                 }`}
@@ -538,7 +537,20 @@ function Dashboard() {
               </button>
             </div>
 
-            {centerView === "swipe" ? (
+            {centerView === "voice" ? (
+              <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
+                <VoiceIntake
+                  firstName={userProfile.name?.split(" ")[0] || "there"}
+                  candidateId={candidateId}
+                  onComplete={(result) => {
+                    const s = loadOnboardingState();
+                    saveOnboardingState({ ...s, voiceIntakeCompleted: true });
+                    if (result?.profile) refreshProfile();
+                    setCenterView("chat");
+                  }}
+                />
+              </div>
+            ) : centerView === "swipe" ? (
               jobsLoading ? (
                 <div className="flex-1 flex items-center justify-center">
                   <div className="flex items-center gap-2 text-[#9A9A98]">

@@ -136,14 +136,14 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             raw_data = {}
 
-    # Target roles: preferred_roles from voice/chat + current_role
+    # Target roles: preferred_roles (voice-stated desired roles) take priority, then current_role
     preferred_roles = raw_data.get("preferred_roles") or []
     current_role = (candidate.get("current_role") or "").strip()
-    target_roles = list({r for r in preferred_roles if r}) 
+    target_roles = list({r for r in preferred_roles if r})
     if current_role:
         target_roles.append(current_role)
 
-    # Skills
+    # Skills: merge DB skills with any voice-extracted skills stored in raw_data
     skills_raw = candidate.get("skills") or []
     if isinstance(skills_raw, str):
         try:
@@ -151,6 +151,16 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             skills_raw = []
     skills = [s["name"] if isinstance(s, dict) else str(s) for s in skills_raw if s]
+
+    # Also include voice-extracted skills from raw_data (may not yet be merged into skills column)
+    voice_skills = raw_data.get("skills") or []
+    if isinstance(voice_skills, list):
+        seen = {s.lower() for s in skills}
+        for vs in voice_skills:
+            name = vs["name"] if isinstance(vs, dict) else str(vs)
+            if name and name.lower() not in seen:
+                skills.append(name)
+                seen.add(name.lower())
 
     # Past roles from work experience
     work_exp = candidate.get("work_experience") or []

@@ -81,7 +81,7 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
 
     preferred_roles = raw_data.get("preferred_roles") or []
     if preferred_roles:
-        parts.append(f"Preferred Roles:\n{', '.join(preferred_roles)}")
+        parts.append(f"Target / Preferred Roles:\n{', '.join(preferred_roles)}")
 
     certifications = raw_data.get("certifications") or []
     if certifications:

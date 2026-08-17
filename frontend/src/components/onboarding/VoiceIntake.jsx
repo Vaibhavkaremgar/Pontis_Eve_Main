@@ -94,7 +94,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
     },
   }), [firstName, candidateId]);
 
-  const { callState, transcript, error, startCall, stopCall } = useVapi({
+  const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
     publicKey: PUBLIC_KEY,
     assistantId: ASSISTANT_ID,
     assistantOverrides,
@@ -200,6 +200,25 @@ export default function VoiceIntake({ firstName, candidateId, onComplete }) {
           >
             <PhoneOff className="w-4 h-4" strokeWidth={1.75} />
             End call
+          </button>
+        )}
+
+        {isActive && (
+          <button
+            onClick={toggleMute}
+            data-testid="voice-toggle-mute"
+            className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full transition-colors font-normal ${
+              isMuted
+                ? "bg-[#1F1F1F] text-white"
+                : "bg-white border border-black/[0.08] text-[#4A4A48] hover:bg-black/[0.03]"
+            }`}
+          >
+            {isMuted ? (
+              <MicOff className="w-3.5 h-3.5" strokeWidth={1.75} />
+            ) : (
+              <Mic className="w-3.5 h-3.5" strokeWidth={1.75} />
+            )}
+            {isMuted ? "Unmute" : "Mute"}
           </button>
         )}
 
