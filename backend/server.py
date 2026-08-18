@@ -2033,6 +2033,10 @@ LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/google/callback")
+
 
 @api_router.get("/auth/linkedin/init")
 async def linkedin_init():
@@ -2118,6 +2122,96 @@ async def linkedin_callback(code: str, state: str):
 
     profile_param = urllib.parse.quote_plus(
         json.dumps({"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id})
+    )
+
+    if candidate_id and not needs_onboarding:
+        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+    elif candidate_id and needs_onboarding:
+        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
+    else:
+        redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
+
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
+# ---------- Google OAuth ----------
+
+@api_router.get("/auth/google/init")
+async def google_init():
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
+    state = secrets.token_urlsafe(16)
+    params = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "state": state,
+        "scope": "openid profile email",
+        "access_type": "online",
+    })
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+    return {"auth_url": auth_url, "state": state}
+
+
+@api_router.get("/auth/google/callback")
+async def google_callback(code: str, state: str):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": GOOGLE_REDIRECT_URI,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Google token exchange failed.")
+        access_token = token_resp.json().get("access_token")
+
+        userinfo_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if userinfo_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch Google profile.")
+        userinfo = userinfo_resp.json()
+
+    google_id = userinfo.get("sub", "")
+    name = userinfo.get("name", "")
+    email = userinfo.get("email", "")
+    picture = userinfo.get("picture", "")
+
+    candidate_id = None
+    needs_onboarding = False
+    async with SessionLocal() as db:
+        if email:
+            row = await db.execute(
+                text("SELECT id, name, phone, summary, parsing_status FROM candidates WHERE email = :email LIMIT 1"),
+                {"email": email},
+            )
+            existing = row.mappings().fetchone()
+            if existing:
+                candidate_id = str(existing["id"])
+                is_complete = bool(
+                    existing["name"]
+                    and existing["phone"]
+                    and existing["summary"]
+                    and existing["parsing_status"] == "completed"
+                )
+                needs_onboarding = not is_complete
+
+    test_email = os.environ.get("TEST_CANDIDATE_EMAIL", "").strip()
+    if test_email and email.strip().lower() == test_email.lower():
+        needs_onboarding = True
+
+    profile_param = urllib.parse.quote_plus(
+        json.dumps({"name": name, "email": email, "picture": picture, "google_id": google_id})
     )
 
     if candidate_id and not needs_onboarding:

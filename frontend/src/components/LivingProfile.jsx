@@ -1042,6 +1042,16 @@ async function downloadProfilePdf(contentRef, candidateName) {
   document.body.appendChild(clone);
 
   const firstName = candidateName ? candidateName.split(" ")[0] : null;
+  // Remove avatar/initials badge (the shrink-0 sibling in the header card flex row)
+  const headerCard = clone.querySelector("[data-testid='profile-header-card']");
+  if (headerCard) {
+    const flexRow = headerCard.querySelector(".flex.items-start.justify-between");
+    if (flexRow) {
+      const avatar = flexRow.querySelector("img.rounded-full, div.rounded-full.shrink-0");
+      avatar?.remove();
+    }
+  }
+
   clone.querySelectorAll("*").forEach((node) => {
     if (node.nodeType !== 1) return;
     const text = node.textContent.trim();
