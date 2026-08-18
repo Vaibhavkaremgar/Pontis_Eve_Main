@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell } from "lucide-react";
+import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download } from "lucide-react";
 import { JobDetailModal } from "./SwipeJobCard";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -287,20 +287,10 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
     }
   }, [candidateId, onJobViewed]);
 
-  const handleApply = React.useCallback(async () => {
-    if (!detailJob || applying) return;
-    if (!detailJob.job_url) return;
-    setApplying(true);
-    try {
-      await axios.post(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/apply`);
-      window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
-      setDetailJob((j) => ({ ...j, applied: true }));
-    } catch {
-      // silent
-    } finally {
-      setApplying(false);
-    }
-  }, [detailJob, applying, candidateId]);
+  const handleApply = React.useCallback(() => {
+    if (!detailJob || !detailJob.job_url) return;
+    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
+  }, [detailJob]);
 
   const handleNotInterested = React.useCallback(async () => {
     if (!detailJob) return;
@@ -1039,6 +1029,76 @@ const TAB_TITLES = {
   opportunities: "Notifications",
 };
 
+async function downloadProfilePdf(contentRef, candidateName) {
+  const { default: jsPDF } = await import("jspdf");
+  const { default: html2canvas } = await import("html2canvas");
+
+  const el = contentRef.current;
+  if (!el) return;
+
+  // Temporarily expand the scrollable container to its full scroll height
+  const prevOverflow = el.style.overflow;
+  const prevMaxHeight = el.style.maxHeight;
+  const prevHeight = el.style.height;
+  el.style.overflow = "visible";
+  el.style.maxHeight = "none";
+  el.style.height = "auto";
+
+  try {
+    const canvas = await html2canvas(el, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#FDFDFC",
+      logging: false,
+    });
+
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const margin = 12;
+    const printW = pageW - margin * 2;
+    const imgW = canvas.width;
+    const imgH = canvas.height;
+    const ratio = printW / imgW;
+    const printH = imgH * ratio;
+
+    let yOffset = 0;
+    let pageCount = 0;
+    const pageContentH = pageH - margin * 2;
+
+    while (yOffset < printH) {
+      if (pageCount > 0) pdf.addPage();
+      // srcY in canvas pixels for this page slice
+      const srcY = (yOffset / ratio);
+      const sliceH = Math.min(pageContentH / ratio, imgH - srcY);
+
+      // Create a slice canvas
+      const sliceCanvas = document.createElement("canvas");
+      sliceCanvas.width = imgW;
+      sliceCanvas.height = Math.ceil(sliceH);
+      const ctx = sliceCanvas.getContext("2d");
+      ctx.drawImage(canvas, 0, srcY, imgW, sliceH, 0, 0, imgW, sliceH);
+
+      const sliceData = sliceCanvas.toDataURL("image/png");
+      pdf.addImage(sliceData, "PNG", margin, margin, printW, sliceH * ratio);
+
+      yOffset += pageContentH;
+      pageCount++;
+    }
+
+    const filename = candidateName
+      ? `${candidateName.replace(/\s+/g, "_")}_profile.pdf`
+      : "candidate_profile.pdf";
+    pdf.save(filename);
+  } finally {
+    el.style.overflow = prevOverflow;
+    el.style.maxHeight = prevMaxHeight;
+    el.style.height = prevHeight;
+  }
+}
+
 export default function LivingProfile({
   activeTab,
   userProfile,
@@ -1059,6 +1119,19 @@ export default function LivingProfile({
   onInterested,
   onJobViewed,
 }) {
+  const profileContentRef = React.useRef(null);
+  const [pdfGenerating, setPdfGenerating] = React.useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (pdfGenerating) return;
+    setPdfGenerating(true);
+    try {
+      await downloadProfilePdf(profileContentRef, userProfile.name);
+    } finally {
+      setPdfGenerating(false);
+    }
+  };
+
   return (
     <aside
       data-testid="right-living-profile"
@@ -1072,14 +1145,28 @@ export default function LivingProfile({
           </h1>
           <Info className="w-3.5 h-3.5 text-[#B5B5B3]" strokeWidth={1.5} />
         </div>
-        <ProfileStrengthBar
-          label={userProfile.strength}
-          percent={userProfile.strengthPercent}
-        />
+        <div className="flex items-center gap-3">
+          {activeTab === "profile" && (
+            <button
+              onClick={handleDownloadPdf}
+              disabled={pdfGenerating}
+              data-testid="download-profile-pdf-btn"
+              className="flex items-center gap-1.5 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.07] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+              title="Download profile as PDF"
+            >
+              <Download className="w-3.5 h-3.5" strokeWidth={1.75} />
+              {pdfGenerating ? "Generating…" : "Download PDF"}
+            </button>
+          )}
+          <ProfileStrengthBar
+            label={userProfile.strength}
+            percent={userProfile.strengthPercent}
+          />
+        </div>
       </div>
 
       {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
+      <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
         <div className="max-w-2xl mx-auto">
           {activeTab === "profile" && <ProfileTab user={userProfile} onToggleOpenToMatches={onToggleOpenToMatches} />}
           {activeTab === "jobs" && (

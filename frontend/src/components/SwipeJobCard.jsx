@@ -196,20 +196,15 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
         >
           Not Interested
         </button>
-        {job.applied ? (
-          <span className="flex-1 py-2.5 rounded-xl bg-[#E7F2E4] text-[#2E7538] text-[13px] font-medium text-center flex items-center justify-center">
-            Applied ✓
-          </span>
-        ) : (
-          <button
-            onClick={onApply}
-            disabled={applying}
-            className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
-          >
-            <ExternalLink className="w-3.5 h-3.5" strokeWidth={2} />
-            {applying ? "Opening…" : "Apply"}
-          </button>
-        )}
+        <button
+          onClick={onApply}
+          disabled={!job.job_url}
+          className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+          title={job.job_url ? "Apply on the company's website" : "Application link not available"}
+        >
+          <ExternalLink className="w-3.5 h-3.5" strokeWidth={2} />
+          Apply Now
+        </button>
       </div>
     </div>
   );
@@ -337,7 +332,6 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
   const [index, setIndex] = React.useState(0);
   const [detailJob, setDetailJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
-  const [confirmApplyJob, setConfirmApplyJob] = React.useState(null);
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
 
@@ -377,32 +371,15 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
     }
   }, [current, candidateId, onJobsChange, advance]);
 
-  // APPLY → ask for explicit confirmation first
+  // APPLY → open the company's careers page directly in a new tab
   const handleApply = React.useCallback(() => {
     if (!detailJob || applying) return;
     if (!detailJob.job_url) {
       toast.error("Application link is not available for this job.");
       return;
     }
-    setConfirmApplyJob(detailJob);
+    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
   }, [detailJob, applying]);
-
-  const handleConfirmApply = React.useCallback(async () => {
-    const job = confirmApplyJob;
-    setConfirmApplyJob(null);
-    if (!job) return;
-    setApplying(true);
-    try {
-      await axios.post(`${API}/candidate/${candidateId}/jobs/${job.id}/apply`);
-      onJobsChange?.();
-      window.open(job.job_url, "_blank", "noopener,noreferrer");
-      setDetailJob((j) => j ? { ...j, applied: true } : j);
-    } catch {
-      toast.error("Couldn't record your application. Please try again.");
-    } finally {
-      setApplying(false);
-    }
-  }, [confirmApplyJob, candidateId, onJobsChange]);
 
   // NOT INTERESTED from detail modal → dismiss
   const handleNotInterestedFromDetail = React.useCallback(async () => {
@@ -442,34 +419,6 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 relative">
-      {/* Apply confirmation dialog */}
-      {confirmApplyJob && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/30">
-          <div className="bg-white rounded-2xl shadow-xl px-7 py-6 max-w-xs w-full mx-4 flex flex-col gap-4">
-            <p className="text-[14px] font-medium text-[#1F1F1F]">
-              Confirm application
-            </p>
-            <p className="text-[13px] text-[#4A4A48] leading-relaxed">
-              Submit your application for <span className="font-medium">{confirmApplyJob.title}</span> at <span className="font-medium">{confirmApplyJob.company}</span>?
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setConfirmApplyJob(null)}
-                className="flex-1 py-2.5 rounded-xl bg-black/[0.05] text-[#1F1F1F] text-[13px] font-normal hover:bg-black/[0.09] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmApply}
-                className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors"
-              >
-                Yes, apply
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Detail modal overlay */}
       {detailJob && (
         <JobDetailModal

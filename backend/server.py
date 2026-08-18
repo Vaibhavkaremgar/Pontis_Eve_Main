@@ -826,11 +826,13 @@ JOB RECOMMENDATIONS — STRICT RULES:
 - If "REAL JOB MATCHES FROM DATABASE" is present in the context, you MUST present those jobs directly. Do NOT say you are pulling jobs, loading jobs, or that results will appear elsewhere.
 - If no "REAL JOB MATCHES FROM DATABASE" section is present and the candidate asks for jobs, say no matches were found right now and suggest they check back after their profile is more complete.
 - You may summarise or explain job data that has been returned to you, but you must not add details that were not in the source data.
-- When a candidate expresses interest in a job, treat that as interest only. Always ask for explicit confirmation ("Shall I go ahead and submit your application?") before indicating any application has been submitted.
+- When a candidate expresses interest in a specific job, tell them to click the Apply Now button on the job card to complete their application on the company's website. Never say you have submitted or will submit their application.
 
-APPLICATION WORKFLOW:
-- Expressing interest in a job ≠ applying. Never say an application has been submitted unless the candidate has explicitly confirmed they want to apply.
-- If a candidate says "I want to apply" or similar, confirm: "Just to confirm — would you like me to submit your application for [role] at [company]?"
+APPLICATION WORKFLOW — STRICT RULES:
+- NEVER say or imply that an application has been submitted. Eve does NOT submit applications.
+- When a candidate expresses interest in a job, respond with something like: "I haven't submitted your application. Click Apply Now to complete it on the company's website." Then direct them to use the Apply Now button shown in the job card.
+- Do NOT ask "Shall I submit your application?" — Eve cannot submit applications.
+- The Apply Now button opens the company's actual careers/application page in a new tab. The candidate completes the application there.
 
 FIELD DEFINITIONS — use exactly these keys:
   current_role   : The candidate's job TITLE (e.g. "Python Backend Developer", "Data Analyst").
@@ -1002,10 +1004,73 @@ _JOB_SEARCH_PHRASES = (
     "recommend jobs", "job recommendations", "show roles", "find roles",
 )
 
+_PREFERENCE_UPDATE_PHRASES = (
+    "interested in", "looking for", "want to work", "want a", "want to be",
+    "prefer", "mainly interested", "mostly interested", "focus on", "focused on",
+    "switch to", "move into", "transition to", "targeting", "seeking",
+)
+
 
 def _is_job_search_request(text: str) -> bool:
     t = text.lower()
     return any(phrase in t for phrase in _JOB_SEARCH_PHRASES)
+
+
+def _is_preference_update_with_job_search(text: str) -> bool:
+    """Return True when the message updates a role preference AND requests job matches."""
+    t = text.lower()
+    has_preference = any(phrase in t for phrase in _PREFERENCE_UPDATE_PHRASES)
+    has_job_search = _is_job_search_request(t) or any(
+        w in t for w in ("show me", "matching", "matches", "jobs", "roles")
+    )
+    return has_preference and has_job_search
+
+
+async def _extract_preferred_roles_from_message(message: str) -> list[str]:
+    """Use LLM to extract preferred role(s) from a candidate preference statement."""
+    resp = await openai_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": (
+                "Extract the job role(s) the candidate wants to work in from the message. "
+                "Return ONLY valid JSON: {\"preferred_roles\": [\"role1\", \"role2\"]}. "
+                "Use concise role titles (e.g. 'Python Backend Developer'). "
+                "Return an empty list if no clear role is mentioned."
+            )},
+            {"role": "user", "content": message},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    data = json.loads(resp.choices[0].message.content or "{}")
+    roles = data.get("preferred_roles") or []
+    return [r for r in roles if isinstance(r, str) and r.strip()]
+
+
+async def _update_preferred_roles(candidate_id: str, new_roles: list[str]) -> None:
+    """Overwrite preferred_roles in candidate raw_data with the new list."""
+    if not new_roles:
+        return
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT raw_data FROM candidates WHERE id = :cid LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        result = row.fetchone()
+    raw = {}
+    if result and result[0]:
+        try:
+            raw = result[0] if isinstance(result[0], dict) else json.loads(result[0])
+        except Exception:
+            raw = {}
+    raw["preferred_roles"] = new_roles
+    async with SessionLocal() as db:
+        await db.execute(
+            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+            {"rd": json.dumps(raw), "cid": candidate_id},
+        )
+        await db.commit()
+    logger.info("[chat] Updated preferred_roles for candidate %s: %s", candidate_id, new_roles)
 
 
 def _format_jobs_for_context(jobs: list) -> str:
@@ -1055,7 +1120,21 @@ async def chat(request: ChatRequest):
     job_context = ""
     if request.candidate_id and _is_job_search_request(last_user.content):
         try:
-            candidate_row = await _get_candidate_row(request.candidate_id)
+            # Check if this is a preference update + job search — refresh matching with new prefs
+            if _is_preference_update_with_job_search(last_user.content):
+                new_roles = await _extract_preferred_roles_from_message(last_user.content)
+                if new_roles:
+                    await _update_preferred_roles(request.candidate_id, new_roles)
+                    # Reload candidate row with updated preferences before matching
+                    candidate_row = await _get_candidate_row(request.candidate_id)
+                    from candidate_job_matching_service import refresh_candidate_job_matches
+                    await refresh_candidate_job_matches(request.candidate_id, candidate_row, SessionLocal)
+                    logger.info("[chat] Re-ran matching after preference update for candidate %s", request.candidate_id)
+                else:
+                    candidate_row = await _get_candidate_row(request.candidate_id)
+            else:
+                candidate_row = await _get_candidate_row(request.candidate_id)
+
             # Ensure recommendations exist (runs matching if none yet)
             async with SessionLocal() as db:
                 count_row = await db.execute(
@@ -1101,7 +1180,7 @@ async def chat(request: ChatRequest):
             job_context = "\n\nREAL JOB MATCHES FROM DATABASE:\n" + _format_jobs_for_context(jobs)
             logger.info("[chat] Injected %d real job matches for candidate %s", len(jobs), request.candidate_id)
         except Exception as e:
-            logger.warning("[chat] Job retrieval failed for candidate %s: %s", request.candidate_id, e)
+            logger.warning("[chat] Job retrieval/matching failed for candidate %s: %s", request.candidate_id, e)
             job_context = "\n\nJob search attempted but no results could be retrieved at this time."
 
     system_prompt = EVE_SYSTEM_TEMPLATE.format(
