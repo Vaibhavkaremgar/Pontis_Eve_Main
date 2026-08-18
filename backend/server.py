@@ -151,7 +151,9 @@ def _normalize_for_frontend(c: dict) -> dict:
         except Exception:
             raw_data = {}
 
-    return {
+    voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
+
+    profile = {
         "candidate_id": str(c.get("id") or c.get("candidate_id") or ""),
         "name": c.get("name", ""),
         "email": c.get("email", ""),
@@ -169,6 +171,122 @@ def _normalize_for_frontend(c: dict) -> dict:
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
     }
+    if voice_intake_resume:
+        profile["voice_intake_resume"] = voice_intake_resume
+    return profile
+
+
+def _parse_raw_data(raw_data: Any) -> dict:
+    if isinstance(raw_data, dict):
+        return dict(raw_data)
+    if isinstance(raw_data, str):
+        try:
+            parsed = json.loads(raw_data)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _clean_str(value: Any) -> str:
+    return " ".join(str(value).split()) if value is not None else ""
+
+
+def _voice_intake_question_for_field(field_label: str) -> str:
+    mapping = {
+        "Preferred Roles": "What roles are you targeting right now?",
+        "Availability": "When would you be available to start?",
+        "Location": "What location should I keep in mind for your search?",
+        "Location Preferences": "Do you have any location preferences, like remote, hybrid, or specific cities?",
+        "Work Type Preference": "Do you prefer remote, hybrid, or on-site roles?",
+        "Notice Period": "What notice period should I note?",
+        "Salary Expectation": "What salary range are you targeting?",
+        "Target Industries": "Any industries you want to focus on?",
+        "Career Goals": "What are you aiming for next in your career?",
+        "Additional Information": "Is there anything else you'd like me to know?",
+        "Experience Years": "About how many years of experience should I note?",
+        "Skills": "What skills should I make sure we capture?",
+        "Work Experience": "Can you tell me about your most recent relevant role?",
+        "Education": "Can you share your education background?",
+        "Bio/Summary": "How would you describe your background in a sentence or two?",
+        "Headline / Current Role": "What current role or headline should I use?",
+    }
+    return mapping.get(field_label, "Is there anything else you'd like me to know?")
+
+
+def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str]]:
+    completed: list[dict] = []
+    last_assistant: Optional[str] = None
+
+    for note in voice_notes or []:
+        if isinstance(note, dict):
+            role = note.get("role")
+            text = note.get("text", "")
+            is_final = note.get("final", True)
+        else:
+            role = getattr(note, "role", None)
+            text = getattr(note, "text", "")
+            is_final = getattr(note, "final", True)
+
+        if not is_final:
+            continue
+
+        cleaned = _clean_str(text)
+        if not cleaned:
+            continue
+
+        if role == "assistant":
+            last_assistant = cleaned
+        elif role == "user" and last_assistant:
+            completed.append({"question": last_assistant, "answer": cleaned})
+            last_assistant = None
+
+    return completed, last_assistant
+
+
+def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
+    raw_data = _parse_raw_data(profile.get("raw_data"))
+    voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+    status = str(voice_intake.get("status") or "").lower()
+    if status == "completed":
+        return None
+    if not voice_intake:
+        return None
+
+    voice_notes = voice_intake.get("voice_notes") or []
+    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
+
+    _, missing_fields = _build_profile_context({**profile, "raw_data": raw_data})
+
+    next_question = pending_question or voice_intake.get("next_question")
+    if not next_question and missing_fields:
+        next_question = _voice_intake_question_for_field(missing_fields[0])
+
+    resume = {
+        "status": "in_progress",
+        "progress": int(voice_intake.get("progress") or len(completed_turns)),
+        "completed_turns": completed_turns[-3:],
+        "has_open_question": bool(pending_question),
+    }
+    if completed_turns:
+        resume["latest_completed_question"] = completed_turns[-1]["question"]
+        resume["latest_completed_answer"] = completed_turns[-1]["answer"]
+    if next_question:
+        resume["next_question"] = next_question
+    return resume
+
+
+async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
+    existing = await _get_candidate_row(candidate_id)
+    raw_data = _parse_raw_data(existing.get("raw_data"))
+    raw_data["voice_intake"] = resume
+
+    async with SessionLocal() as db:
+        await db.execute(
+            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now(), updated_by_source = 'eve_voice' WHERE id = :cid"),
+            {"rd": json.dumps(raw_data), "cid": candidate_id},
+        )
+        await db.commit()
 
 
 async def _get_candidate_row(candidate_id: str) -> dict:
@@ -811,6 +929,9 @@ BEHAVIOR:
 - NEVER ask for information that is already present in the candidate profile above (name, email, phone, resume, skills, experience, etc.).
 - When "Resume status: Available" appears in the profile above, you MUST NOT say you don't have the resume, MUST NOT say you can't see the resume, and MUST NOT ask the candidate to upload or share their resume. Treat all parsed resume data (role, skills, experience, education) as fully known.
 - Only ask the candidate to upload a resume when "Resume status: Not available" appears in the profile above.
+- If a VOICE INTAKE RESUME section is present with status in_progress, treat the conversation as a continuation of the interrupted intake. Briefly explain that you were in the middle of the intake, use the saved completed turns and candidate profile to avoid repeating anything already known, and ask exactly one next unanswered question.
+- Never ask about information that is already present in the VOICE INTAKE RESUME section, the profile above, or the saved chat memory.
+- Once the VOICE INTAKE RESUME section is absent or marked completed, return to normal career-assistant behavior.
 - If important profile fields are missing, ask ONE focused question to fill the most critical gap.
 - When the candidate provides new professional information, extract it and include a "profile_updates" JSON block at the END of your reply in this exact format:
   <<<PROFILE_UPDATES>>>
@@ -1087,6 +1208,30 @@ def _format_jobs_for_context(jobs: list) -> str:
     return "\n".join(lines)
 
 
+def _format_voice_intake_resume_context(resume: dict) -> str:
+    lines = [
+        f"- Status: {resume.get('status', 'in_progress')}",
+        f"- Progress: {int(resume.get('progress') or 0)} completed question(s)",
+    ]
+    if resume.get("latest_completed_question"):
+        lines.append(f"- Latest completed question: {resume['latest_completed_question']}")
+    if resume.get("latest_completed_answer"):
+        lines.append(f"- Latest completed answer: {resume['latest_completed_answer']}")
+    if resume.get("next_question"):
+        lines.append(f"- Next question to ask: {resume['next_question']}")
+    if resume.get("completed_turns"):
+        turns = resume["completed_turns"][-3:]
+        formatted = []
+        for pair in turns:
+            q = _clean_str(pair.get("question"))
+            a = _clean_str(pair.get("answer"))
+            if q and a:
+                formatted.append(f"Q: {q} | A: {a}")
+        if formatted:
+            lines.append("- Completed turns: " + " || ".join(formatted))
+    return "\n".join(lines)
+
+
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     if not request.messages:
@@ -1100,6 +1245,7 @@ async def chat(request: ChatRequest):
     profile_context = "No profile loaded yet."
     missing_fields: list = []
     persisted_window: list[dict] = []
+    voice_resume: Optional[dict] = None
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
@@ -1112,6 +1258,9 @@ async def chat(request: ChatRequest):
             frontend_profile = _normalize_for_frontend(row)
             frontend_profile["raw_data"] = raw_data
             profile_context, missing_fields = _build_profile_context(frontend_profile)
+            voice_resume = frontend_profile.get("voice_intake_resume") or _build_voice_intake_resume(frontend_profile)
+            if voice_resume:
+                profile_context += "\n\nVOICE INTAKE RESUME:\n" + _format_voice_intake_resume_context(voice_resume)
             persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
             pass
@@ -1241,12 +1390,19 @@ async def chat(request: ChatRequest):
 class VoiceNote(BaseModel):
     role: str  # "assistant" | "user"
     text: str
+    final: bool = True
 
 
 class VoiceCandidateIntakeRequest(BaseModel):
     transcript: str
     voice_notes: Optional[List[VoiceNote]] = None
     candidate_id: str  # validated server-side against DB
+
+
+class VoiceCandidateIntakeProgressRequest(BaseModel):
+    transcript: Optional[str] = None
+    voice_notes: Optional[List[VoiceNote]] = None
+    candidate_id: str
 
 
 # ---------- Voice intake migration (idempotent) ----------
@@ -1546,6 +1702,21 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         )
         await db.commit()
 
+    voice_resume = {
+        "status": "in_progress",
+        "progress": len([n for n in (request.voice_notes or []) if n.role == "user" and n.final]),
+        "voice_notes": [n.model_dump() for n in (request.voice_notes or [])],
+        "next_question": None,
+    }
+    await _save_voice_intake_resume(request.candidate_id, voice_resume)
+    completed_turns, _ = _voice_intake_turn_pairs([n.model_dump() for n in (request.voice_notes or [])])
+    completed_resume = {
+        "status": "completed",
+        "progress": len(completed_turns),
+        "voice_notes": [n.model_dump() for n in (request.voice_notes or [])],
+        "completed_turns": completed_turns[-3:],
+    }
+
     # 4. Extract structured info via LLM
     voice_data = await _extract_voice_info(transcript)
 
@@ -1577,6 +1748,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # Always persist raw_data (availability, preferred_roles, certifications, etc.)
     merged_raw = merged.get("raw_data") or {}
+    merged_raw["voice_intake"] = completed_resume
     set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
     update_params["raw_data"] = json.dumps(merged_raw)
 
@@ -1616,6 +1788,35 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         "fields_updated": [c.split(" ")[0].strip('"') for c in set_clauses
                            if not c.startswith("updated") and not c.startswith("raw_data")],
         "profile": updated_profile,
+    }
+
+
+@api_router.post("/voice/candidate-intake/progress")
+async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
+    """Persist an in-progress voice intake snapshot without completing the profile merge."""
+    candidate = await _get_candidate_row(request.candidate_id)
+    voice_notes = [n.model_dump() for n in (request.voice_notes or [])]
+    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
+    _, missing_fields = _build_profile_context(_normalize_for_frontend(candidate))
+    resume = {
+        "status": "in_progress",
+        "progress": len(completed_turns),
+        "voice_notes": voice_notes,
+        "completed_turns": completed_turns[-3:],
+        "has_open_question": bool(pending_question),
+    }
+    if completed_turns:
+        resume["latest_completed_question"] = completed_turns[-1]["question"]
+        resume["latest_completed_answer"] = completed_turns[-1]["answer"]
+    next_question = pending_question or (_voice_intake_question_for_field(missing_fields[0]) if missing_fields else None)
+    if next_question:
+        resume["next_question"] = next_question
+
+    await _save_voice_intake_resume(request.candidate_id, resume)
+    return {
+        "status": "saved",
+        "candidate_id": request.candidate_id,
+        "voice_intake_resume": resume,
     }
 
 

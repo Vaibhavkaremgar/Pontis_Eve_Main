@@ -72,10 +72,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const [showTranscript, setShowTranscript] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
+  const progressTimerRef = React.useRef(null);
 
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
   const persistProgress = React.useCallback((turns) => {
-    const candidateTurns = turns.filter((t) => t.role === "user").length;
+    const candidateTurns = turns.filter((t) => t.role === "user" && t.final !== false).length;
     const s = loadOnboardingState();
     if (candidateTurns > (s.voiceIntakeProgress ?? 0)) {
       saveOnboardingState({ ...s, voiceIntakeProgress: candidateTurns });
@@ -115,7 +116,32 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   // Persist progress whenever transcript grows
   React.useEffect(() => {
     if (transcript.length > 0) persistProgress(transcript);
-  }, [transcript, persistProgress]);
+    if (!candidateId || transcript.length === 0) return undefined;
+
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+    }
+
+    const payload = {
+      transcript: buildTranscriptText(transcript),
+      voice_notes: transcript.map((turn) => ({
+        role: turn.role,
+        text: turn.text,
+        final: turn.final !== false,
+      })),
+      candidate_id: candidateId,
+    };
+
+    progressTimerRef.current = setTimeout(() => {
+      axios.post(`${API}/voice/candidate-intake/progress`, payload).catch(() => {});
+    }, 900);
+
+    return () => {
+      if (progressTimerRef.current) {
+        clearTimeout(progressTimerRef.current);
+      }
+    };
+  }, [transcript, persistProgress, candidateId]);
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {
@@ -126,7 +152,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     if (!transcriptText.trim()) {
       // Empty transcript — skip backend call, go to completed
       console.log("[voice-intake] navigating to summary");
-      onComplete(null);
+      onComplete({ status: "partial" });
       return;
     }
 
@@ -146,7 +172,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         toast.error("Couldn't save your voice intake — your profile is still intact.");
         console.log("[voice-intake] navigating to summary");
         // Still advance — don't block onboarding
-        onComplete(null);
+        onComplete({ status: "partial" });
       })
       .finally(() => setSubmitting(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps

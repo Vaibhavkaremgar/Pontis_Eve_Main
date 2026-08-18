@@ -631,11 +631,13 @@ export default function Onboarding() {
       const elapsed = Date.now() - startedAt;
       setVoiceElapsedMs(elapsed);
     }
-    setVoiceIntakeCompleted(true);
+    const completed =
+      intakeResult?.status === "completed" || intakeResult?.status === "duplicate";
+    setVoiceIntakeCompleted(completed);
     // If we came from the dashboard (resume_voice flow), go back to dashboard
     if (resumeVoiceParam) {
       const s = loadOnboardingState();
-      saveOnboardingState({ ...s, voiceIntakeCompleted: true });
+      saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
       navigate("/dashboard");
     } else {
       setStep(5);

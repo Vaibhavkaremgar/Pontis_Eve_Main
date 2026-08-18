@@ -64,6 +64,7 @@ function buildFallbackProfile(isOpenToMatches = true) {
     preferred_roles: [],
     certifications: [],
     additional_information: "",
+    voice_intake_resume: null,
   };
 }
 
@@ -108,6 +109,8 @@ function Dashboard() {
   const [userProfile, setUserProfile] = React.useState(() =>
     applyStrength(buildFallbackProfile(isOpenToMatches), voiceCompleted)
   );
+  const voiceIntakeResume = userProfile.voice_intake_resume;
+  const voiceIntakeInProgress = !voiceCompleted && voiceIntakeResume?.status === "in_progress";
 
   // All state declarations up front so effects can reference them
   const [chats, setChats] = React.useState([
@@ -149,6 +152,7 @@ function Dashboard() {
           preferred_roles: data.preferred_roles ?? [],
           certifications: data.certifications ?? [],
           additional_information: data.additional_information ?? "",
+          voice_intake_resume: data.voice_intake_resume ?? null,
         }, voiceCompleted));
       })
       .catch(() => {
@@ -170,6 +174,7 @@ function Dashboard() {
           preferred_roles: parsed.preferred_roles ?? [],
           certifications: parsed.certifications ?? [],
           additional_information: parsed.additional_information ?? "",
+          voice_intake_resume: parsed.voice_intake_resume ?? null,
         }, voiceCompleted));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -198,6 +203,7 @@ function Dashboard() {
           preferred_roles: data.preferred_roles?.length ? data.preferred_roles : prev.preferred_roles,
           certifications: data.certifications?.length ? data.certifications : prev.certifications,
           additional_information: data.additional_information ?? prev.additional_information,
+          voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
         }, vc)
       );
     } catch (err) {
@@ -237,6 +243,20 @@ function Dashboard() {
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
+
+  // If voice intake was interrupted, replace the default greeting with a resume prompt.
+  React.useEffect(() => {
+    const firstName = userProfile.name?.split(" ")[0];
+    if (!firstName) return;
+    if (!voiceIntakeInProgress || !voiceIntakeResume?.next_question) return;
+
+    const resumeGreeting = `Hi ${firstName} - we were in the middle of your intake. ${voiceIntakeResume.next_question}`;
+    setChats((prev) =>
+      prev[0]?.id === "msg-1"
+        ? [{ ...prev[0], content: resumeGreeting }, ...prev.slice(1)]
+        : prev
+    );
+  }, [userProfile.name, voiceIntakeInProgress, voiceIntakeResume?.next_question]);
 
   // Opportunities count
   React.useEffect(() => {
@@ -470,7 +490,7 @@ function Dashboard() {
                 data-testid="weak-profile-chat-btn"
                 onClick={() => {
                   setShowWeakProfilePopup(false);
-                  setCenterView("voice");
+                  setCenterView(voiceIntakeInProgress ? "chat" : "voice");
                 }}
                 className="flex-1 bg-[#1F1F1F] text-white text-[13px] font-medium rounded-full py-2.5 hover:bg-black transition-colors"
               >
@@ -519,7 +539,9 @@ function Dashboard() {
               </button>
               <button
                 onClick={() => {
-                  if (!voiceCompleted) {
+                  if (voiceIntakeInProgress) {
+                    setCenterView("chat");
+                  } else if (!voiceCompleted) {
                     setCenterView("voice");
                   } else {
                     setCenterView("chat");
@@ -543,7 +565,9 @@ function Dashboard() {
                   candidateProfile={userProfile}
                   onComplete={(result) => {
                     const s = loadOnboardingState();
-                    saveOnboardingState({ ...s, voiceIntakeCompleted: true });
+                    const completed =
+                      result?.status === "completed" || result?.status === "duplicate";
+                    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
                     if (result?.profile) refreshProfile();
                     setCenterView("chat");
                   }}
