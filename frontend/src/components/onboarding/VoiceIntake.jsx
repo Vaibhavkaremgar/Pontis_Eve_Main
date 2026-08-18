@@ -87,25 +87,50 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const assistantOverrides = React.useMemo(() => {
     const p = candidateProfile || {};
     const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
-    const skillsList = Array.isArray(p.keySkills) && p.keySkills.length > 0
-      ? p.keySkills.slice(0, 10).join(", ")
-      : (Array.isArray(p.skills) && p.skills.length > 0 ? p.skills.slice(0, 10).join(", ") : "");
-    return ({
-    variableValues: {
-      candidateName: firstName || "there",
-      candidateId: candidateId || "",
-      "candidate.name": firstName || "there",
-      "candidate.number": p.phone || "",
-      "resume.years_experience": p.experience_years != null ? String(p.experience_years) : "",
-      "resume.most_recent_title": mostRecentExp?.title || p.headline || "",
-      "resume.most_recent_company": mostRecentExp?.company || p.current_company || "",
-      "resume.skills_list": skillsList,
-    },
-    metadata: {
-      candidateId: candidateId || "",
-      source: "eve_candidate_voice_intake",
-    },
-  });}, [firstName, candidateId, candidateProfile]);
+    const skills = Array.isArray(p.keySkills) && p.keySkills.length > 0
+      ? p.keySkills.slice(0, 15).join(", ")
+      : (Array.isArray(p.skills) && p.skills.length > 0 ? p.skills.slice(0, 15).join(", ") : "");
+    const workExp = Array.isArray(p.experience) && p.experience.length > 0
+      ? p.experience.slice(0, 5).map((e) => `${e.title || ""} at ${e.company || ""}${e.dates ? " (" + e.dates + ")" : ""}`).join("; ")
+      : "";
+    const education = Array.isArray(p.education) && p.education.length > 0
+      ? p.education.slice(0, 3).map((e) => `${e.degree || ""} at ${e.institution || ""}`).join("; ")
+      : "";
+    const preferredRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0
+      ? p.preferred_roles.join(", ") : "";
+    const vir = p.voice_intake_resume || {};
+    const s = loadOnboardingState();
+    return {
+      variableValues: {
+        candidate_name: p.name || firstName || "",
+        candidate_id: candidateId || "",
+        candidate_email: p.email || "",
+        candidate_phone: p.phone || "",
+        candidate_location: p.location || "",
+        experience_years: p.experience_years != null ? String(p.experience_years) : "",
+        current_role: p.headline || "",
+        current_company: mostRecentExp?.company || "",
+        skills,
+        work_experience: workExp,
+        education,
+        preferred_roles: preferredRoles,
+        salary_expectation: p.salary_expectation || "",
+        notice_period: p.notice_period || "",
+        availability: p.availability || "",
+        work_type: p.work_type_preference || "",
+        ...(vir.progress != null ? { voice_intake_progress: String(vir.progress) } : {}),
+        ...(vir.completed_turns?.length > 0 ? {
+          voice_intake_answers: vir.completed_turns
+            .map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | "),
+        } : {}),
+        ...(vir.next_question ? { voice_intake_next_question: vir.next_question } : {}),
+      },
+      metadata: {
+        candidateId: candidateId || "",
+        source: "eve_candidate_voice_intake",
+      },
+    };
+  }, [firstName, candidateId, candidateProfile]);
 
   const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
     publicKey: PUBLIC_KEY,
@@ -180,6 +205,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
   const handleStartCall = () => {
     console.log("[voice-intake] button clicked");
+    // TODO: remove before production — temporary variable inspection
+    console.log("[voice-intake][DEBUG] assistantOverrides.variableValues:", assistantOverrides.variableValues);
     startCall();
   };
 
