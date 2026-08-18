@@ -822,9 +822,10 @@ BEHAVIOR:
 
 JOB RECOMMENDATIONS — STRICT RULES:
 - NEVER invent, fabricate, or hallucinate job titles, company names, salaries, benefits, job descriptions, or hiring status.
-- Job recommendations and details must come ONLY from data returned by the job search/matching system (provided in context when available).
+- When the candidate asks for jobs/matches, the real database results will appear under "REAL JOB MATCHES FROM DATABASE" in the profile context above. Present ONLY those results — title, company, location, salary, match score, and a brief description summary.
+- If "REAL JOB MATCHES FROM DATABASE" is present in the context, you MUST present those jobs directly. Do NOT say you are pulling jobs, loading jobs, or that results will appear elsewhere.
+- If no "REAL JOB MATCHES FROM DATABASE" section is present and the candidate asks for jobs, say no matches were found right now and suggest they check back after their profile is more complete.
 - You may summarise or explain job data that has been returned to you, but you must not add details that were not in the source data.
-- If no job data has been provided to you in this conversation, tell the candidate you will surface their matches from the jobs panel — do NOT make up job listings.
 - When a candidate expresses interest in a job, treat that as interest only. Always ask for explicit confirmation ("Shall I go ahead and submit your application?") before indicating any application has been submitted.
 
 APPLICATION WORKFLOW:
@@ -993,6 +994,34 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
         await db.commit()
 
 
+_JOB_SEARCH_PHRASES = (
+    "find me jobs", "show me jobs", "get me jobs", "give me jobs",
+    "show me matches", "find matches", "job matches", "matching jobs",
+    "jobs that match", "match my profile", "roles that suit", "suitable roles",
+    "what jobs", "any jobs", "search jobs", "look for jobs",
+    "recommend jobs", "job recommendations", "show roles", "find roles",
+)
+
+
+def _is_job_search_request(text: str) -> bool:
+    t = text.lower()
+    return any(phrase in t for phrase in _JOB_SEARCH_PHRASES)
+
+
+def _format_jobs_for_context(jobs: list) -> str:
+    if not jobs:
+        return "No matching jobs found in the database at this time."
+    lines = [f"Found {len(jobs)} matching job(s) from the database:\n"]
+    for i, j in enumerate(jobs[:10], 1):  # cap at 10 for context length
+        score = f"{j['match_score']:.0%}" if j.get("match_score") is not None else "N/A"
+        lines.append(
+            f"{i}. {j['title']} at {j['company']} — {j['location'] or 'Location not specified'}\n"
+            f"   Salary: {j['salary'] or 'Not specified'} | Match: {score}\n"
+            f"   {(j['description'] or '')[:200].strip()}"
+        )
+    return "\n".join(lines)
+
+
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     if not request.messages:
@@ -1009,7 +1038,6 @@ async def chat(request: ChatRequest):
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
-            # Pass raw_data through to _build_profile_context
             raw_data = row.get("raw_data") or {}
             if isinstance(raw_data, str):
                 try:
@@ -1023,8 +1051,61 @@ async def chat(request: ChatRequest):
         except HTTPException:
             pass
 
+    # If the user is explicitly asking for job matches, retrieve real jobs first
+    job_context = ""
+    if request.candidate_id and _is_job_search_request(last_user.content):
+        try:
+            candidate_row = await _get_candidate_row(request.candidate_id)
+            # Ensure recommendations exist (runs matching if none yet)
+            async with SessionLocal() as db:
+                count_row = await db.execute(
+                    text("SELECT COUNT(*) FROM candidate_job_recommendations WHERE candidate_id = :cid"),
+                    {"cid": request.candidate_id},
+                )
+                rec_count = count_row.scalar() or 0
+            if rec_count == 0:
+                from candidate_job_matching_service import refresh_candidate_job_matches
+                await refresh_candidate_job_matches(request.candidate_id, candidate_row, SessionLocal)
+            # Fetch top recommendations joined with job details
+            async with SessionLocal() as db:
+                rows = await db.execute(
+                    text("""
+                        SELECT
+                            cjr.match_score,
+                            jd.title,
+                            jd.company_name,
+                            jd.location,
+                            jd.salary_range,
+                            jd.description
+                        FROM candidate_job_recommendations cjr
+                        LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
+                        WHERE cjr.candidate_id = :cid
+                          AND cjr.hidden_at IS NULL
+                        ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
+                        LIMIT 10
+                    """),
+                    {"cid": request.candidate_id},
+                )
+                job_rows = rows.mappings().fetchall()
+            jobs = [
+                {
+                    "title": r["title"] or "",
+                    "company": r["company_name"] or "",
+                    "location": r["location"] or "",
+                    "salary": r["salary_range"] or "",
+                    "description": r["description"] or "",
+                    "match_score": float(r["match_score"]) if r["match_score"] is not None else None,
+                }
+                for r in job_rows
+            ]
+            job_context = "\n\nREAL JOB MATCHES FROM DATABASE:\n" + _format_jobs_for_context(jobs)
+            logger.info("[chat] Injected %d real job matches for candidate %s", len(jobs), request.candidate_id)
+        except Exception as e:
+            logger.warning("[chat] Job retrieval failed for candidate %s: %s", request.candidate_id, e)
+            job_context = "\n\nJob search attempted but no results could be retrieved at this time."
+
     system_prompt = EVE_SYSTEM_TEMPLATE.format(
-        profile_context=profile_context,
+        profile_context=profile_context + job_context,
         missing_fields=", ".join(missing_fields) if missing_fields else "None",
     )
 
@@ -1034,8 +1115,6 @@ async def chat(request: ChatRequest):
     incoming = [{"role": m.role, "content": m.content} for m in request.messages]
 
     if persisted_window and incoming:
-        # Find how many trailing messages from persisted_window are already in incoming
-        # (matched by role+content). Prepend only the older persisted messages not present.
         incoming_set = {(m["role"], m["content"]) for m in incoming}
         older = [m for m in persisted_window if (m["role"], m["content"]) not in incoming_set]
         combined = older + incoming
