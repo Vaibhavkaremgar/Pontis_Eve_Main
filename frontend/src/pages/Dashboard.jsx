@@ -568,7 +568,7 @@ function Dashboard() {
                     const completed =
                       result?.status === "completed" || result?.status === "duplicate";
                     saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
-                    if (result?.profile) refreshProfile();
+                    refreshProfile();
                     setCenterView("chat");
                   }}
                 />

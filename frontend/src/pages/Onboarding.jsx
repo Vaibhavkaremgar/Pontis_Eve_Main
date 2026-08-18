@@ -634,6 +634,13 @@ export default function Onboarding() {
     const completed =
       intakeResult?.status === "completed" || intakeResult?.status === "duplicate";
     setVoiceIntakeCompleted(completed);
+    // Merge returned profile into parsedProfile so bridge step reflects voice updates
+    if (intakeResult?.profile) {
+      setParsedProfile((prev) => ({
+        ...(prev || {}),
+        ...intakeResult.profile,
+      }));
+    }
     // If we came from the dashboard (resume_voice flow), go back to dashboard
     if (resumeVoiceParam) {
       const s = loadOnboardingState();

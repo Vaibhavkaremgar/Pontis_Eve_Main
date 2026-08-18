@@ -1460,6 +1460,7 @@ VOICE_EXTRACT_SYSTEM = """You are an expert recruiter assistant. Extract structu
 Return ONLY valid JSON with these exact keys (omit keys where no information was provided):
 {
   "summary": "",
+  "role_preference_bio": "",
   "skills": [],
   "experience_years": null,
   "availability": "",
@@ -1475,6 +1476,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
 }
 Only include fields where the candidate actually provided information.
 Do NOT invent or hallucinate information.
+For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 Return only the JSON object."""
 
 
@@ -1585,9 +1587,15 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     merged = dict(existing)
 
     # Fill missing scalar fields
-    for key in ("summary", "current_company", "location"):
+    for key in ("current_company", "location"):
         if voice.get(key) and not merged.get(key):
             merged[key] = voice[key]
+
+    # summary: fill if missing; update with role_preference_bio if candidate stated preferences
+    if voice.get("role_preference_bio"):
+        merged["summary"] = voice["role_preference_bio"]
+    elif voice.get("summary") and not merged.get("summary"):
+        merged["summary"] = voice["summary"]
 
     # current_role: fill if missing, or update if voice provides a more specific title
     voice_role = (voice.get("current_role") or "").strip()

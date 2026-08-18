@@ -101,6 +101,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       });
 
       const overrides = assistantOverridesRef.current;
+      console.log("[voice-intake] starting Vapi call");
       const vv = overrides?.variableValues || {};
       console.log("[vapi][DEBUG] pre-start — assistantOverrides exists:", !!overrides);
       console.log("[vapi][DEBUG] pre-start — candidate_name present:", !!vv.candidate_name, "len:", (vv.candidate_name || "").length);
