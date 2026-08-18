@@ -614,6 +614,156 @@ async def replace_certificate(candidate_id: str, cert_id: str, file: UploadFile 
     return {"id": cert_id, "filename": file.filename}
 
 
+# ---------- Chat session persistence ----------
+
+CREATE_CHAT_SESSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_chat_sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id    UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    session_id      TEXT NOT NULL,
+    messages        JSONB NOT NULL DEFAULT '[]',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+CREATE_CHAT_SESSIONS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_ccs_candidate ON candidate_chat_sessions(candidate_id)
+"""
+
+CHAT_WINDOW_SIZE = 20   # messages kept in DB per candidate
+CHAT_PRUNE_KEEP  = 10   # messages retained after pruning
+
+
+async def _ensure_chat_sessions_table():
+    async with SessionLocal() as db:
+        await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
+        await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
+        await db.commit()
+
+
+async def _load_chat_window(candidate_id: str) -> list[dict]:
+    """Return the persisted short-term message window for a candidate."""
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT messages FROM candidate_chat_sessions WHERE candidate_id = :cid ORDER BY updated_at DESC LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        result = row.fetchone()
+    if not result:
+        return []
+    msgs = result[0]
+    if isinstance(msgs, str):
+        try:
+            msgs = json.loads(msgs)
+        except Exception:
+            msgs = []
+    return msgs if isinstance(msgs, list) else []
+
+
+async def _save_chat_window(candidate_id: str, session_id: str, messages: list[dict]) -> None:
+    """Persist the message window; prune old messages after extracting long-term facts."""
+    if len(messages) > CHAT_WINDOW_SIZE:
+        overflow = messages[: len(messages) - CHAT_PRUNE_KEEP]
+        messages = messages[len(messages) - CHAT_PRUNE_KEEP :]
+        asyncio.ensure_future(_extract_and_merge_chat_facts(candidate_id, overflow))
+
+    async with SessionLocal() as db:
+        existing = await db.execute(
+            text("SELECT id FROM candidate_chat_sessions WHERE candidate_id = :cid LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        row = existing.fetchone()
+        if row:
+            await db.execute(
+                text("UPDATE candidate_chat_sessions SET messages = CAST(:msgs AS jsonb), session_id = :sid, updated_at = now() WHERE candidate_id = :cid"),
+                {"msgs": json.dumps(messages), "sid": session_id, "cid": candidate_id},
+            )
+        else:
+            await db.execute(
+                text("INSERT INTO candidate_chat_sessions (id, candidate_id, session_id, messages) VALUES (gen_random_uuid(), :cid, :sid, CAST(:msgs AS jsonb))"),
+                {"cid": candidate_id, "sid": session_id, "msgs": json.dumps(messages)},
+            )
+        await db.commit()
+
+
+CHAT_FACTS_EXTRACT_SYSTEM = """You are a recruitment data extractor. Given a conversation excerpt between a candidate and an AI recruiter, extract any meaningful career facts the candidate revealed.
+Return ONLY valid JSON with these keys (omit keys where no information was found):
+{
+  "preferred_roles": [],
+  "career_goals": "",
+  "target_industries": [],
+  "location_preferences": "",
+  "salary_expectation": "",
+  "availability": "",
+  "notice_period": "",
+  "work_type_preference": "",
+  "additional_information": ""
+}
+Do NOT invent or hallucinate. Only include fields explicitly mentioned by the candidate."""
+
+
+async def _extract_and_merge_chat_facts(candidate_id: str, messages: list[dict]) -> None:
+    """Extract long-term facts from pruned messages and merge into candidate raw_data."""
+    if not messages:
+        return
+    try:
+        convo = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+        resp = await openai_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": CHAT_FACTS_EXTRACT_SYSTEM},
+                {"role": "user", "content": convo[:6000]},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        facts = json.loads(resp.choices[0].message.content or "{}")
+        if not facts:
+            return
+
+        async with SessionLocal() as db:
+            row = await db.execute(
+                text("SELECT raw_data FROM candidates WHERE id = :cid LIMIT 1"),
+                {"cid": candidate_id},
+            )
+            result = row.fetchone()
+        if not result:
+            return
+        existing_raw = result[0] or {}
+        if isinstance(existing_raw, str):
+            try:
+                existing_raw = json.loads(existing_raw)
+            except Exception:
+                existing_raw = {}
+
+        raw = dict(existing_raw)
+        # Merge: never overwrite non-empty values with empty ones
+        for key, val in facts.items():
+            if not val:
+                continue
+            if isinstance(val, list):
+                existing_list = raw.get(key) or []
+                seen = {str(x).lower() for x in existing_list}
+                for item in val:
+                    if str(item).lower() not in seen:
+                        existing_list.append(item)
+                        seen.add(str(item).lower())
+                raw[key] = existing_list
+            else:
+                if not raw.get(key):
+                    raw[key] = val
+
+        async with SessionLocal() as db:
+            await db.execute(
+                text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+                {"rd": json.dumps(raw), "cid": candidate_id},
+            )
+            await db.commit()
+        logger.info("[chat-facts] merged facts for candidate %s", candidate_id)
+    except Exception as e:
+        logger.warning("[chat-facts] extraction failed for %s: %s", candidate_id, e)
+
+
 # ---------- Chat with candidate context + structured profile updates ----------
 
 EVE_SYSTEM_TEMPLATE = """You are Eve, the candidate-side AI recruitment agent on the Pontis platform.
@@ -625,9 +775,10 @@ Speak as a trusted career partner. No emojis. No markdown headers.
 CANDIDATE PROFILE (current state):
 {profile_context}
 
-MISSING FIELDS: {missing_fields}
+MISSING FIELDS (ask about these — do NOT ask for fields already listed above): {missing_fields}
 
 BEHAVIOR:
+- Use the candidate profile above to personalise every response. Never ask for information already present.
 - If important profile fields are missing, ask ONE focused question to fill the most critical gap.
 - When the candidate provides new professional information, extract it and include a "profile_updates" JSON block at the END of your reply in this exact format:
   <<<PROFILE_UPDATES>>>
@@ -670,22 +821,40 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     lines = []
     missing = []
 
-    def add(label, val):
+    def add(label, val, *, required=False):
         if val and (not isinstance(val, list) or len(val) > 0):
             lines.append(f"- {label}: {val}")
-        else:
+        elif required:
             missing.append(label)
 
-    add("Name", profile.get("name"))
-    add("Email", profile.get("email"))
-    add("Phone", profile.get("phone"))
-    add("Headline", profile.get("headline") or profile.get("current_role"))
-    add("Location", profile.get("location"))
-    add("Bio/Summary", profile.get("bio") or profile.get("summary"))
-    add("Skills", profile.get("keySkills") or profile.get("skills"))
-    add("Work Experience", profile.get("experience") or profile.get("work_experience"))
-    add("Education", profile.get("education"))
-    add("Experience Years", profile.get("experience_years"))
+    # Core identity — always collected during signup/resume; never ask again
+    add("Name", profile.get("name"), required=True)
+    add("Email", profile.get("email"), required=False)   # known from LinkedIn auth
+    add("Phone", profile.get("phone"), required=True)
+    add("Headline / Current Role", profile.get("headline") or profile.get("current_role"), required=True)
+    add("Location", profile.get("location"), required=True)
+    add("Bio/Summary", profile.get("bio") or profile.get("summary"), required=True)
+    add("Experience Years", profile.get("experience_years"), required=True)
+    add("Skills", profile.get("keySkills") or profile.get("skills"), required=True)
+    add("Work Experience", profile.get("experience") or profile.get("work_experience"), required=True)
+    add("Education", profile.get("education"), required=False)
+
+    # Voice / chat-derived enrichment fields
+    raw_data = profile.get("raw_data") or {}
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except Exception:
+            raw_data = {}
+
+    add("Preferred Roles", profile.get("preferred_roles") or raw_data.get("preferred_roles"), required=True)
+    add("Availability", profile.get("availability") or raw_data.get("availability"), required=True)
+    add("Notice Period", raw_data.get("notice_period"), required=True)
+    add("Salary Expectation", raw_data.get("salary_expectation"), required=True)
+    add("Work Type Preference", raw_data.get("work_type_preference"), required=False)
+    add("Career Goals", raw_data.get("career_goals"), required=False)
+    add("Location Preferences", raw_data.get("location_preferences"), required=False)
+    add("Target Industries", raw_data.get("target_industries"), required=False)
 
     return "\n".join(lines) if lines else "No profile data yet.", missing
 
@@ -786,14 +955,24 @@ async def chat(request: ChatRequest):
     if not last_user:
         raise HTTPException(status_code=400, detail="No user message provided")
 
-    # Load candidate profile for context
+    # Build full candidate context
     profile_context = "No profile loaded yet."
     missing_fields: list = []
+    persisted_window: list[dict] = []
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
+            # Pass raw_data through to _build_profile_context
+            raw_data = row.get("raw_data") or {}
+            if isinstance(raw_data, str):
+                try:
+                    raw_data = json.loads(raw_data)
+                except Exception:
+                    raw_data = {}
             frontend_profile = _normalize_for_frontend(row)
+            frontend_profile["raw_data"] = raw_data
             profile_context, missing_fields = _build_profile_context(frontend_profile)
+            persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
             pass
 
@@ -802,9 +981,14 @@ async def chat(request: ChatRequest):
         missing_fields=", ".join(missing_fields) if missing_fields else "None",
     )
 
-    messages = [{"role": "system", "content": system_prompt}]
-    for m in request.messages[-10:]:
-        messages.append({"role": m.role, "content": m.content})
+    # Merge persisted window with current request messages (deduplicate by content)
+    # Use persisted window as base; append any new messages from the request not already there
+    window_contents = {m["content"] for m in persisted_window}
+    incoming = [{"role": m.role, "content": m.content} for m in request.messages]
+    new_msgs = [m for m in incoming if m["content"] not in window_contents]
+    combined = persisted_window + new_msgs
+
+    messages = [{"role": "system", "content": system_prompt}] + combined[-CHAT_WINDOW_SIZE:]
 
     try:
         resp = await openai_client.chat.completions.create(
@@ -819,7 +1003,12 @@ async def chat(request: ChatRequest):
 
     clean_reply, profile_updates = _extract_profile_updates(raw_reply)
 
-    # Apply updates to PostgreSQL
+    # Persist updated window (includes assistant reply)
+    if request.candidate_id:
+        updated_window = combined + [{"role": "assistant", "content": clean_reply}]
+        asyncio.ensure_future(_save_chat_window(request.candidate_id, request.session_id, updated_window))
+
+    # Apply profile updates to PostgreSQL
     if profile_updates and request.candidate_id:
         try:
             await _apply_profile_updates(request.candidate_id, profile_updates)
@@ -878,6 +1067,8 @@ async def _ensure_schema():
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
+        await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
+        await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
         await db.commit()
 
 
