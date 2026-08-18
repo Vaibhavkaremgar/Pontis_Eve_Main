@@ -167,6 +167,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "preferred_roles": raw_data.get("preferred_roles") or [],
         "certifications": raw_data.get("certifications") or [],
         "additional_information": raw_data.get("additional_information", ""),
+        "parsing_status": c.get("parsing_status", ""),
     }
 
 
@@ -780,6 +781,8 @@ MISSING FIELDS (ask about these — do NOT ask for fields already listed above):
 BEHAVIOR:
 - Use the candidate profile above to personalise every response. Address the candidate by their actual name when known.
 - NEVER ask for information that is already present in the candidate profile above (name, email, phone, resume, skills, experience, etc.).
+- When "Resume status: Available" appears in the profile above, you MUST NOT say you don't have the resume, MUST NOT say you can't see the resume, and MUST NOT ask the candidate to upload or share their resume. Treat all parsed resume data (role, skills, experience, education) as fully known.
+- Only ask the candidate to upload a resume when "Resume status: Not available" appears in the profile above.
 - If important profile fields are missing, ask ONE focused question to fill the most critical gap.
 - When the candidate provides new professional information, extract it and include a "profile_updates" JSON block at the END of your reply in this exact format:
   <<<PROFILE_UPDATES>>>
@@ -850,6 +853,10 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     add("Skills", profile.get("keySkills") or profile.get("skills"), required=True)
     add("Work Experience", profile.get("experience") or profile.get("work_experience"), required=True)
     add("Education", profile.get("education"), required=False)
+
+    # Resume availability — derived from parsing_status set during resume upload
+    resume_available = profile.get("parsing_status") == "completed"
+    lines.append(f"- Resume status: {'Available' if resume_available else 'Not available'}")
 
     # Voice / chat-derived enrichment fields
     raw_data = profile.get("raw_data") or {}
