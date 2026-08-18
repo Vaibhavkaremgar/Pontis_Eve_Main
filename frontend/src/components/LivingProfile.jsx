@@ -1036,22 +1036,35 @@ async function downloadProfilePdf(contentRef, candidateName) {
   const el = contentRef.current;
   if (!el) return;
 
-  // Temporarily expand the scrollable container to its full scroll height
-  const prevOverflow = el.style.overflow;
-  const prevMaxHeight = el.style.maxHeight;
-  const prevHeight = el.style.height;
-  el.style.overflow = "visible";
-  el.style.maxHeight = "none";
-  el.style.height = "auto";
+  // Build a PDF-only clone with excluded sections removed and headings renamed
+  const clone = el.cloneNode(true);
+  clone.style.cssText = "position:fixed;left:-9999px;top:0;overflow:visible;max-height:none;height:auto;width:" + el.offsetWidth + "px;background:#FDFDFC;";
+  document.body.appendChild(clone);
+
+  const firstName = candidateName ? candidateName.split(" ")[0] : null;
+  clone.querySelectorAll("*").forEach((node) => {
+    if (node.nodeType !== 1) return;
+    const text = node.textContent.trim();
+    if (node.getAttribute("role") === "switch") {
+      node.closest(".inline-flex")?.remove();
+      return;
+    }
+    if (node.tagName === "P" && text.startsWith("Available:")) { node.remove(); return; }
+    if (node.tagName === "H3" && text === "Preferred roles") { node.closest("div")?.remove(); return; }
+    if (node.tagName === "H3" && text === "Additional information") { node.closest("div")?.remove(); return; }
+    if (node.tagName === "H3" && text === "Verified skills") { node.textContent = "Skills"; return; }
+    if (node.tagName === "H3" && firstName && text === `Where ${firstName} has worked`) { node.textContent = "Experience"; }
+  });
 
   try {
-    const canvas = await html2canvas(el, {
+    const canvas = await html2canvas(clone, {
       scale: 2,
       useCORS: true,
       backgroundColor: "#FDFDFC",
       logging: false,
     });
 
+    document.body.removeChild(clone);
     const imgData = canvas.toDataURL("image/png");
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
@@ -1092,10 +1105,9 @@ async function downloadProfilePdf(contentRef, candidateName) {
       ? `${candidateName.replace(/\s+/g, "_")}_profile.pdf`
       : "candidate_profile.pdf";
     pdf.save(filename);
-  } finally {
-    el.style.overflow = prevOverflow;
-    el.style.maxHeight = prevMaxHeight;
-    el.style.height = prevHeight;
+  } catch (err) {
+    if (document.body.contains(clone)) document.body.removeChild(clone);
+    throw err;
   }
 }
 
