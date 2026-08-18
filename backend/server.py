@@ -803,6 +803,10 @@ CANDIDATE PROFILE (current state):
 MISSING FIELDS (ask about these — do NOT ask for fields already listed above): {missing_fields}
 
 BEHAVIOR:
+- ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
+- If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
+- If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
+- Job search, job matching, and job recommendations must ONLY be triggered when the candidate explicitly asks for jobs, roles, or matches (e.g. "find me jobs", "show me matches", "what roles suit me"). Never volunteer job search in response to profile/resume/details questions.
 - Use the candidate profile above to personalise every response. Address the candidate by their actual name when known.
 - NEVER ask for information that is already present in the candidate profile above (name, email, phone, resume, skills, experience, etc.).
 - When "Resume status: Available" appears in the profile above, you MUST NOT say you don't have the resume, MUST NOT say you can't see the resume, and MUST NOT ask the candidate to upload or share their resume. Treat all parsed resume data (role, skills, experience, education) as fully known.
@@ -1024,12 +1028,19 @@ async def chat(request: ChatRequest):
         missing_fields=", ".join(missing_fields) if missing_fields else "None",
     )
 
-    # Merge persisted window with current request messages (deduplicate by content)
-    # Use persisted window as base; append any new messages from the request not already there
-    window_contents = {m["content"] for m in persisted_window}
+    # Build message list: use the incoming request messages as the source of truth for the
+    # current conversation turn. The persisted window is only used to backfill history that
+    # the frontend did not send (i.e. messages older than the current request window).
     incoming = [{"role": m.role, "content": m.content} for m in request.messages]
-    new_msgs = [m for m in incoming if m["content"] not in window_contents]
-    combined = persisted_window + new_msgs
+
+    if persisted_window and incoming:
+        # Find how many trailing messages from persisted_window are already in incoming
+        # (matched by role+content). Prepend only the older persisted messages not present.
+        incoming_set = {(m["role"], m["content"]) for m in incoming}
+        older = [m for m in persisted_window if (m["role"], m["content"]) not in incoming_set]
+        combined = older + incoming
+    else:
+        combined = incoming
 
     messages = [{"role": "system", "content": system_prompt}] + combined[-CHAT_WINDOW_SIZE:]
 
