@@ -101,12 +101,13 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       });
 
       const overrides = assistantOverridesRef.current;
-      console.log("[voice-intake] starting Vapi call");
-      console.log("[voice-intake][DEBUG] variableValues keys:", Object.keys(overrides?.variableValues || {}));
-      console.log("[voice-intake][DEBUG] candidate_name present:", !!overrides?.variableValues?.candidate_name, "len:", (overrides?.variableValues?.candidate_name || "").length);
-      console.log("[voice-intake][DEBUG] current_company present:", !!overrides?.variableValues?.current_company, "len:", (overrides?.variableValues?.current_company || "").length);
-      console.log("[voice-intake][DEBUG] skills present:", !!overrides?.variableValues?.skills, "len:", (overrides?.variableValues?.skills || "").length);
-      console.log("[voice-intake][DEBUG] work_experience present:", !!overrides?.variableValues?.work_experience, "len:", (overrides?.variableValues?.work_experience || "").length);
+      const vv = overrides?.variableValues || {};
+      console.log("[vapi][DEBUG] pre-start — assistantOverrides exists:", !!overrides);
+      console.log("[vapi][DEBUG] pre-start — candidate_name present:", !!vv.candidate_name, "len:", (vv.candidate_name || "").length);
+      console.log("[vapi][DEBUG] pre-start — candidate_id present:", !!vv.candidate_id, "len:", (vv.candidate_id || "").length);
+      console.log("[vapi][DEBUG] pre-start — current_company present:", !!vv.current_company, "len:", (vv.current_company || "").length);
+      console.log("[vapi][DEBUG] pre-start — skills present:", !!vv.skills, "len:", (vv.skills || "").length);
+      console.log("[vapi][DEBUG] pre-start — work_experience present:", !!vv.work_experience, "len:", (vv.work_experience || "").length);
       await vapi.start(assistantId, overrides);
     } catch (err) {
       setError(err?.message || "Failed to start voice call.");

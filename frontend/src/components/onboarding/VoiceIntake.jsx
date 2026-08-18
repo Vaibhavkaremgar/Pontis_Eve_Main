@@ -216,8 +216,13 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
   const handleStartCall = () => {
     console.log("[voice-intake] button clicked");
-    // TODO: remove before production — temporary variable inspection
-    console.log("[voice-intake][DEBUG] assistantOverrides.variableValues:", assistantOverrides.variableValues);
+    const vv = assistantOverrides?.variableValues || {};
+    console.log("[voice-intake][DEBUG] pre-start — candidate_name present:", !!vv.candidate_name, "len:", (vv.candidate_name || "").length);
+    console.log("[voice-intake][DEBUG] pre-start — candidate_id present:", !!vv.candidate_id, "len:", (vv.candidate_id || "").length);
+    console.log("[voice-intake][DEBUG] pre-start — current_company present:", !!vv.current_company, "len:", (vv.current_company || "").length);
+    console.log("[voice-intake][DEBUG] pre-start — skills present:", !!vv.skills, "len:", (vv.skills || "").length);
+    console.log("[voice-intake][DEBUG] pre-start — work_experience present:", !!vv.work_experience, "len:", (vv.work_experience || "").length);
+    console.log("[voice-intake][DEBUG] pre-start — assistantOverrides exists:", !!assistantOverrides);
     startCall();
   };
 
