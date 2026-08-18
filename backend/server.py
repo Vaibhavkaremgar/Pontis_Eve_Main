@@ -184,7 +184,8 @@ async def _get_candidate_row(candidate_id: str) -> dict:
 
 
 async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
-                             original_filename: str, existing_id: Optional[str] = None,
+                             original_filename: str, resume_text: str = "",
+                             existing_id: Optional[str] = None,
                              force_new: bool = False) -> str:
     """
     Create or update a candidate record.
@@ -239,7 +240,21 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
 
         logger.info("[parse-resume] existing candidate found=%s candidate_id=%s", cid is not None, cid)
 
-        if cid:
+        # Store resume file first so we have the path for DB writes
+        dest_dir = DOCS_DIR / cid if cid else DOCS_DIR / "tmp"
+        # We need cid before storing; for new records generate it now
+        if not cid:
+            cid = str(uuid.uuid4())
+            logger.info("[parse-resume] inserting new candidate_id=%s", cid)
+
+        dest_dir = DOCS_DIR / cid / "resume"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{uuid.uuid4()}.pdf"
+        dest_path = dest_dir / stored_name
+        dest_path.write_bytes(file_bytes)
+
+        if cid and await db.execute(text("SELECT 1 FROM candidates WHERE id = :cid LIMIT 1"), {"cid": cid}) and \
+                (await db.execute(text("SELECT 1 FROM candidates WHERE id = :cid LIMIT 1"), {"cid": cid})).fetchone():
             # Preserve voice-derived raw_data when updating via resume
             existing_raw = await db.execute(
                 text("SELECT raw_data FROM candidates WHERE id = :cid LIMIT 1"),
@@ -253,7 +268,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 except Exception:
                     existing_raw_data = {}
 
-            # UPDATE existing candidate — preserve raw_data (voice-derived fields)
+            # UPDATE existing candidate — preserve raw_data, write all resume fields
             await db.execute(
                 text("""
                     UPDATE candidates SET
@@ -264,6 +279,12 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                         education = CAST(:education AS json),
                         experience_years = :exp_years,
                         raw_data = CAST(:raw_data AS jsonb),
+                        resume_file_path = :resume_file_path,
+                        resume_text = :resume_text,
+                        resume_received_at = now(),
+                        parsed_resume_json = CAST(:parsed_resume_json AS jsonb),
+                        parsed_resume_text = :parsed_resume_text,
+                        parsing_status = 'completed',
                         updated_at = now(), updated_by_source = 'eve'
                     WHERE id = :cid
                 """),
@@ -280,25 +301,31 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "education": edu_json,
                     "exp_years": parsed.get("experience_years"),
                     "raw_data": json.dumps(existing_raw_data),
+                    "resume_file_path": str(dest_path),
+                    "resume_text": resume_text,
+                    "parsed_resume_json": json.dumps(parsed),
+                    "parsed_resume_text": resume_text,
                     "cid": cid,
                 },
             )
         else:
-            # INSERT new candidate
-            cid = str(uuid.uuid4())
-            logger.info("[parse-resume] inserting new candidate_id=%s", cid)
+            # INSERT new candidate with all resume fields
             await db.execute(
                 text("""
                     INSERT INTO candidates
                         (id, name, email, phone, "current_role", current_company,
                          location, summary, skills, work_experience, education,
                          experience_years, source, created_by_source, updated_by_source,
-                         parsing_status, created_at, updated_at)
+                         parsing_status, resume_file_path, resume_text, resume_received_at,
+                         parsed_resume_json, parsed_resume_text,
+                         created_at, updated_at)
                     VALUES
                         (:cid, :name, :email, :phone, :current_role, :current_company,
                          :location, :summary, CAST(:skills AS json), CAST(:work_experience AS json), CAST(:education AS json),
                          :exp_years, 'eve', 'eve', 'eve',
-                         'completed', now(), now())
+                         'completed', :resume_file_path, :resume_text, now(),
+                         CAST(:parsed_resume_json AS jsonb), :parsed_resume_text,
+                         now(), now())
                 """),
                 {
                     "cid": cid,
@@ -313,15 +340,12 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "work_experience": work_exp_json,
                     "education": edu_json,
                     "exp_years": parsed.get("experience_years"),
+                    "resume_file_path": str(dest_path),
+                    "resume_text": resume_text,
+                    "parsed_resume_json": json.dumps(parsed),
+                    "parsed_resume_text": resume_text,
                 },
             )
-
-        # Store resume file
-        dest_dir = DOCS_DIR / cid / "resume"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        stored_name = f"{uuid.uuid4()}.pdf"
-        dest_path = dest_dir / stored_name
-        dest_path.write_bytes(file_bytes)
 
         # Upsert internal_candidate_resumes
         r = await db.execute(
@@ -397,9 +421,9 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
     # If an existing_id is provided (e.g. test candidate re-onboarding), update that record.
     # Otherwise force_new=True to create a fresh record for a genuinely new candidate.
     if existing_id:
-        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", existing_id=existing_id)
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=existing_id)
     else:
-        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", force_new=True)
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, force_new=True)
 
     asyncio.ensure_future(_trigger_matching(cid))
 
@@ -497,7 +521,7 @@ async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
     parsed = await _parse_resume_with_llm(resume_text)
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
-    await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", existing_id=candidate_id)
+    await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=candidate_id)
 
     asyncio.ensure_future(_trigger_matching(candidate_id))
 
