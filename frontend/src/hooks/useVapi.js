@@ -36,6 +36,9 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
   const [transcript, setTranscript] = React.useState([]); // { role, text, final }[]
   const [error, setError] = React.useState(null);
   const callIdRef = React.useRef(null);
+  // Always hold the latest overrides so startCall never uses a stale closure value
+  const assistantOverridesRef = React.useRef(assistantOverrides);
+  React.useEffect(() => { assistantOverridesRef.current = assistantOverrides; }, [assistantOverrides]);
 
   // Deduplicate / merge partial transcript turns
   const upsertTurn = React.useCallback((role, text, isFinal) => {
@@ -97,13 +100,21 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
         setCallState(VAPI_STATES.PROCESSING);
       });
 
+      const overrides = assistantOverridesRef.current;
       console.log("[voice-intake] starting Vapi call");
-      await vapi.start(assistantId, assistantOverrides);
+      console.log("[voice-intake][DEBUG] variableValues keys:", Object.keys(overrides?.variableValues || {}));
+      console.log("[voice-intake][DEBUG] candidate_name present:", !!overrides?.variableValues?.candidate_name, "len:", (overrides?.variableValues?.candidate_name || "").length);
+      console.log("[voice-intake][DEBUG] current_company present:", !!overrides?.variableValues?.current_company, "len:", (overrides?.variableValues?.current_company || "").length);
+      console.log("[voice-intake][DEBUG] skills present:", !!overrides?.variableValues?.skills, "len:", (overrides?.variableValues?.skills || "").length);
+      console.log("[voice-intake][DEBUG] work_experience present:", !!overrides?.variableValues?.work_experience, "len:", (overrides?.variableValues?.work_experience || "").length);
+      await vapi.start(assistantId, overrides);
     } catch (err) {
       setError(err?.message || "Failed to start voice call.");
       setCallState(VAPI_STATES.ERROR);
     }
-  }, [publicKey, assistantId, assistantOverrides, upsertTurn]);
+  // assistantOverrides intentionally excluded — always read via ref inside the callback
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicKey, assistantId, upsertTurn]);
 
   const stopCall = React.useCallback(() => {
     if (vapiRef.current) {

@@ -160,6 +160,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "phone": c.get("phone", ""),
         "location": c.get("location", ""),
         "headline": c.get("current_role", "") or c.get("headline", ""),
+        "current_company": c.get("current_company", ""),
         "bio": c.get("summary", ""),
         "experience_years": c.get("experience_years") or c.get("total_experience_years"),
         "keySkills": key_skills,

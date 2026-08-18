@@ -74,6 +74,17 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const [retryCount, setRetryCount] = React.useState(0);
   const progressTimerRef = React.useRef(null);
 
+  // Debug: confirm candidateProfile is populated at mount time
+  React.useEffect(() => {
+    console.log("[voice-intake][DEBUG] mount — candidateProfile present:", !!candidateProfile);
+    console.log("[voice-intake][DEBUG] name present:", !!candidateProfile?.name, "len:", (candidateProfile?.name || "").length);
+    console.log("[voice-intake][DEBUG] current_company present:", !!candidateProfile?.current_company, "len:", (candidateProfile?.current_company || "").length);
+    console.log("[voice-intake][DEBUG] experience entries:", candidateProfile?.experience?.length ?? 0);
+    console.log("[voice-intake][DEBUG] skills entries:", candidateProfile?.keySkills?.length ?? 0);
+    console.log("[voice-intake][DEBUG] candidateId present:", !!candidateId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
   const persistProgress = React.useCallback((turns) => {
     const candidateTurns = turns.filter((t) => t.role === "user" && t.final !== false).length;
@@ -109,7 +120,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         candidate_location: p.location || "",
         experience_years: p.experience_years != null ? String(p.experience_years) : "",
         current_role: p.headline || "",
-        current_company: mostRecentExp?.company || "",
+        current_company: p.current_company || mostRecentExp?.company || "",
         skills,
         work_experience: workExp,
         education,
