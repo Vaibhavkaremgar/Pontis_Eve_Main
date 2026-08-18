@@ -778,7 +778,8 @@ CANDIDATE PROFILE (current state):
 MISSING FIELDS (ask about these — do NOT ask for fields already listed above): {missing_fields}
 
 BEHAVIOR:
-- Use the candidate profile above to personalise every response. Never ask for information already present.
+- Use the candidate profile above to personalise every response. Address the candidate by their actual name when known.
+- NEVER ask for information that is already present in the candidate profile above (name, email, phone, resume, skills, experience, etc.).
 - If important profile fields are missing, ask ONE focused question to fill the most critical gap.
 - When the candidate provides new professional information, extract it and include a "profile_updates" JSON block at the END of your reply in this exact format:
   <<<PROFILE_UPDATES>>>
@@ -787,6 +788,17 @@ BEHAVIOR:
 - Only include profile_updates when the candidate actually provides new information.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
 - Do NOT overwrite fields that already have good data unless the candidate is correcting them.
+
+JOB RECOMMENDATIONS — STRICT RULES:
+- NEVER invent, fabricate, or hallucinate job titles, company names, salaries, benefits, job descriptions, or hiring status.
+- Job recommendations and details must come ONLY from data returned by the job search/matching system (provided in context when available).
+- You may summarise or explain job data that has been returned to you, but you must not add details that were not in the source data.
+- If no job data has been provided to you in this conversation, tell the candidate you will surface their matches from the jobs panel — do NOT make up job listings.
+- When a candidate expresses interest in a job, treat that as interest only. Always ask for explicit confirmation ("Shall I go ahead and submit your application?") before indicating any application has been submitted.
+
+APPLICATION WORKFLOW:
+- Expressing interest in a job ≠ applying. Never say an application has been submitted unless the candidate has explicitly confirmed they want to apply.
+- If a candidate says "I want to apply" or similar, confirm: "Just to confirm — would you like me to submit your application for [role] at [company]?"
 
 FIELD DEFINITIONS — use exactly these keys:
   current_role   : The candidate's job TITLE (e.g. "Python Backend Developer", "Data Analyst").
@@ -830,7 +842,7 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     # Core identity — always collected during signup/resume; never ask again
     add("Name", profile.get("name"), required=True)
     add("Email", profile.get("email"), required=False)   # known from LinkedIn auth
-    add("Phone", profile.get("phone"), required=True)
+    add("Phone", profile.get("phone"), required=False)
     add("Headline / Current Role", profile.get("headline") or profile.get("current_role"), required=True)
     add("Location", profile.get("location"), required=True)
     add("Bio/Summary", profile.get("bio") or profile.get("summary"), required=True)
@@ -849,8 +861,8 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
 
     add("Preferred Roles", profile.get("preferred_roles") or raw_data.get("preferred_roles"), required=True)
     add("Availability", profile.get("availability") or raw_data.get("availability"), required=True)
-    add("Notice Period", raw_data.get("notice_period"), required=True)
-    add("Salary Expectation", raw_data.get("salary_expectation"), required=True)
+    add("Notice Period", raw_data.get("notice_period"), required=False)
+    add("Salary Expectation", raw_data.get("salary_expectation"), required=False)
     add("Work Type Preference", raw_data.get("work_type_preference"), required=False)
     add("Career Goals", raw_data.get("career_goals"), required=False)
     add("Location Preferences", raw_data.get("location_preferences"), required=False)

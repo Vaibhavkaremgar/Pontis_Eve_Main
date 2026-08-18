@@ -23,16 +23,14 @@ const API = `${BACKEND_URL}/api`;
 // Resume alone contributes at most 20%; voice intake drives the rest.
 function computeStrength(p, voiceCompleted = false) {
   if (!voiceCompleted) {
-    // Resume-only score: 10–20% based on how much resume data was parsed
     const fields = [p.name, p.email, p.headline, p.location];
     const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
     const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
     const hasSkills = Array.isArray(p.keySkills) && p.keySkills.length > 0 ? 1 : 0;
     const raw = filled + hasExp + hasSkills;
-    const percent = Math.round(10 + (raw / 6) * 10); // 10–20%
+    const percent = Math.round(10 + (raw / 6) * 10);
     return { strengthPercent: Math.min(percent, 20), strength: "Building" };
   }
-  // Voice-enriched score
   const fields = [p.name, p.email, p.phone, p.headline, p.location, p.bio];
   const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
   const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
@@ -41,7 +39,7 @@ function computeStrength(p, voiceCompleted = false) {
   const hasAvail = p.availability ? 1 : 0;
   const hasRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0 ? 1 : 0;
   const total = filled + hasExp + hasEdu + hasSkills + hasAvail + hasRoles;
-  const percent = Math.round(20 + (total / 11) * 80); // 20–100%
+  const percent = Math.round(20 + (total / 11) * 80);
   const label = percent >= 75 ? "Strong" : percent >= 50 ? "Developing" : "Building";
   return { strengthPercent: Math.min(percent, 100), strength: label };
 }
@@ -111,6 +109,21 @@ function Dashboard() {
     applyStrength(buildFallbackProfile(isOpenToMatches), voiceCompleted)
   );
 
+  // All state declarations up front so effects can reference them
+  const [chats, setChats] = React.useState([
+    { id: "msg-1", sender: "eve", content: "Hi there — I'm Eve, your career partner on Pontis. How can I help you today?" },
+  ]);
+  const [inputValue, setInputValue] = React.useState("");
+  const [availableJobs, setAvailableJobs] = React.useState([]);
+  const [documents, setDocuments] = React.useState({ resume: null, certificates: [] });
+  const [docsLoading, setDocsLoading] = React.useState(false);
+  const [selectedJob, setSelectedJob] = React.useState(null);
+  const [sending, setSending] = React.useState(false);
+  const [jobsLoading, setJobsLoading] = React.useState(true);
+  const [jobsError, setJobsError] = React.useState(false);
+  const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
+  const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
+
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
     if (!candidateId) return;
@@ -139,7 +152,6 @@ function Dashboard() {
         }, voiceCompleted));
       })
       .catch(() => {
-        // Fall back to onboarding parsed profile if API fails
         const parsed = stored.parsedProfile ?? {};
         setUserProfile(applyStrength({
           avatar: null,
@@ -207,13 +219,26 @@ function Dashboard() {
     });
   }, []);
 
-  const [chats, setChats] = React.useState([
-    { id: "msg-1", sender: "eve", content: "Hi there — great chatting with you. I've got your resume in front of me. Let's fill in a few details that are missing from your profile." },
-  ]);
+  // Update greeting once real profile loads — personalise with name, never ask for already-known info
+  React.useEffect(() => {
+    const firstName = userProfile.name?.split(" ")[0];
+    if (!firstName) return;
+    const hasResume = documents?.resume != null;
+    const profileComplete = userProfile.headline && userProfile.keySkills?.length > 0;
+    const greeting = profileComplete
+      ? `Hi ${firstName} — great to connect. Your profile looks good. I can help you explore job matches, prep for outreach, or refine any details. What would you like to work on?`
+      : `Hi ${firstName} — great to connect. I have your profile in front of me.${
+          hasResume ? "" : " Feel free to share any details you'd like to add."
+        } What would you like to work on?`;
+    setChats((prev) =>
+      prev[0]?.id === "msg-1"
+        ? [{ ...prev[0], content: greeting }, ...prev.slice(1)]
+        : prev
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
 
-  // Opportunities: count pending (no candidate_response) recruiter-interest notifications
-  // plus unread candidate_activity_feed entries
-  const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
+  // Opportunities count
   React.useEffect(() => {
     if (!candidateId) return;
     const fetchCount = () => {
@@ -242,28 +267,6 @@ function Dashboard() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile.strengthPercent]);
-
-  // Update greeting once real profile loads
-  React.useEffect(() => {
-    const firstName = userProfile.name?.split(" ")[0];
-    if (!firstName) return;
-    setChats((prev) =>
-      prev[0]?.id === "msg-1"
-        ? [{ ...prev[0], content: `Hi ${firstName} — great chatting with you. I've got your resume in front of me. Let's fill in a few details that are missing from your profile.` }, ...prev.slice(1)]
-        : prev
-    );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile.name]);
-  const [inputValue, setInputValue] = React.useState("");
-  const [availableJobs, setAvailableJobs] = React.useState([]);
-  const [documents, setDocuments] = React.useState({ resume: null, certificates: [] });
-  const [docsLoading, setDocsLoading] = React.useState(false);
-  const [selectedJob, setSelectedJob] = React.useState(null);
-  const [sending, setSending] = React.useState(false);
-
-  const [jobsLoading, setJobsLoading] = React.useState(true);
-  const [jobsError, setJobsError] = React.useState(false);
-  const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
 
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback(() => {
@@ -337,7 +340,6 @@ function Dashboard() {
         toast.error("Eve didn't respond. Try again?");
       }
 
-      // If LLM returned profile updates, refresh the profile panel
       if (res?.data?.profile_updates && candidateId) {
         await refreshProfile();
       }
@@ -351,7 +353,6 @@ function Dashboard() {
 
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {
     setDocuments((prev) => ({ ...prev, resume: { filename } }));
-    // Always refresh from DB after resume replace to get the preserved voice fields
     refreshProfile();
   }, [refreshProfile]);
 
@@ -383,7 +384,6 @@ function Dashboard() {
     const job = availableJobs.find((j) => j.id === jobId);
     if (!job || !candidateId) return;
     const willTrack = !job.tracked;
-    // Optimistic update
     setAvailableJobs((prev) =>
       prev.map((j) => (j.id === jobId ? { ...j, tracked: willTrack } : j))
     );
@@ -396,7 +396,6 @@ function Dashboard() {
         toast("Untracked");
       }
     } catch {
-      // Revert on failure
       setAvailableJobs((prev) =>
         prev.map((j) => (j.id === jobId ? { ...j, tracked: !willTrack } : j))
       );
@@ -415,7 +414,6 @@ function Dashboard() {
     try {
       await axios.post(`${API}/candidate/${candidateId}/jobs/${jobId}/dismiss`);
     } catch {
-      // Silently re-fetch to restore state if dismiss failed
       fetchJobs();
     }
   };
