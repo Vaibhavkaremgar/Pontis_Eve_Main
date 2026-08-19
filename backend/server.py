@@ -375,24 +375,20 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
     - Consecutive user fragments belonging to the same answer are combined.
     - An assistant turn that is a short acknowledgement does NOT start a new question;
       the previous real question remains active.
-    - A completed pair is recorded only when a real assistant question is followed by
-      at least one user turn.
+    - A completed pair is recorded only when a real canonical assistant question is
+      followed by at least one user turn.
+    - User turns that occur before the first canonical question (setup/greeting phase)
+      are discarded entirely — never carried forward to a later question.
     - Returns (completed_pairs, pending_question) where pending_question is the last
       real assistant question that has not yet received a user answer.
     """
     completed: list[dict] = []
-    # The last real (non-acknowledgement) assistant question seen
+    # The last real (non-acknowledgement) canonical assistant question seen
     pending_question: Optional[str] = None
-    # Whether the current pending question should be treated as setup chatter.
-    question_is_setup = False
-    # A brief setup acknowledgement was seen since the last assistant turn.
-    # The next canonical assistant question after this should be skipped.
-    setup_ack_seen = False
-    # Accumulated user answer fragments for the current question
+    # True when the current assistant turn was setup/greeting, not a canonical question
+    question_is_setup = True
+    # Accumulated user answer fragments for the current canonical question
     answer_parts: list[str] = []
-    # User fragments spoken while setup chatter is being skipped. These are
-    # carried forward and attached to the next real intake question.
-    carryover_parts: list[str] = []
 
     for note in _normalize_voice_notes(voice_notes, transcript):
         role = note.get("role")
@@ -407,40 +403,33 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
             continue
 
         if role == "assistant":
-            # If we have accumulated a real answer, flush the current Q&A pair first.
-            if answer_parts and pending_question and not question_is_setup:
+            # Flush completed Q&A pair before moving to the next question
+            if answer_parts and pending_question:
                 completed.append({
                     "question": pending_question,
                     "answer": " ".join(answer_parts),
                 })
             answer_parts = []
             pending_question = None
-            setup_ack_seen = False
 
-            # Only update the pending question for actual intake prompts, not setup chatter.
             canonical_question = _voice_intake_question_for_text(cleaned)
             if canonical_question:
-                # A real canonical intake question is never treated as setup,
-                # regardless of any preceding brief user acknowledgement.
                 question_is_setup = False
                 pending_question = canonical_question
-                if carryover_parts:
-                    answer_parts.extend(carryover_parts)
-                    carryover_parts = []
             else:
                 question_is_setup = True
 
         elif role == "user":
+            # Discard brief acknowledgements ("yes", "ready", etc.) unconditionally
             if _is_brief_user_acknowledgement(cleaned):
-                setup_ack_seen = True
                 continue
+            # Only collect user turns that follow a real canonical question
             if pending_question and not question_is_setup:
                 answer_parts.append(cleaned)
-            else:
-                carryover_parts.append(cleaned)
+            # else: setup/greeting response — discard entirely
 
     # Flush any trailing answer that hasn't been closed yet
-    if answer_parts and pending_question and not question_is_setup:
+    if answer_parts and pending_question:
         completed.append({
             "question": pending_question,
             "answer": " ".join(answer_parts),

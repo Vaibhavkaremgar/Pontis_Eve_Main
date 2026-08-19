@@ -283,6 +283,69 @@ class TestTranscript:
         assert vir.get("completed_turns")[0]["question"] == "Tell me about your background."
         assert vir.get("next_question") == "What are your key skills?"
 
+    def test_small_talk_excluded_only_real_question_gets_completed_turn(self):
+        """
+        Regression: small-talk answers must never be paired with a canonical intake question.
+
+        Transcript:
+          Eve:  "How are you doing today?"
+          User: "Doing good. What about you?"
+          Eve:  "Are you ready?"
+          User: "Yes, I'm ready."
+          Eve:  "What roles are you targeting right now?"
+          User: "I'm looking for senior Python backend roles."
+          User: "Preferably remote in fintech."
+
+        Expected:
+          progress = 1
+          completed_turns has exactly 1 entry
+          question = "What roles are you targeting right now?"
+          answer contains both user fragments but NOT "Doing good" or "Yes, I'm ready"
+          next_question = next canonical question after "What roles are you targeting"
+          status = "in_progress"
+        """
+        cid = _create_candidate("Regression SmallTalk Exclusion")
+        voice_notes = [
+            {"role": "assistant", "text": "How are you doing today?"},
+            {"role": "user",      "text": "Doing good. What about you?"},
+            {"role": "assistant", "text": "Are you ready?"},
+            {"role": "user",      "text": "Yes, I'm ready."},
+            {"role": "assistant", "text": "What roles are you targeting right now?"},
+            {"role": "user",      "text": "I'm looking for senior Python backend roles."},
+            {"role": "user",      "text": "Preferably remote in fintech."},
+        ]
+        transcript = (
+            "Assistant: How are you doing today?\n"
+            "Candidate: Doing good. What about you?\n"
+            "Assistant: Are you ready?\n"
+            "Candidate: Yes, I'm ready.\n"
+            "Assistant: What roles are you targeting right now?\n"
+            "Candidate: I'm looking for senior Python backend roles.\n"
+            "Candidate: Preferably remote in fintech."
+        )
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 1
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 1, f"Expected 1 completed turn, got {len(turns)}: {turns}"
+        assert turns[0]["question"] == "What roles are you targeting right now?"
+        answer = turns[0]["answer"]
+        assert "senior Python backend roles" in answer
+        assert "remote in fintech" in answer
+        assert "Doing good" not in answer
+        assert "What about you" not in answer
+        assert "Yes, I'm ready" not in answer
+        assert resume.get("next_question") is not None
+        assert resume["next_question"] != "What roles are you targeting right now?"
+
     def test_voice_notes_accepted(self):
         """voice_notes array is accepted alongside transcript."""
         cid = _create_candidate("Transcript Notes")
