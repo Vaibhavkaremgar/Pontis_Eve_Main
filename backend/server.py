@@ -215,9 +215,44 @@ def _voice_intake_question_for_field(field_label: str) -> str:
     return mapping.get(field_label, "Is there anything else you'd like me to know?")
 
 
+# Short acknowledgement phrases Eve uses that are NOT real intake questions.
+_ACK_PREFIXES = (
+    "thanks", "thank you", "great", "got it", "perfect", "noted", "understood",
+    "awesome", "sounds good", "i see", "okay", "ok,", "alright", "sure",
+    "absolutely", "wonderful", "nice", "good to know", "i'll note", "i've noted",
+)
+
+
+def _is_acknowledgement(text: str) -> bool:
+    """Return True when an assistant turn is a short acknowledgement, not a real question."""
+    t = text.lower().strip()
+    # Must be short and not end with a question mark to be an acknowledgement
+    if "?" in t:
+        return False
+    if len(t) > 120:
+        return False
+    return any(t.startswith(p) for p in _ACK_PREFIXES)
+
+
 def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str]]:
+    """
+    Parse voice_notes into completed Q&A pairs.
+
+    Rules:
+    - Only final turns are considered.
+    - Consecutive user fragments belonging to the same answer are combined.
+    - An assistant turn that is a short acknowledgement does NOT start a new question;
+      the previous real question remains active.
+    - A completed pair is recorded only when a real assistant question is followed by
+      at least one user turn.
+    - Returns (completed_pairs, pending_question) where pending_question is the last
+      real assistant question that has not yet received a user answer.
+    """
     completed: list[dict] = []
-    last_assistant: Optional[str] = None
+    # The last real (non-acknowledgement) assistant question seen
+    pending_question: Optional[str] = None
+    # Accumulated user answer fragments for the current question
+    answer_parts: list[str] = []
 
     for note in voice_notes or []:
         if isinstance(note, dict):
@@ -237,12 +272,32 @@ def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str
             continue
 
         if role == "assistant":
-            last_assistant = cleaned
-        elif role == "user" and last_assistant:
-            completed.append({"question": last_assistant, "answer": cleaned})
-            last_assistant = None
+            # If we have accumulated user answer parts, flush the current Q&A pair first
+            if answer_parts and pending_question:
+                completed.append({
+                    "question": pending_question,
+                    "answer": " ".join(answer_parts),
+                })
+                answer_parts = []
+                pending_question = None
 
-    return completed, last_assistant
+            # Only update the pending question for real questions, not acknowledgements
+            if not _is_acknowledgement(cleaned):
+                pending_question = cleaned
+
+        elif role == "user":
+            if pending_question:
+                answer_parts.append(cleaned)
+
+    # Flush any trailing answer that hasn't been closed yet
+    if answer_parts and pending_question:
+        completed.append({
+            "question": pending_question,
+            "answer": " ".join(answer_parts),
+        })
+        pending_question = None
+
+    return completed, pending_question
 
 
 def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
@@ -1719,14 +1774,14 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         )
         await db.commit()
 
+    completed_turns, _ = _voice_intake_turn_pairs([n.model_dump() for n in (request.voice_notes or [])])
     voice_resume = {
         "status": "in_progress",
-        "progress": len([n for n in (request.voice_notes or []) if n.role == "user" and n.final]),
+        "progress": len(completed_turns),
         "voice_notes": [n.model_dump() for n in (request.voice_notes or [])],
         "next_question": None,
     }
     await _save_voice_intake_resume(request.candidate_id, voice_resume)
-    completed_turns, _ = _voice_intake_turn_pairs([n.model_dump() for n in (request.voice_notes or [])])
     completed_resume = {
         "status": "completed",
         "progress": len(completed_turns),
