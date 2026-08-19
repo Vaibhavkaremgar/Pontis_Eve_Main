@@ -278,6 +278,11 @@ _ACK_PREFIXES = (
     "absolutely", "wonderful", "nice", "good to know", "i'll note", "i've noted",
 )
 
+_USER_ACK_PREFIXES = (
+    "yes", "yeah", "yep", "yup", "ready", "i'm ready", "im ready",
+    "sure", "absolutely", "okay", "ok", "of course", "sounds good",
+)
+
 
 def _is_acknowledgement(text: str) -> bool:
     """Return True when an assistant turn is a short acknowledgement, not a real question."""
@@ -288,6 +293,16 @@ def _is_acknowledgement(text: str) -> bool:
     if len(t) > 120:
         return False
     return any(t.startswith(p) for p in _ACK_PREFIXES)
+
+
+def _is_brief_user_acknowledgement(text: str) -> bool:
+    """Return True for short setup answers that should not be counted as intake progress."""
+    t = _clean_str(text).lower().strip().rstrip(" .!?")
+    if not t:
+        return False
+    if len(t) > 40:
+        return False
+    return any(t == p or t.startswith(f"{p} ") for p in _USER_ACK_PREFIXES)
 
 
 def _voice_intake_question_for_text(text: str) -> Optional[str]:
@@ -368,8 +383,16 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
     completed: list[dict] = []
     # The last real (non-acknowledgement) assistant question seen
     pending_question: Optional[str] = None
+    # Whether the current pending question should be treated as setup chatter.
+    question_is_setup = False
+    # A brief setup acknowledgement was seen since the last assistant turn.
+    # The next canonical assistant question after this should be skipped.
+    setup_ack_seen = False
     # Accumulated user answer fragments for the current question
     answer_parts: list[str] = []
+    # User fragments spoken while setup chatter is being skipped. These are
+    # carried forward and attached to the next real intake question.
+    carryover_parts: list[str] = []
 
     for note in _normalize_voice_notes(voice_notes, transcript):
         role = note.get("role")
@@ -384,26 +407,36 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
             continue
 
         if role == "assistant":
-            # If we have accumulated user answer parts, flush the current Q&A pair first
-            if answer_parts and pending_question:
+            # If we have accumulated a real answer, flush the current Q&A pair first.
+            if answer_parts and pending_question and not question_is_setup:
                 completed.append({
                     "question": pending_question,
                     "answer": " ".join(answer_parts),
                 })
-                answer_parts = []
-                pending_question = None
+            answer_parts = []
+            pending_question = None
+            question_is_setup = setup_ack_seen
+            setup_ack_seen = False
 
             # Only update the pending question for actual intake prompts, not setup chatter.
             canonical_question = _voice_intake_question_for_text(cleaned)
             if canonical_question:
                 pending_question = canonical_question
+                if carryover_parts and not question_is_setup:
+                    answer_parts.extend(carryover_parts)
+                    carryover_parts = []
 
         elif role == "user":
-            if pending_question:
+            if _is_brief_user_acknowledgement(cleaned):
+                setup_ack_seen = True
+                continue
+            if pending_question and not question_is_setup:
                 answer_parts.append(cleaned)
+            else:
+                carryover_parts.append(cleaned)
 
     # Flush any trailing answer that hasn't been closed yet
-    if answer_parts and pending_question:
+    if answer_parts and pending_question and not question_is_setup:
         completed.append({
             "question": pending_question,
             "answer": " ".join(answer_parts),

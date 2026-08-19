@@ -231,6 +231,58 @@ class TestTranscript:
         assert len(vir_after.get("completed_turns") or []) == 1
         assert vir_after.get("next_question") == "What are your key skills?"
 
+    def test_progress_ignores_setup_yes_and_binds_first_real_question_to_candidate_intro(self):
+        """A setup 'Yes' must not be paired with a later intake question."""
+        cid = _create_candidate("Progress Setup Yes")
+        transcript = (
+            "Assistant: Are you ready?\n"
+            "Candidate: Yes.\n"
+            "Assistant: What roles are you targeting right now?\n"
+            "Candidate: I have 2 years of experience as a Python developer and working at Viral Bug.\n"
+            "Candidate: We built a product using Python, PostgreSQL, FastAPI and REST APIs...\n"
+            "Candidate: I was looking for opportunities where I can work as a backend developer...\n"
+            "Assistant: Tell me about your background."
+        )
+        voice_notes = [
+            {"role": "assistant", "text": "Are you ready?"},
+            {"role": "user", "text": "Yes."},
+            {"role": "assistant", "text": "What roles are you targeting right now?"},
+            {"role": "user", "text": "I have 2 years of experience as a Python developer and working at Viral Bug."},
+            {"role": "user", "text": "We built a product using Python, PostgreSQL, FastAPI and REST APIs..."},
+            {"role": "user", "text": "I was looking for opportunities where I can work as a backend developer..."},
+            {"role": "assistant", "text": "Tell me about your background."},
+        ]
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={
+                "transcript": transcript,
+                "voice_notes": voice_notes,
+                "candidate_id": cid,
+            },
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 1
+        assert len(resume.get("completed_turns") or []) == 1
+        assert resume["completed_turns"][0]["question"] == "Tell me about your background."
+        assert "Yes." not in resume["completed_turns"][0]["answer"]
+        assert "I have 2 years of experience as a Python developer and working at Viral Bug." in resume["completed_turns"][0]["answer"]
+        assert "We built a product using Python, PostgreSQL, FastAPI and REST APIs..." in resume["completed_turns"][0]["answer"]
+        assert "I was looking for opportunities where I can work as a backend developer..." in resume["completed_turns"][0]["answer"]
+        assert resume["next_question"] == "What are your key skills?"
+
+        profile = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()
+        vir = profile.get("voice_intake_resume") or {}
+        assert vir.get("status") == "in_progress"
+        assert vir.get("progress") == 1
+        assert len(vir.get("completed_turns") or []) == 1
+        assert vir.get("completed_turns")[0]["question"] == "Tell me about your background."
+        assert vir.get("next_question") == "What are your key skills?"
+
     def test_voice_notes_accepted(self):
         """voice_notes array is accepted alongside transcript."""
         cid = _create_candidate("Transcript Notes")
