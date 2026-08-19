@@ -551,6 +551,14 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
     return profile
 
 
+@api_router.get("/candidate/{candidate_id}/chat")
+async def get_candidate_chat(candidate_id: str):
+    """Return the persisted short-term chat window for a candidate."""
+    await _get_candidate_row(candidate_id)
+    messages = await _load_chat_window(candidate_id)
+    return {"messages": messages}
+
+
 @api_router.get("/candidate/{candidate_id}/profile")
 async def get_candidate_profile(candidate_id: str):
     row = await _get_candidate_row(candidate_id)

@@ -116,6 +116,7 @@ function Dashboard() {
   const [chats, setChats] = React.useState([
     { id: "msg-1", sender: "eve", content: "Hi there — I'm Eve, your career partner on Pontis. How can I help you today?" },
   ]);
+  const [chatRestored, setChatRestored] = React.useState(false);
   const [inputValue, setInputValue] = React.useState("");
   const [availableJobs, setAvailableJobs] = React.useState([]);
   const [documents, setDocuments] = React.useState({ resume: null, certificates: [] });
@@ -225,8 +226,29 @@ function Dashboard() {
     });
   }, []);
 
+  // Restore persisted chat history from backend on mount
+  React.useEffect(() => {
+    if (!candidateId) return;
+    axios
+      .get(`${API}/candidate/${candidateId}/chat`)
+      .then((res) => {
+        const msgs = res.data?.messages;
+        if (!Array.isArray(msgs) || msgs.length === 0) return;
+        const restored = msgs.map((m, i) => ({
+          id: `r-${i}`,
+          sender: m.role === "user" ? "user" : "eve",
+          content: m.content,
+        }));
+        setChats(restored);
+        setChatRestored(true);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidateId]);
+
   // Update greeting once real profile loads — personalise with name, never ask for already-known info
   React.useEffect(() => {
+    if (chatRestored) return;
     const firstName = userProfile.name?.split(" ")[0];
     if (!firstName) return;
     const hasResume = documents?.resume != null;
@@ -242,10 +264,11 @@ function Dashboard() {
         : prev
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
+  }, [chatRestored, userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
 
   // If voice intake was interrupted, replace the default greeting with a resume prompt.
   React.useEffect(() => {
+    if (chatRestored) return;
     const firstName = userProfile.name?.split(" ")[0];
     if (!firstName) return;
     if (!voiceIntakeInProgress || !voiceIntakeResume?.next_question) return;
@@ -256,7 +279,7 @@ function Dashboard() {
         ? [{ ...prev[0], content: resumeGreeting }, ...prev.slice(1)]
         : prev
     );
-  }, [userProfile.name, voiceIntakeInProgress, voiceIntakeResume?.next_question]);
+  }, [chatRestored, userProfile.name, voiceIntakeInProgress, voiceIntakeResume?.next_question]);
 
   // Opportunities count
   React.useEffect(() => {
