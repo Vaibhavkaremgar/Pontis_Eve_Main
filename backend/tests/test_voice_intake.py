@@ -301,6 +301,68 @@ class TestTranscript:
         )
         assert r.status_code == 200
 
+    def test_exact_reproduction_are_you_ready_yes_then_multi_fragment_answer(self):
+        """
+        Regression: exact reproduction from bug report.
+
+        Eve: "Are you ready?"
+        Candidate: "Yes."
+        Eve: "Tell me about your background."
+        Candidate gives 4 consecutive VAPI fragments about Viral Bug, Python,
+        FastAPI, Postgres, REST APIs, backend, Java, Spring Boot, Hibernate, Kubernetes.
+
+        Expected:
+          progress = 1
+          completed_turns has exactly 1 entry
+          question = "Tell me about your background."
+          answer contains all 4 fragments combined
+          next_question = "What are your key skills?"
+          status = "in_progress"
+        """
+        cid = _create_candidate("Regression Exact Repro")
+        voice_notes = [
+            {"role": "assistant", "text": "Are you ready?"},
+            {"role": "user", "text": "Yes."},
+            {"role": "assistant", "text": "Tell me about your background."},
+            {"role": "user", "text": "I have 2 years of experience as a software engineer at Viral Bug."},
+            {"role": "user", "text": "I was working with Python, FastAPI, Postgres and REST APIs."},
+            {"role": "user", "text": "I'm looking for new opportunities as a backend developer."},
+            {"role": "user", "text": "Java, OOPS, Hibernate, Kubernetes and Spring Boot."},
+        ]
+        transcript = (
+            "Assistant: Are you ready?\n"
+            "Candidate: Yes.\n"
+            "Assistant: Tell me about your background.\n"
+            "Candidate: I have 2 years of experience as a software engineer at Viral Bug.\n"
+            "Candidate: I was working with Python, FastAPI, Postgres and REST APIs.\n"
+            "Candidate: I'm looking for new opportunities as a backend developer.\n"
+            "Candidate: Java, OOPS, Hibernate, Kubernetes and Spring Boot."
+        )
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 1
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 1, f"Expected 1 completed turn, got {len(turns)}: {turns}"
+        assert turns[0]["question"] == "Tell me about your background."
+        answer = turns[0]["answer"]
+        assert "Viral Bug" in answer
+        assert "Python" in answer
+        assert "FastAPI" in answer
+        assert "REST APIs" in answer
+        assert "backend developer" in answer
+        assert "Kubernetes" in answer
+        assert "Spring Boot" in answer
+        assert "Yes." not in answer
+        assert resume["next_question"] == "What are your key skills?"
+
 
 # ─────────────────────────────────────────────
 # 4. Idempotency / duplicate handling

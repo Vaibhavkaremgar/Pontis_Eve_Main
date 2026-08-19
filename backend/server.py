@@ -415,16 +415,20 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
                 })
             answer_parts = []
             pending_question = None
-            question_is_setup = setup_ack_seen
             setup_ack_seen = False
 
             # Only update the pending question for actual intake prompts, not setup chatter.
             canonical_question = _voice_intake_question_for_text(cleaned)
             if canonical_question:
+                # A real canonical intake question is never treated as setup,
+                # regardless of any preceding brief user acknowledgement.
+                question_is_setup = False
                 pending_question = canonical_question
-                if carryover_parts and not question_is_setup:
+                if carryover_parts:
                     answer_parts.extend(carryover_parts)
                     carryover_parts = []
+            else:
+                question_is_setup = True
 
         elif role == "user":
             if _is_brief_user_acknowledgement(cleaned):
