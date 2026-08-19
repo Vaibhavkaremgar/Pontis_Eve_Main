@@ -19,10 +19,18 @@ import VoiceIntake from "../components/onboarding/VoiceIntake";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// voiceCompleted: whether the candidate finished voice intake
-// Resume alone contributes at most 20%; voice intake drives the rest.
+// voiceCompleted: whether the candidate fully finished voice intake (all questions answered).
+// An interrupted intake with only partial answers must NOT count as completed.
+// Resume alone contributes at most 20%; a genuinely completed voice intake drives the rest.
+const VOICE_INTAKE_TOTAL_QUESTIONS = 5; // minimum questions to consider intake "complete"
+
 function computeStrength(p, voiceCompleted = false) {
-  if (!voiceCompleted) {
+  // Determine actual intake completion: voiceCompleted flag AND sufficient answered questions.
+  const vir = p.voice_intake_resume;
+  const intakeProgress = vir?.progress ?? 0;
+  const intakeFullyDone = voiceCompleted && (!vir || vir.status === "completed" || intakeProgress >= VOICE_INTAKE_TOTAL_QUESTIONS);
+
+  if (!intakeFullyDone) {
     const fields = [p.name, p.email, p.headline, p.location];
     const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
     const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;

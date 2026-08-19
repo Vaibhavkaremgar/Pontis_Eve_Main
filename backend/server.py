@@ -303,26 +303,33 @@ def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str
 def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     raw_data = _parse_raw_data(profile.get("raw_data"))
     voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+    if not voice_intake:
+        return None
     status = str(voice_intake.get("status") or "").lower()
     if status == "completed":
         return None
-    if not voice_intake:
-        return None
 
-    voice_notes = voice_intake.get("voice_notes") or []
-    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
+    # Trust the saved progress/completed_turns/next_question from the progress endpoint.
+    # Only re-derive from voice_notes when the saved state has no completed_turns yet.
+    saved_completed_turns = voice_intake.get("completed_turns") or []
+    saved_progress = voice_intake.get("progress")
+    saved_next_question = voice_intake.get("next_question")
 
-    _, missing_fields = _build_profile_context({**profile, "raw_data": raw_data})
-
-    next_question = pending_question or voice_intake.get("next_question")
-    if not next_question and missing_fields:
-        next_question = _voice_intake_question_for_field(missing_fields[0])
+    if saved_completed_turns:
+        completed_turns = saved_completed_turns
+        progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
+        next_question = saved_next_question
+    else:
+        voice_notes = voice_intake.get("voice_notes") or []
+        completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
+        progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
+        next_question = pending_question or saved_next_question
 
     resume = {
         "status": "in_progress",
-        "progress": int(voice_intake.get("progress") or len(completed_turns)),
+        "progress": progress,
         "completed_turns": completed_turns[-3:],
-        "has_open_question": bool(pending_question),
+        "has_open_question": bool(saved_next_question),
     }
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
@@ -1775,13 +1782,10 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         await db.commit()
 
     completed_turns, _ = _voice_intake_turn_pairs([n.model_dump() for n in (request.voice_notes or [])])
-    voice_resume = {
-        "status": "in_progress",
-        "progress": len(completed_turns),
-        "voice_notes": [n.model_dump() for n in (request.voice_notes or [])],
-        "next_question": None,
-    }
-    await _save_voice_intake_resume(request.candidate_id, voice_resume)
+    # Preserve any existing in-progress resume state (next_question, etc.) if present
+    existing_candidate = await _get_candidate_row(request.candidate_id)
+    existing_raw = _parse_raw_data(existing_candidate.get("raw_data"))
+    existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
     completed_resume = {
         "status": "completed",
         "progress": len(completed_turns),
@@ -1869,7 +1873,12 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     candidate = await _get_candidate_row(request.candidate_id)
     voice_notes = [n.model_dump() for n in (request.voice_notes or [])]
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
-    _, missing_fields = _build_profile_context(_normalize_for_frontend(candidate))
+
+    # Load existing saved state to preserve next_question if we can't derive a better one
+    existing_raw = _parse_raw_data(candidate.get("raw_data"))
+    existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
+    existing_next_q = existing_vi.get("next_question") if existing_vi else None
+
     resume = {
         "status": "in_progress",
         "progress": len(completed_turns),
@@ -1880,7 +1889,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
-    next_question = pending_question or (_voice_intake_question_for_field(missing_fields[0]) if missing_fields else None)
+    # next_question: prefer the live pending question; fall back to previously saved one
+    next_question = pending_question or existing_next_q
     if next_question:
         resume["next_question"] = next_question
 
