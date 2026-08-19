@@ -152,7 +152,9 @@ def _normalize_for_frontend(c: dict) -> dict:
         except Exception:
             raw_data = {}
 
-    voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
+    voice_intake_resume = raw_data.get("voice_intake")
+    if not isinstance(voice_intake_resume, dict):
+        voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
 
     profile = {
         "candidate_id": str(c.get("id") or c.get("candidate_id") or ""),
@@ -310,6 +312,15 @@ _INTAKE_STATEMENT_PATTERNS = (
     r"\bshare (?:your|a bit about your) background\b",
 )
 
+_QUESTION_START_PATTERN = re.compile(
+    r"\b(?:"
+    r"what(?:'s| is| kind of| type of| would| do| are)?|"
+    r"which|how|who|why|where|when|"
+    r"tell me|can you|could you|would you|do you|are you|is your"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     """
@@ -330,15 +341,30 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     if "?" not in cleaned:
         return None
 
-    for clause in reversed(clauses):
-        if not clause.endswith("?"):
-            continue
-        if _is_setup_question(clause):
-            continue
-        if _is_acknowledgement(clause):
-            return None
-        return clause
-    return None
+    question_text = cleaned[: cleaned.rfind("?") + 1]
+    match = _QUESTION_START_PATTERN.search(question_text)
+    if match:
+        question_text = question_text[match.start():]
+
+    # Collapse fragment separators while preserving the actual words.
+    question_text = re.sub(r"[.,;:]+", " ", question_text)
+    question_text = re.sub(r"\b(?:um|uh|er|ah)\b", " ", question_text, flags=re.IGNORECASE)
+    question_text = re.sub(r"\s+", " ", question_text).strip(" ,.-")
+    if not question_text:
+        return None
+
+    for filler in ("Using", "With", "For", "To", "In", "On", "At", "From", "About", "Of", "And", "Or", "But"):
+        question_text = re.sub(rf"\b{filler}\b", filler.lower(), question_text)
+
+    question_text = question_text[0].upper() + question_text[1:]
+
+    if not question_text.endswith("?"):
+        question_text = question_text.rstrip(".") + "?"
+    if _is_setup_question(question_text):
+        return None
+    if _is_acknowledgement(question_text):
+        return None
+    return question_text
 
 
 def _questions_are_rephrasing(q1: str, q2: str) -> bool:
@@ -361,6 +387,51 @@ def _questions_are_rephrasing(q1: str, q2: str) -> bool:
     return overlap / shorter >= 0.4
 
 
+def _question_in_completed_turns(question: str, completed_turns: list[dict]) -> bool:
+    """Return True when question matches one of the completed turns."""
+    cleaned_question = _clean_str(question)
+    if not cleaned_question:
+        return False
+
+    for turn in completed_turns:
+        turn_question = _clean_str(turn.get("question"))
+        if not turn_question:
+            continue
+        if cleaned_question == turn_question:
+            return True
+        if _questions_are_rephrasing(cleaned_question, turn_question):
+            return True
+        if _questions_are_rephrasing(turn_question, cleaned_question):
+            return True
+    return False
+
+
+def _looks_fragmentary_question(question: str) -> bool:
+    """Heuristic for short assistant fragments that should not be treated as the active current question."""
+    cleaned = _clean_str(question)
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if any(re.search(p, lowered) for p in _INTAKE_STATEMENT_PATTERNS):
+        return False
+    if _QUESTION_START_PATTERN.search(cleaned):
+        return False
+
+    words = re.findall(r"[a-zA-Z]+", cleaned)
+    if len(words) <= 6 and cleaned.endswith("?"):
+        return True
+    return len(words) <= 4
+
+
+def _choose_active_current_question(current_question: str, next_question: str) -> str:
+    """Prefer the fuller next_question when the saved current_question is only a fragment."""
+    cleaned_current = _clean_str(current_question)
+    cleaned_next = _clean_str(next_question)
+    if cleaned_current and cleaned_next and _looks_fragmentary_question(cleaned_current):
+        return cleaned_next
+    return cleaned_current
+
+
 def _voice_notes_from_transcript(transcript: str) -> list[dict]:
     """Best-effort parser for speaker-labelled transcripts when explicit voice_notes are absent."""
     notes: list[dict] = []
@@ -378,6 +449,84 @@ def _voice_notes_from_transcript(transcript: str) -> list[dict]:
         elif role in {"candidate", "user"}:
             notes.append({"role": "user", "text": text, "final": True})
     return notes
+
+
+_VOICE_INTAKE_OFFTOPIC_PATTERNS = (
+    r"\bappointment\b",
+    r"\bcar\b",
+    r"\bdoctor\b",
+    r"\bdentist\b",
+    r"\bclinic\b",
+    r"\bhospital\b",
+    r"\bmedication\b",
+    r"\binsurance\b",
+    r"\bpickup\b",
+    r"\bdrop[- ]?off\b",
+    r"\bcommute\b",
+    r"\bschool\b",
+    r"\bfamily\b",
+    r"\bkid(?:s)?\b",
+    r"\bhome\b",
+    r"\blunch\b",
+    r"\bdinner\b",
+    r"\bweekend\b",
+)
+
+_VOICE_INTAKE_WORK_PATTERNS = (
+    r"\bjob\b",
+    r"\brole\b",
+    r"\bwork\b",
+    r"\bcareer\b",
+    r"\bexperience\b",
+    r"\bdeveloper\b",
+    r"\bengineer\b",
+    r"\bbackend\b",
+    r"\bfrontend\b",
+    r"\bjava\b",
+    r"\bpython\b",
+    r"\bspring\b",
+    r"\bfastapi\b",
+    r"\bproject\b",
+    r"\btechnology\b",
+    r"\bskills?\b",
+    r"\bindustry\b",
+    r"\bteam\b",
+    r"\bapi\b",
+)
+
+
+def _candidate_fragment_is_off_topic(question: str, fragment: str) -> bool:
+    """
+    Best-effort filter for clearly unrelated candidate fragments.
+
+    We only drop fragments when they look like logistics / personal questions and
+    do not contain obvious work or career signals. Short but relevant fragments
+    are preserved.
+    """
+    cleaned = _clean_str(fragment)
+    if not cleaned:
+        return False
+
+    lowered = cleaned.lower()
+    if any(re.search(pattern, lowered) for pattern in _VOICE_INTAKE_WORK_PATTERNS):
+        return False
+
+    off_topic_hits = sum(1 for pattern in _VOICE_INTAKE_OFFTOPIC_PATTERNS if re.search(pattern, lowered))
+    if off_topic_hits == 0:
+        return False
+
+    if lowered.endswith("?"):
+        return True
+
+    if re.search(r"^(do|does|did|is|are|was|were|can|could|would|will|should|have|has|had)\b", lowered):
+        return True
+
+    question_words = set(re.findall(r"[a-z]+", _clean_str(question).lower()))
+    fragment_words = set(re.findall(r"[a-z]+", lowered))
+    if question_words and fragment_words and len(question_words & fragment_words) == 0:
+        return True
+
+    return off_topic_hits >= 2
 
 
 def _normalize_voice_notes(voice_notes: Any, transcript: str = "") -> list[dict]:
@@ -475,10 +624,6 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
             continue
 
         if role == "assistant":
-            # Flush any pending user answer before accumulating assistant text
-            # only when we're starting a new assistant segment after user spoke
-            if answer_parts:
-                _flush_assistant_buffer()
             assistant_buffer.append(cleaned)
         elif role == "user":
             # Flush buffered assistant text before processing user turn
@@ -488,6 +633,8 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
                 continue
             if _is_clarification_request(cleaned):
                 # Keep pending_question active; do not count as an answer
+                continue
+            if pending_question and _candidate_fragment_is_off_topic(pending_question, cleaned):
                 continue
             if pending_question:
                 answer_parts.append(cleaned)
@@ -624,6 +771,54 @@ def _merge_voice_intake_topic_list(existing_values: Any, new_values: Any) -> lis
     return merged
 
 
+def _voice_intake_turns_to_transcript(completed_turns: list[dict]) -> str:
+    """
+    Reconstruct a cleaned transcript from completed turns.
+    This intentionally excludes raw interrupted/off-topic fragments so profile
+    extraction only sees the normalized conversational content.
+    """
+    lines: list[str] = []
+    for turn in completed_turns:
+        question = _clean_str(turn.get("question"))
+        answer = _clean_str(turn.get("answer"))
+        if question:
+            lines.append(f"Assistant: {question}")
+        if answer:
+            lines.append(f"Candidate: {answer}")
+    return "\n".join(lines)
+
+
+def _promote_active_voice_question(
+    current_question: str,
+    next_question: str,
+    completed_turns: list[dict],
+) -> tuple[str, str]:
+    """
+    Keep the unanswered active question in current_question and ensure answered
+    questions never remain there.
+    """
+    current = _clean_str(current_question)
+    next_q = _clean_str(next_question)
+
+    current_answered = _question_in_completed_turns(current, completed_turns)
+    next_answered = _question_in_completed_turns(next_q, completed_turns)
+
+    if current and current_answered:
+        if next_q and not next_answered:
+            current = next_q
+            next_q = ""
+        else:
+            current = ""
+    elif not current and next_q and not next_answered:
+        current = next_q
+        next_q = ""
+
+    if current and next_q and _questions_are_rephrasing(current, next_q):
+        next_q = ""
+
+    return current, next_q
+
+
 def _merge_completed_turns(existing_turns: list[dict], new_turns: list[dict]) -> list[dict]:
     """
     Return the union of existing and new completed turns.
@@ -701,14 +896,16 @@ def _build_voice_intake_resume_from_notes(
     existing_known = (existing_resume or {}).get("known_topics") or []
     existing_status = str((existing_resume or {}).get("status") or "in_progress").lower()
 
+    answered_question = _question_in_completed_turns(existing_current_q, completed_turns)
+
     if llm_analysis:
         llm_next_q = _clean_str(llm_analysis.get("next_question"))
-        next_question = llm_next_q or pending_question or existing_next_q or existing_current_q
+        next_question = llm_next_q or existing_next_q
         is_completed = bool(llm_analysis.get("completed")) and not next_question
         missing_topics = _merge_voice_intake_topic_list(existing_missing, llm_analysis.get("missing_topics"))
         known_topics = _merge_voice_intake_topic_list(existing_known, llm_analysis.get("known_topics"))
     else:
-        next_question = pending_question or existing_next_q or existing_current_q
+        next_question = existing_next_q
         missing_topics = existing_missing
         known_topics = existing_known
         is_completed = False
@@ -721,14 +918,20 @@ def _build_voice_intake_resume_from_notes(
         return existing_resume  # type: ignore[return-value]
 
     status = "completed" if is_completed else "in_progress"
-    current_question = pending_question or existing_current_q or next_question
+    current_question = pending_question
+    if not current_question and existing_current_q and not answered_question:
+        current_question = existing_current_q
+    if not current_question and answered_question and next_question and not _question_in_completed_turns(next_question, completed_turns):
+        current_question = next_question
+    if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
+        next_question = ""
 
     resume: dict = {
         "status": status,
         "progress": progress,
         "voice_notes": _normalize_voice_notes(voice_notes, transcript) or (existing_resume or {}).get("voice_notes") or [],
         "completed_turns": completed_turns,
-        "has_open_question": bool(pending_question or next_question),
+        "has_open_question": bool(current_question or next_question),
         "known_topics": known_topics,
         "missing_topics": missing_topics,
     }
@@ -763,18 +966,24 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     if saved_completed_turns:
         completed_turns = saved_completed_turns
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = saved_current_question or saved_next_question
+        current_question = saved_current_question if not _question_in_completed_turns(saved_current_question, completed_turns) else None
+        next_question = saved_next_question
     else:
         voice_notes = voice_intake.get("voice_notes") or []
         completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = pending_question or saved_current_question or saved_next_question
+        current_question = pending_question
+        if not current_question and saved_current_question and not _question_in_completed_turns(saved_current_question, completed_turns):
+            current_question = saved_current_question
+        next_question = saved_next_question
+
+    current_question, next_question = _promote_active_voice_question(current_question or "", next_question or "", completed_turns)
 
     resume = {
         "status": status,
         "progress": progress,
-        "completed_turns": completed_turns[-3:],
-        "has_open_question": bool(next_question),
+        "completed_turns": completed_turns,
+        "has_open_question": bool(current_question or next_question),
         "missing_topics": saved_missing_topics,
         "known_topics": saved_known_topics,
     }
@@ -783,17 +992,15 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
     if next_question:
         resume["next_question"] = next_question
-    if saved_current_question or next_question:
-        resume["current_question"] = saved_current_question or next_question
+    if current_question:
+        resume["current_question"] = current_question
     return resume
 
 
 async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
     existing = await _get_candidate_row(candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
-    existing_voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
-    existing_voice_intake.update(resume)
-    raw_data["voice_intake"] = existing_voice_intake
+    raw_data["voice_intake"] = dict(resume)
 
     async with SessionLocal() as db:
         await db.execute(
@@ -2302,14 +2509,15 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
     llm_analysis = await _llm_analyze_intake(existing_candidate, completed_turns, pending_question)
-    completed_resume = _build_voice_intake_resume_from_notes(
+    voice_intake_state = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
         candidate_profile=existing_candidate,
         llm_analysis=llm_analysis,
     )
 
     # 4. Extract structured info via LLM
-    voice_data = await _extract_voice_info(transcript)
+    voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
+    voice_data = await _extract_voice_info(voice_data_source or transcript)
 
     # 5. Merge into existing profile
     merged = _merge_voice_into_profile(candidate, voice_data)
@@ -2339,9 +2547,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # Always persist raw_data (availability, preferred_roles, certifications, etc.)
     merged_raw = merged.get("raw_data") or {}
-    existing_voice_intake = _parse_raw_data(merged_raw.get("voice_intake"))
-    existing_voice_intake.update(completed_resume)
-    merged_raw["voice_intake"] = existing_voice_intake
+    merged_raw["voice_intake"] = voice_intake_state
     set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
     update_params["raw_data"] = json.dumps(merged_raw)
 
@@ -2363,7 +2569,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
                     completed_at = CASE WHEN :status = 'completed' THEN now() ELSE completed_at END
                 WHERE id = :id
             """),
-            {"id": intake_id, "status": completed_resume["status"]},
+        {"id": intake_id, "status": voice_intake_state["status"]},
         )
         await db.commit()
 
@@ -2371,23 +2577,25 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         "Voice intake saved for candidate %s (intake %s, status=%s)",
         request.candidate_id,
         intake_id,
-        completed_resume["status"],
+        voice_intake_state["status"],
     )
 
-    if completed_resume["status"] == "completed":
+    if voice_intake_state["status"] == "completed":
         asyncio.ensure_future(_trigger_matching(request.candidate_id))
 
     # Return updated profile so dashboard can refresh immediately
     updated_candidate = await _get_candidate_row(request.candidate_id)
     updated_profile = _normalize_for_frontend(updated_candidate)
+    updated_profile["voice_intake_resume"] = voice_intake_state
 
     return {
-        "status": completed_resume["status"],
+        "status": voice_intake_state["status"],
         "intake_id": intake_id,
         "candidate_id": request.candidate_id,
         "fields_updated": [c.split(" ")[0].strip('"') for c in set_clauses
                            if not c.startswith("updated") and not c.startswith("raw_data")],
         "profile": updated_profile,
+        "voice_intake_state": voice_intake_state,
     }
 
 
