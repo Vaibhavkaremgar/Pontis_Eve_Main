@@ -153,7 +153,7 @@ class TestTranscript:
         assert r.status_code == 400
 
     def test_valid_transcript_accepted(self):
-        """A real transcript is accepted and returns completed status."""
+        """A real transcript is accepted and leaves intake resumable until complete."""
         cid = _create_candidate("Transcript Valid")
         r = requests.post(
             f"{API}/voice/candidate-intake",
@@ -162,8 +162,74 @@ class TestTranscript:
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["status"] in ("completed", "duplicate")
+        assert data["status"] in ("in_progress", "completed", "duplicate")
         assert data["candidate_id"] == cid
+
+    def test_progress_ignores_setup_messages_and_keeps_resumable_state(self):
+        """Setup chatter must not count as completed turns or force completion."""
+        cid = _create_candidate("Progress Resume")
+        transcript = (
+            "Assistant: Are you ready?\n"
+            "Candidate: Yes, I'm ready.\n"
+            "Assistant: Take your time, and remember you can pause or refresh the page whenever you need. Are you ready?\n"
+            "Candidate: I'm a Java backend engineer with 8 years of experience.\n"
+            "Assistant: Tell me about your background.\n"
+            "Candidate: I've built Kafka systems and Spring Boot services."
+        )
+        voice_notes = [
+            {"role": "assistant", "text": "Are you ready?"},
+            {"role": "user", "text": "Yes, I'm ready."},
+            {
+                "role": "assistant",
+                "text": "Take your time, and remember you can pause or refresh the page whenever you need. Are you ready?",
+            },
+            {"role": "user", "text": "I'm a Java backend engineer with 8 years of experience."},
+            {"role": "assistant", "text": "Tell me about your background."},
+            {"role": "user", "text": "I've built Kafka systems and Spring Boot services."},
+        ]
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={
+                "transcript": transcript,
+                "voice_notes": voice_notes,
+                "candidate_id": cid,
+            },
+            timeout=60,
+        )
+        assert r.status_code == 200
+        resume = r.json()["voice_intake_resume"]
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 1
+        assert len(resume.get("completed_turns") or []) == 1
+        assert resume["completed_turns"][0]["question"] == "Tell me about your background."
+        assert resume["next_question"] == "What are your key skills?"
+
+        profile = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()
+        vir = profile.get("voice_intake_resume") or {}
+        assert vir.get("status") == "in_progress"
+        assert vir.get("progress") == 1
+        assert len(vir.get("completed_turns") or []) == 1
+        assert vir.get("next_question") == "What are your key skills?"
+
+        final = requests.post(
+            f"{API}/voice/candidate-intake",
+            json={
+                "transcript": transcript,
+                "voice_notes": voice_notes,
+                "candidate_id": cid,
+            },
+            timeout=60,
+        )
+        assert final.status_code == 200
+        assert final.json()["status"] == "in_progress"
+
+        profile_after = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()
+        vir_after = profile_after.get("voice_intake_resume") or {}
+        assert vir_after.get("status") == "in_progress"
+        assert vir_after.get("progress") == 1
+        assert len(vir_after.get("completed_turns") or []) == 1
+        assert vir_after.get("next_question") == "What are your key skills?"
 
     def test_voice_notes_accepted(self):
         """voice_notes array is accepted alongside transcript."""
@@ -299,7 +365,7 @@ class TestLLMExtraction:
             f"Expected skills not found in: {skills_lower}"
 
     def test_intake_completes_even_if_extraction_sparse(self):
-        """A very short transcript still completes without error."""
+        """A very short transcript still saves without forcing completion."""
         cid = _create_candidate("LLM Sparse")
         r = requests.post(
             f"{API}/voice/candidate-intake",
@@ -310,7 +376,7 @@ class TestLLMExtraction:
             timeout=60,
         )
         assert r.status_code == 200
-        assert r.json()["status"] in ("completed", "duplicate")
+        assert r.json()["status"] in ("in_progress", "duplicate")
 
 
 # ─────────────────────────────────────────────
@@ -377,7 +443,7 @@ class TestOnboardingFlow:
             timeout=60,
         )
         assert r3.status_code == 200
-        assert r3.json()["status"] == "completed"
+        assert r3.json()["status"] == "in_progress"
 
         # Step 4: Verify profile is enriched
         profile = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()
@@ -439,7 +505,7 @@ class TestRetry:
             timeout=60,
         )
         assert r2.status_code == 200
-        assert r2.json()["status"] == "completed"
+        assert r2.json()["status"] in ("in_progress", "completed")
 
         # Profile should still be intact
         profile = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()

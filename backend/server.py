@@ -9,6 +9,7 @@ import os
 import json
 import logging
 import hashlib
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
@@ -215,6 +216,61 @@ def _voice_intake_question_for_field(field_label: str) -> str:
     return mapping.get(field_label, "Is there anything else you'd like me to know?")
 
 
+# Canonical intake prompts that should count toward completion.
+# These intentionally exclude greetings, setup chatter, acknowledgements, and
+# high-level conversational prompts that do not collect profile data.
+VOICE_INTAKE_QUESTION_FLOW = (
+    {
+        "question": "Tell me about your background.",
+        "patterns": (
+            r"\btell me about (?:your|the) background\b",
+            r"\btell me about yourself\b",
+            r"\bbackground\b",
+            r"\bexperience\b",
+        ),
+    },
+    {
+        "question": "What are your key skills?",
+        "patterns": (
+            r"\bkey skills\b",
+            r"\btechnical skills\b",
+            r"\bskills\b",
+        ),
+    },
+    {
+        "question": "What roles are you targeting right now?",
+        "patterns": (
+            r"\bwhat roles are you targeting\b",
+            r"\bwhat type of roles\b",
+            r"\blooking for\b",
+            r"\bcareer goals\b",
+        ),
+    },
+    {
+        "question": "When would you be available to start?",
+        "patterns": (
+            r"\bavailable to start\b",
+            r"\bwhen can you start\b",
+            r"\bwhen would you be available\b",
+            r"\bnotice period\b",
+        ),
+    },
+    {
+        "question": "What location or work setup do you prefer?",
+        "patterns": (
+            r"\blocation preferences\b",
+            r"\bwhat location\b",
+            r"\bremote\b",
+            r"\bhybrid\b",
+            r"\bon-site\b",
+            r"\bwork setup\b",
+        ),
+    },
+)
+
+VOICE_INTAKE_TOTAL_QUESTIONS = len(VOICE_INTAKE_QUESTION_FLOW)
+
+
 # Short acknowledgement phrases Eve uses that are NOT real intake questions.
 _ACK_PREFIXES = (
     "thanks", "thank you", "great", "got it", "perfect", "noted", "understood",
@@ -234,7 +290,68 @@ def _is_acknowledgement(text: str) -> bool:
     return any(t.startswith(p) for p in _ACK_PREFIXES)
 
 
-def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str]]:
+def _voice_intake_question_for_text(text: str) -> Optional[str]:
+    """Return the canonical intake question if the assistant turn is an actual intake prompt."""
+    cleaned = _clean_str(text)
+    if not cleaned:
+        return None
+
+    # Keep the last sentence-like clause so we can ignore leading setup chatter such as
+    # "Take your time... Are you ready?"
+    candidates = [part.strip() for part in re.split(r"(?<=[?.!])\s+", cleaned) if part.strip()]
+    search_text = candidates[-1] if candidates else cleaned
+    lowered = search_text.lower().strip().rstrip(" .!?")
+
+    for step in VOICE_INTAKE_QUESTION_FLOW:
+        if any(re.search(pattern, lowered) for pattern in step["patterns"]):
+            return step["question"]
+    return None
+
+
+def _voice_notes_from_transcript(transcript: str) -> list[dict]:
+    """Best-effort parser for speaker-labelled transcripts when explicit voice_notes are absent."""
+    notes: list[dict] = []
+    for raw_line in (transcript or "").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        speaker, content = line.split(":", 1)
+        role = speaker.strip().lower()
+        text = content.strip()
+        if not text:
+            continue
+        if role in {"assistant", "eve"}:
+            notes.append({"role": "assistant", "text": text, "final": True})
+        elif role in {"candidate", "user"}:
+            notes.append({"role": "user", "text": text, "final": True})
+    return notes
+
+
+def _normalize_voice_notes(voice_notes: Any, transcript: str = "") -> list[dict]:
+    if voice_notes:
+        normalized: list[dict] = []
+        for note in voice_notes:
+            if isinstance(note, dict):
+                normalized.append(
+                    {
+                        "role": note.get("role"),
+                        "text": note.get("text", ""),
+                        "final": note.get("final", True),
+                    }
+                )
+            else:
+                normalized.append(
+                    {
+                        "role": getattr(note, "role", None),
+                        "text": getattr(note, "text", ""),
+                        "final": getattr(note, "final", True),
+                    }
+                )
+        return normalized
+    return _voice_notes_from_transcript(transcript)
+
+
+def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[list[dict], Optional[str]]:
     """
     Parse voice_notes into completed Q&A pairs.
 
@@ -254,15 +371,10 @@ def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str
     # Accumulated user answer fragments for the current question
     answer_parts: list[str] = []
 
-    for note in voice_notes or []:
-        if isinstance(note, dict):
-            role = note.get("role")
-            text = note.get("text", "")
-            is_final = note.get("final", True)
-        else:
-            role = getattr(note, "role", None)
-            text = getattr(note, "text", "")
-            is_final = getattr(note, "final", True)
+    for note in _normalize_voice_notes(voice_notes, transcript):
+        role = note.get("role")
+        text = note.get("text", "")
+        is_final = note.get("final", True)
 
         if not is_final:
             continue
@@ -281,9 +393,10 @@ def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str
                 answer_parts = []
                 pending_question = None
 
-            # Only update the pending question for real questions, not acknowledgements
-            if not _is_acknowledgement(cleaned):
-                pending_question = cleaned
+            # Only update the pending question for actual intake prompts, not setup chatter.
+            canonical_question = _voice_intake_question_for_text(cleaned)
+            if canonical_question:
+                pending_question = canonical_question
 
         elif role == "user":
             if pending_question:
@@ -300,6 +413,70 @@ def _voice_intake_turn_pairs(voice_notes: Any) -> tuple[list[dict], Optional[str
     return completed, pending_question
 
 
+def _next_voice_intake_question(completed_turns: list[dict], pending_question: Optional[str] = None) -> Optional[str]:
+    answered = {str(turn.get("question") or "").strip() for turn in completed_turns if turn.get("question")}
+    if pending_question:
+        return pending_question
+    for step in VOICE_INTAKE_QUESTION_FLOW:
+        if step["question"] not in answered:
+            return step["question"]
+    return None
+
+
+def _build_voice_intake_resume_from_notes(
+    voice_notes: Any,
+    transcript: str = "",
+    existing_resume: Optional[dict] = None,
+) -> dict:
+    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+    next_question = _next_voice_intake_question(completed_turns, pending_question)
+    progress = len(completed_turns)
+    status = "completed" if progress >= VOICE_INTAKE_TOTAL_QUESTIONS and not next_question else "in_progress"
+
+    resume = {
+        "status": status,
+        "progress": progress,
+        "voice_notes": _normalize_voice_notes(voice_notes, transcript),
+        "completed_turns": completed_turns,
+        "has_open_question": bool(pending_question),
+    }
+    if completed_turns:
+        resume["latest_completed_question"] = completed_turns[-1]["question"]
+        resume["latest_completed_answer"] = completed_turns[-1]["answer"]
+    if next_question:
+        resume["next_question"] = next_question
+
+    if not existing_resume:
+        return resume
+
+    existing_progress = int(existing_resume.get("progress") or 0)
+    existing_status = str(existing_resume.get("status") or "in_progress").lower()
+    if existing_status == "completed":
+        return existing_resume
+    if status == "completed":
+        return resume
+    if progress > existing_progress:
+        return resume
+    if progress < existing_progress:
+        return existing_resume
+
+    merged = dict(existing_resume)
+    if not merged.get("voice_notes"):
+        merged["voice_notes"] = resume["voice_notes"]
+    if not merged.get("completed_turns") and resume.get("completed_turns"):
+        merged["completed_turns"] = resume["completed_turns"]
+    if not merged.get("latest_completed_question") and resume.get("latest_completed_question"):
+        merged["latest_completed_question"] = resume["latest_completed_question"]
+    if not merged.get("latest_completed_answer") and resume.get("latest_completed_answer"):
+        merged["latest_completed_answer"] = resume["latest_completed_answer"]
+    if resume.get("next_question"):
+        merged["next_question"] = resume["next_question"]
+    merged["progress"] = existing_progress
+    merged["status"] = "in_progress"
+    merged["has_open_question"] = bool(merged.get("next_question"))
+    return merged
+
+
 def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     raw_data = _parse_raw_data(profile.get("raw_data"))
     voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
@@ -308,9 +485,8 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     status = str(voice_intake.get("status") or "").lower()
     if status == "completed":
         return None
+    status = "in_progress"
 
-    # Trust the saved progress/completed_turns/next_question from the progress endpoint.
-    # Only re-derive from voice_notes when the saved state has no completed_turns yet.
     saved_completed_turns = voice_intake.get("completed_turns") or []
     saved_progress = voice_intake.get("progress")
     saved_next_question = voice_intake.get("next_question")
@@ -318,18 +494,18 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     if saved_completed_turns:
         completed_turns = saved_completed_turns
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = saved_next_question
+        next_question = saved_next_question or _next_voice_intake_question(completed_turns)
     else:
         voice_notes = voice_intake.get("voice_notes") or []
         completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = pending_question or saved_next_question
+        next_question = pending_question or saved_next_question or _next_voice_intake_question(completed_turns)
 
     resume = {
-        "status": "in_progress",
+        "status": status,
         "progress": progress,
         "completed_turns": completed_turns[-3:],
-        "has_open_question": bool(saved_next_question),
+        "has_open_question": bool(next_question),
     }
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
@@ -1762,9 +1938,8 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # 3. Persist intake record (status=pending)
     intake_id = str(uuid.uuid4())
-    voice_notes_json = json.dumps(
-        [n.model_dump() for n in (request.voice_notes or [])]
-    )
+    voice_notes = _normalize_voice_notes(request.voice_notes, transcript)
+    voice_notes_json = json.dumps(voice_notes)
     async with SessionLocal() as db:
         await db.execute(
             text("""
@@ -1781,17 +1956,10 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         )
         await db.commit()
 
-    completed_turns, _ = _voice_intake_turn_pairs([n.model_dump() for n in (request.voice_notes or [])])
-    # Preserve any existing in-progress resume state (next_question, etc.) if present
     existing_candidate = await _get_candidate_row(request.candidate_id)
     existing_raw = _parse_raw_data(existing_candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
-    completed_resume = {
-        "status": "completed",
-        "progress": len(completed_turns),
-        "voice_notes": [n.model_dump() for n in (request.voice_notes or [])],
-        "completed_turns": completed_turns[-3:],
-    }
+    completed_resume = _build_voice_intake_resume_from_notes(voice_notes, transcript, existing_vi)
 
     # 4. Extract structured info via LLM
     voice_data = await _extract_voice_info(transcript)
@@ -1837,28 +2005,35 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         )
         await db.commit()
 
-    # 7. Mark intake as completed
+    # 7. Mark intake as completed only when the actual intake questions have all been answered.
     async with SessionLocal() as db:
         await db.execute(
             text("""
                 UPDATE candidate_voice_intakes
-                SET status = 'completed', completed_at = now()
+                SET status = :status,
+                    completed_at = CASE WHEN :status = 'completed' THEN now() ELSE completed_at END
                 WHERE id = :id
             """),
-            {"id": intake_id},
+            {"id": intake_id, "status": completed_resume["status"]},
         )
         await db.commit()
 
-    logger.info("Voice intake completed for candidate %s (intake %s)", request.candidate_id, intake_id)
+    logger.info(
+        "Voice intake saved for candidate %s (intake %s, status=%s)",
+        request.candidate_id,
+        intake_id,
+        completed_resume["status"],
+    )
 
-    asyncio.ensure_future(_trigger_matching(request.candidate_id))
+    if completed_resume["status"] == "completed":
+        asyncio.ensure_future(_trigger_matching(request.candidate_id))
 
     # Return updated profile so dashboard can refresh immediately
     updated_candidate = await _get_candidate_row(request.candidate_id)
     updated_profile = _normalize_for_frontend(updated_candidate)
 
     return {
-        "status": "completed",
+        "status": completed_resume["status"],
         "intake_id": intake_id,
         "candidate_id": request.candidate_id,
         "fields_updated": [c.split(" ")[0].strip('"') for c in set_clauses
@@ -1871,28 +2046,14 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
     candidate = await _get_candidate_row(request.candidate_id)
-    voice_notes = [n.model_dump() for n in (request.voice_notes or [])]
-    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
+    voice_notes = _normalize_voice_notes(request.voice_notes, (request.transcript or "").strip())
 
     # Load existing saved state to preserve next_question if we can't derive a better one
     existing_raw = _parse_raw_data(candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
-    existing_next_q = existing_vi.get("next_question") if existing_vi else None
-
-    resume = {
-        "status": "in_progress",
-        "progress": len(completed_turns),
-        "voice_notes": voice_notes,
-        "completed_turns": completed_turns[-3:],
-        "has_open_question": bool(pending_question),
-    }
-    if completed_turns:
-        resume["latest_completed_question"] = completed_turns[-1]["question"]
-        resume["latest_completed_answer"] = completed_turns[-1]["answer"]
-    # next_question: prefer the live pending question; fall back to previously saved one
-    next_question = pending_question or existing_next_q
-    if next_question:
-        resume["next_question"] = next_question
+    resume = _build_voice_intake_resume_from_notes(voice_notes, (request.transcript or "").strip(), existing_vi)
+    if not resume.get("status"):
+        resume["status"] = "in_progress"
 
     await _save_voice_intake_resume(request.candidate_id, resume)
     return {
