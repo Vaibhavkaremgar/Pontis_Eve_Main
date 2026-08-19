@@ -687,3 +687,175 @@ class TestRetry:
         # Profile should still be intact
         profile = requests.get(f"{API}/candidate/{cid}/profile", timeout=15).json()
         assert profile.get("name")
+
+
+# ─────────────────────────────────────────────
+# 9. Regression: production bug — acknowledgements / embedded questions
+# ─────────────────────────────────────────────
+
+class TestProductionRegressions:
+    """
+    Regression tests derived from the production bug where:
+    - "Thanks for that." was incorrectly becoming a pending_question
+    - Candidate answer fragments were being split across fake turns
+    - Real canonical questions embedded in longer assistant messages were missed
+    """
+
+    def test_acknowledgement_between_fragments_combined_into_one_answer(self):
+        """
+        Rule 9: assistant acknowledgements between candidate fragments must NOT
+        terminate the active answer. All fragments belong to the same turn.
+
+        Transcript:
+          Assistant: "What kind of projects or technologies excite you the most right now?"
+          Candidate: "Projects like app development and."
+          Assistant: "Thanks for that."
+          Candidate: "Recru"
+          Assistant: "Thanks for that."
+          Candidate: "Recruitment platforms."
+
+        Expected: ONE completed_turn with all three candidate fragments combined.
+        "Thanks for that." must never appear as a question.
+        """
+        cid = _create_candidate("Regression Ack Between Fragments")
+        voice_notes = [
+            {"role": "assistant", "text": "What kind of projects or technologies excite you the most right now?"},
+            {"role": "user",      "text": "Projects like app development and."},
+            {"role": "assistant", "text": "Thanks for that."},
+            {"role": "user",      "text": "Recru"},
+            {"role": "assistant", "text": "Thanks for that."},
+            {"role": "user",      "text": "Recruitment platforms."},
+        ]
+        transcript = (
+            "Assistant: What kind of projects or technologies excite you the most right now?\n"
+            "Candidate: Projects like app development and.\n"
+            "Assistant: Thanks for that.\n"
+            "Candidate: Recru\n"
+            "Assistant: Thanks for that.\n"
+            "Candidate: Recruitment platforms."
+        )
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 1, f"Expected 1 completed turn, got {len(turns)}: {turns}"
+
+        turn = turns[0]
+        # The question must be the real canonical question, never "Thanks for that."
+        assert "Thanks for that" not in turn["question"]
+        assert "Thanks for that." not in turn["question"]
+        assert "projects or technologies" in turn["question"].lower() or \
+               turn["question"] == "What kind of projects or technologies excite you the most right now?"
+
+        # All three candidate fragments must be in the combined answer
+        answer = turn["answer"]
+        assert "app development" in answer
+        assert "Recru" in answer or "Recruitment" in answer
+        assert "Recruitment platforms" in answer
+
+    def test_real_question_embedded_in_longer_assistant_message(self):
+        """
+        Rule 5: a canonical question embedded inside a longer assistant message
+        must be detected and used as the pending_question.
+
+        Assistant: "Interesting. Let me understand your preferences.
+                    What kind of role would you ideally like to move into next?"
+        Candidate: "Yeah, I'm looking for a development role where the developer
+                    development team will be using Python, C#, .NET—"
+
+        Expected: ONE completed_turn with the canonical question extracted.
+        """
+        cid = _create_candidate("Regression Embedded Question")
+        voice_notes = [
+            {
+                "role": "assistant",
+                "text": (
+                    "Interesting. Let me understand your preferences. "
+                    "What kind of role would you ideally like to move into next?"
+                ),
+            },
+            {
+                "role": "user",
+                "text": (
+                    "Yeah, I'm looking for a development role where the developer "
+                    "development team will be using Python, C#, .NET—"
+                ),
+            },
+        ]
+        transcript = (
+            "Assistant: Interesting. Let me understand your preferences. "
+            "What kind of role would you ideally like to move into next?\n"
+            "Candidate: Yeah, I'm looking for a development role where the developer "
+            "development team will be using Python, C#, .NET—"
+        )
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        # The answer is still pending (no closing question yet), so check has_open_question
+        # OR it may be flushed as a completed turn if the parser flushes trailing answers.
+        # Either way, the question must be the canonical one, never "Interesting."
+        turns = resume.get("completed_turns") or []
+        pending_q = resume.get("next_question") or ""
+
+        if turns:
+            assert turns[-1]["question"] == "What kind of role would you ideally like to move into next?"
+            assert "Python" in turns[-1]["answer"] or ".NET" in turns[-1]["answer"]
+        else:
+            # Answer is still open — the canonical question should be the active one
+            assert resume.get("has_open_question") is True
+
+        # "Interesting." must never be a question
+        for t in turns:
+            assert t["question"] != "Interesting."
+            assert t["question"] != "Interesting"
+
+    def test_acknowledgement_phrases_never_become_question(self):
+        """
+        Rule 3 / Rule 10: none of the listed acknowledgement phrases may ever
+        appear as a completed_turn question or pending_question.
+        """
+        from server import _voice_intake_turn_pairs
+
+        ack_phrases = [
+            "Thanks",
+            "Thanks.",
+            "Thanks for that",
+            "Thanks for that.",
+            "Thanks for sharing",
+            "Thanks for sharing that",
+            "Got it",
+            "Got it.",
+            "Great",
+            "Great.",
+            "Interesting",
+            "Interesting.",
+            "Understood",
+            "Understood.",
+            "That's useful",
+            "That's useful.",
+            "Thanks, that's useful.",
+        ]
+
+        for phrase in ack_phrases:
+            notes = [
+                {"role": "assistant", "text": phrase, "final": True},
+                {"role": "user",      "text": "I am a Python developer.", "final": True},
+            ]
+            completed, pending = _voice_intake_turn_pairs(notes)
+            for turn in completed:
+                assert turn["question"] != phrase, \
+                    f'"{phrase}" must never be a completed_turn question'
+            assert pending != phrase, \
+                f'"{phrase}" must never be a pending_question'

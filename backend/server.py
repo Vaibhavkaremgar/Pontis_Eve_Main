@@ -225,16 +225,37 @@ VOICE_INTAKE_QUESTION_FLOW = (
         "patterns": (
             r"\btell me about (?:your|the) background\b",
             r"\btell me about yourself\b",
-            r"\bbackground\b",
-            r"\bexperience\b",
         ),
     },
     {
         "question": "What are your key skills?",
         "patterns": (
-            r"\bkey skills\b",
-            r"\btechnical skills\b",
-            r"\bskills\b",
+            r"\bwhat (?:are your |are the )?key skills\b",
+            r"\bwhat (?:are your )?technical skills\b",
+            r"\bwhat skills\b",
+        ),
+    },
+    {
+        "question": "What kind of role would you ideally like to move into next?",
+        "patterns": (
+            r"\bwhat kind of role would you (?:ideally )?like to move into\b",
+            r"\bwhat role would you (?:ideally )?like to move into\b",
+        ),
+    },
+    {
+        "question": "Would you prefer a role where you lead the development team, or focus mainly on coding and technical tasks yourself?",
+        "patterns": (
+            r"\bwould you prefer a role where you lead\b",
+            r"\blead the development team\b",
+            r"\bfocus mainly on coding and technical tasks\b",
+        ),
+    },
+    {
+        "question": "What kind of projects or technologies excite you the most right now?",
+        "patterns": (
+            r"\bwhat kind of projects or technologies excite you\b",
+            r"\bprojects or technologies excite you\b",
+            r"\bwhat (?:kind of )?projects excite you\b",
         ),
     },
     {
@@ -242,8 +263,6 @@ VOICE_INTAKE_QUESTION_FLOW = (
         "patterns": (
             r"\bwhat roles are you targeting\b",
             r"\bwhat type of roles\b",
-            r"\blooking for\b",
-            r"\bcareer goals\b",
         ),
     },
     {
@@ -260,9 +279,8 @@ VOICE_INTAKE_QUESTION_FLOW = (
         "patterns": (
             r"\blocation preferences\b",
             r"\bwhat location\b",
-            r"\bremote\b",
-            r"\bhybrid\b",
-            r"\bon-site\b",
+            r"\bdo you have any location preferences\b",
+            r"\bremote, hybrid, or (?:on-site|specific cities)\b",
             r"\bwork setup\b",
         ),
     },
@@ -276,7 +294,17 @@ _ACK_PREFIXES = (
     "thanks", "thank you", "great", "got it", "perfect", "noted", "understood",
     "awesome", "sounds good", "i see", "okay", "ok,", "alright", "sure",
     "absolutely", "wonderful", "nice", "good to know", "i'll note", "i've noted",
+    "interesting", "that's useful",
 )
+
+# Exact-match acknowledgements that must NEVER become a pending_question.
+_ACK_EXACT = frozenset({
+    "thanks", "thanks.", "thanks for that", "thanks for that.",
+    "thanks for sharing", "thanks for sharing that", "thanks for sharing that.",
+    "got it", "got it.", "great", "great.", "interesting", "interesting.",
+    "understood", "understood.", "that's useful", "that's useful.",
+    "thanks, that's useful.", "thanks, that's useful",
+})
 
 _USER_ACK_PREFIXES = (
     "yes", "yeah", "yep", "yup", "ready", "i'm ready", "im ready",
@@ -287,6 +315,8 @@ _USER_ACK_PREFIXES = (
 def _is_acknowledgement(text: str) -> bool:
     """Return True when an assistant turn is a short acknowledgement, not a real question."""
     t = text.lower().strip()
+    if t in _ACK_EXACT:
+        return True
     # Must be short and not end with a question mark to be an acknowledgement
     if "?" in t:
         return False
@@ -403,20 +433,32 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
             continue
 
         if role == "assistant":
-            # Flush completed Q&A pair before moving to the next question
-            if answer_parts and pending_question:
-                completed.append({
-                    "question": pending_question,
-                    "answer": " ".join(answer_parts),
-                })
-            answer_parts = []
-            pending_question = None
+            # Acknowledgement-only turns ("Thanks for that.", "Got it.", etc.) must
+            # NEVER close the active answer or replace the pending question.
+            if _is_acknowledgement(cleaned):
+                continue
 
             canonical_question = _voice_intake_question_for_text(cleaned)
             if canonical_question:
+                # A new real canonical question: flush any accumulated answer first.
+                if answer_parts and pending_question:
+                    completed.append({
+                        "question": pending_question,
+                        "answer": " ".join(answer_parts),
+                    })
+                answer_parts = []
                 question_is_setup = False
                 pending_question = canonical_question
             else:
+                # Non-acknowledgement, non-canonical assistant turn (e.g. greeting,
+                # setup chatter). Flush any open answer and reset.
+                if answer_parts and pending_question:
+                    completed.append({
+                        "question": pending_question,
+                        "answer": " ".join(answer_parts),
+                    })
+                answer_parts = []
+                pending_question = None
                 question_is_setup = True
 
         elif role == "user":
