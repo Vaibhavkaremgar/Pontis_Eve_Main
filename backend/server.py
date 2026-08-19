@@ -172,6 +172,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "certifications": raw_data.get("certifications") or [],
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
+        "photo_url": raw_data.get("photo_url") or None,
     }
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
@@ -855,6 +856,56 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
     profile = _normalize_for_frontend({**parsed, "id": cid})
     profile["_meta"] = {"used_ocr": used_ocr}
     return profile
+
+
+@api_router.post("/candidate/{candidate_id}/photo")
+async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
+    await _get_candidate_row(candidate_id)
+    allowed = ("image/jpeg", "image/png", "image/webp", "image/gif")
+    if file.content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported image type.")
+    file_bytes = await file.read()
+    if len(file_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image must be smaller than 5 MB.")
+    dest_dir = DOCS_DIR / candidate_id / "photo"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "photo").suffix or ".jpg"
+    dest_path = dest_dir / f"{uuid.uuid4()}{ext}"
+    dest_path.write_bytes(file_bytes)
+
+    photo_url = f"/api/candidate/{candidate_id}/photo/view"
+
+    existing = await _get_candidate_row(candidate_id)
+    raw_data = _parse_raw_data(existing.get("raw_data"))
+    # Remove old photo file if present
+    old_path = raw_data.get("photo_file_path")
+    if old_path and old_path != str(dest_path):
+        try:
+            Path(old_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    raw_data["photo_url"] = photo_url
+    raw_data["photo_file_path"] = str(dest_path)
+    async with SessionLocal() as db:
+        await db.execute(
+            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+            {"rd": json.dumps(raw_data), "cid": candidate_id},
+        )
+        await db.commit()
+    return {"photo_url": photo_url}
+
+
+@api_router.get("/candidate/{candidate_id}/photo/view")
+async def view_profile_photo(candidate_id: str):
+    existing = await _get_candidate_row(candidate_id)
+    raw_data = _parse_raw_data(existing.get("raw_data"))
+    file_path = raw_data.get("photo_file_path")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(status_code=404, detail="No profile photo.")
+    suffix = Path(file_path).suffix.lower()
+    media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                  "webp": "image/webp", "gif": "image/gif"}.get(suffix.lstrip("."), "image/jpeg")
+    return FileResponse(file_path, media_type=media_type)
 
 
 @api_router.get("/candidate/{candidate_id}/chat")

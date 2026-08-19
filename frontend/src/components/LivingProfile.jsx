@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download } from "lucide-react";
+import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera } from "lucide-react";
 import { JobDetailModal } from "./SwipeJobCard";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -26,7 +26,7 @@ function ProfileStrengthBar({ label, percent }) {
     >
       <span className="text-[11.5px] text-[#9A9A98] font-normal">
         Profile strength:{" "}
-        <span className="text-[#1F1F1F] font-medium">{label}</span>
+        <span className="text-[#1F1F1F] font-medium">{label} {percent}%</span>
       </span>
       <div className="w-[90px] h-1.5 rounded-full bg-[#E7E3F0] overflow-hidden">
         <div
@@ -110,7 +110,75 @@ function EducationRow({ edu }) {
   );
 }
 
-function ProfileTab({ user, onToggleOpenToMatches }) {
+const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
+
+function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
+  const inputRef = React.useRef(null);
+  const [uploading, setUploading] = React.useState(false);
+  const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
+
+  React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
+
+  const handleFile = async (file) => {
+    if (!file || !candidateId) return;
+    if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
+      alert("Please upload a JPEG, PNG, WebP, or GIF image.");
+      return;
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      alert("Image must be smaller than 5 MB.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await axios.post(`${API}/candidate/${candidateId}/photo`, fd);
+      const url = res.data?.photo_url;
+      setPhotoUrl(url);
+      onPhotoChange?.(url);
+    } catch {
+      alert("Photo upload failed. Please try again.");
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const initials = user.name
+    ? user.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
+    : "?";
+
+  return (
+    <div className="relative w-14 h-14 shrink-0 group">
+      {photoUrl ? (
+        <img src={photoUrl} alt={user.name} className="w-14 h-14 rounded-full object-cover" />
+      ) : (
+        <div className="w-14 h-14 rounded-full bg-[#E7E3F0] flex items-center justify-center">
+          <span className="text-[18px] font-medium text-[#7B6FB8]">{initials}</span>
+        </div>
+      )}
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        aria-label="Upload profile photo"
+        className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors disabled:opacity-50"
+      >
+        <Camera className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={1.75} />
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        className="hidden"
+        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+      />
+    </div>
+  );
+}
+
+function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
   return (
     <div className="space-y-8" data-testid="living-profile-content">
       {/* Header */}
@@ -155,17 +223,7 @@ function ProfileTab({ user, onToggleOpenToMatches }) {
               </p>
             )}
           </div>
-          {user.avatar ? (
-            <img src={user.avatar} alt={user.name} className="w-14 h-14 rounded-full object-cover shrink-0" />
-          ) : (
-            <div className="w-14 h-14 rounded-full bg-[#E7E3F0] flex items-center justify-center shrink-0">
-              <span className="text-[18px] font-medium text-[#7B6FB8]">
-                {user.name
-                  ? user.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
-                  : "?"}
-              </span>
-            </div>
-          )}
+          <ProfilePhotoUpload user={user} candidateId={user.candidate_id} onPhotoChange={onPhotoChange} />
         </div>
       </div>
 
@@ -1140,6 +1198,7 @@ export default function LivingProfile({
   onCertDeleted,
   onInterested,
   onJobViewed,
+  onPhotoChange,
 }) {
   const profileContentRef = React.useRef(null);
   const [pdfGenerating, setPdfGenerating] = React.useState(false);
@@ -1190,7 +1249,7 @@ export default function LivingProfile({
       {/* Scrollable content */}
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
         <div className="max-w-2xl mx-auto">
-          {activeTab === "profile" && <ProfileTab user={userProfile} onToggleOpenToMatches={onToggleOpenToMatches} />}
+          {activeTab === "profile" && <ProfileTab user={userProfile} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} />}
           {activeTab === "jobs" && (
             <JobsTab
               jobs={jobs}

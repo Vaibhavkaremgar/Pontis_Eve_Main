@@ -145,7 +145,7 @@ function Dashboard() {
       .then((res) => {
         const data = res.data;
         setUserProfile(applyStrength({
-          avatar: null,
+          avatar: data.photo_url ?? null,
           isOpenToMatches,
           name: data.name ?? "",
           email: data.email ?? "",
@@ -198,6 +198,7 @@ function Dashboard() {
       setUserProfile((prev) =>
         applyStrength({
           ...prev,
+          avatar: data.photo_url ?? prev.avatar ?? null,
           name: data.name ?? prev.name,
           email: data.email ?? prev.email,
           phone: data.phone ?? prev.phone,
@@ -219,6 +220,10 @@ function Dashboard() {
       console.error("refreshProfile failed", err);
     }
   }, [candidateId]);
+
+  const handlePhotoChange = React.useCallback((url) => {
+    setUserProfile((prev) => ({ ...prev, avatar: url }));
+  }, []);
 
   const handleLogout = React.useCallback(() => {
     clearOnboardingState();
@@ -664,6 +669,7 @@ function Dashboard() {
             onResumeDeleted={handleResumeDeleted}
             onCertDeleted={handleCertDeleted}
             onInterested={fetchJobs}
+            onPhotoChange={handlePhotoChange}
             onJobViewed={(jobId) =>
               setAvailableJobs((prev) =>
                 prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j))
