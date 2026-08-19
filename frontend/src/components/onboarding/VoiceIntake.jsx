@@ -94,8 +94,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     }
   }, []);
 
-  // Build assistant overrides with candidate context
-  const assistantOverrides = React.useMemo(() => {
+    const assistantOverrides = React.useMemo(() => {
     const p = candidateProfile || {};
     const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
     const skills = Array.isArray(p.keySkills) && p.keySkills.length > 0
@@ -110,7 +109,15 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     const preferredRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0
       ? p.preferred_roles.join(", ") : "";
     const vir = p.voice_intake_resume || {};
-    const s = loadOnboardingState();
+
+    // Build structured intake context for LLM — no hardcoded question numbers
+    const completedTopics = (vir.known_topics || []).join(", ");
+    const missingTopics = (vir.missing_topics || []).join(", ");
+    const completedQA = Array.isArray(vir.completed_turns) && vir.completed_turns.length > 0
+      ? vir.completed_turns.map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | ")
+      : "";
+    const currentQuestion = vir.current_question || vir.next_question || "";
+
     return {
       variableValues: {
         candidate_name: p.name || firstName || "",
@@ -129,12 +136,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         notice_period: p.notice_period || "",
         availability: p.availability || "",
         work_type: p.work_type_preference || "",
-        ...(vir.progress != null ? { voice_intake_progress: String(vir.progress) } : {}),
-        ...(vir.completed_turns?.length > 0 ? {
-          voice_intake_answers: vir.completed_turns
-            .map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | "),
-        } : {}),
-        ...(vir.next_question ? { voice_intake_next_question: vir.next_question } : {}),
+        voice_intake_status: vir.status || "",
+        voice_intake_completed_topics: completedTopics,
+        voice_intake_missing_topics: missingTopics,
+        voice_intake_answers: completedQA,
+        voice_intake_current_question: currentQuestion,
       },
       metadata: {
         candidateId: candidateId || "",

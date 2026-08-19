@@ -195,99 +195,47 @@ def _clean_str(value: Any) -> str:
     return " ".join(str(value).split()) if value is not None else ""
 
 
-def _voice_intake_question_for_field(field_label: str) -> str:
-    mapping = {
-        "Preferred Roles": "What roles are you targeting right now?",
-        "Availability": "When would you be available to start?",
-        "Location": "What location should I keep in mind for your search?",
-        "Location Preferences": "Do you have any location preferences, like remote, hybrid, or specific cities?",
-        "Work Type Preference": "Do you prefer remote, hybrid, or on-site roles?",
-        "Notice Period": "What notice period should I note?",
-        "Salary Expectation": "What salary range are you targeting?",
-        "Target Industries": "Any industries you want to focus on?",
-        "Career Goals": "What are you aiming for next in your career?",
-        "Additional Information": "Is there anything else you'd like me to know?",
-        "Experience Years": "About how many years of experience should I note?",
-        "Skills": "What skills should I make sure we capture?",
-        "Work Experience": "Can you tell me about your most recent relevant role?",
-        "Education": "Can you share your education background?",
-        "Bio/Summary": "How would you describe your background in a sentence or two?",
-        "Headline / Current Role": "What current role or headline should I use?",
-    }
-    return mapping.get(field_label, "Is there anything else you'd like me to know?")
+# High-level intake topics — used as hints to the LLM, not as hardcoded question wording.
+VOICE_INTAKE_TOPICS = [
+    "background_experience",
+    "skills_technologies",
+    "target_role",
+    "career_preferences",
+    "responsibilities_projects",
+    "education_certifications",
+    "availability_location",
+]
 
+VOICE_INTAKE_TOTAL_QUESTIONS = len(VOICE_INTAKE_TOPICS)
 
-# Canonical intake prompts that should count toward completion.
-# These intentionally exclude greetings, setup chatter, acknowledgements, and
-# high-level conversational prompts that do not collect profile data.
-VOICE_INTAKE_QUESTION_FLOW = (
-    {
-        "question": "Tell me about your background.",
-        "patterns": (
-            r"\btell me about (?:your|the) background\b",
-            r"\btell me about yourself\b",
-        ),
-    },
-    {
-        "question": "What are your key skills?",
-        "patterns": (
-            r"\bwhat (?:are your |are the )?key skills\b",
-            r"\bwhat (?:are your )?technical skills\b",
-            r"\bwhat skills\b",
-        ),
-    },
-    {
-        "question": "What kind of role would you ideally like to move into next?",
-        "patterns": (
-            r"\bwhat kind of role would you (?:ideally )?like to move into\b",
-            r"\bwhat role would you (?:ideally )?like to move into\b",
-        ),
-    },
-    {
-        "question": "Would you prefer a role where you lead the development team, or focus mainly on coding and technical tasks yourself?",
-        "patterns": (
-            r"\bwould you prefer a role where you lead\b",
-            r"\blead the development team\b",
-            r"\bfocus mainly on coding and technical tasks\b",
-        ),
-    },
-    {
-        "question": "What kind of projects or technologies excite you the most right now?",
-        "patterns": (
-            r"\bwhat kind of projects or technologies excite you\b",
-            r"\bprojects or technologies excite you\b",
-            r"\bwhat (?:kind of )?projects excite you\b",
-        ),
-    },
-    {
-        "question": "What roles are you targeting right now?",
-        "patterns": (
-            r"\bwhat roles are you targeting\b",
-            r"\bwhat type of roles\b",
-        ),
-    },
-    {
-        "question": "When would you be available to start?",
-        "patterns": (
-            r"\bavailable to start\b",
-            r"\bwhen can you start\b",
-            r"\bwhen would you be available\b",
-            r"\bnotice period\b",
-        ),
-    },
-    {
-        "question": "What location or work setup do you prefer?",
-        "patterns": (
-            r"\blocation preferences\b",
-            r"\bwhat location\b",
-            r"\bdo you have any location preferences\b",
-            r"\bremote, hybrid, or (?:on-site|specific cities)\b",
-            r"\bwork setup\b",
-        ),
-    },
+# Setup/greeting questions that must never count as intake questions even though
+# they end with "?".
+_SETUP_QUESTION_PATTERNS = (
+    r"^how are you",
+    r"^how(?:'re| are) you doing",
+    r"^are you ready",
+    r"^(?:hi|hello|hey)[,!]?",
+    r"^(?:good (?:morning|afternoon|evening))[,!]?",
+    r"^(?:nice to meet you|great to meet you)",
+    r"^(?:shall we (?:get started|begin|start))",
+    r"^(?:ready to (?:get started|begin|start))",
 )
 
-VOICE_INTAKE_TOTAL_QUESTIONS = len(VOICE_INTAKE_QUESTION_FLOW)
+# Candidate phrases that are clarification requests, not real answers.
+_CLARIFICATION_PATTERNS = (
+    r"^can you (?:please )?repeat(?: the question)?",
+    r"^(?:could you )?(?:please )?repeat(?: that)?",
+    r"^can you (?:please )?(?:re-?frame|rephrase|restate)(?: the question)?",
+    r"^(?:i )?(?:don'?t|cannot|can'?t) (?:understand|get|hear)(?: (?:you|that|it|the question))?",
+    r"^(?:i )?(?:didn'?t|could not|couldn'?t) (?:understand|get|hear)(?: (?:you|that|it|the question))?",
+    r"^(?:sorry[,.]? )?(?:i )?(?:don'?t|didn'?t) (?:understand|get)(?: (?:you|that|it|the question))?",
+    r"^(?:are you (?:there|still there))[?.]?",
+    r"^(?:hello)[?!]?$",
+    r"^(?:can you hear me)[?.]?",
+    r"^(?:is (?:anyone|somebody) there)[?.]?",
+    r"^(?:what did you say)[?.]?",
+    r"^(?:i can'?t (?:hear|get) (?:you|that|it))[.?]?",
+)
 
 
 # Short acknowledgement phrases Eve uses that are NOT real intake questions.
@@ -336,22 +284,81 @@ def _is_brief_user_acknowledgement(text: str) -> bool:
     return any(t == p or t.startswith(f"{p} ") for p in _USER_ACK_PREFIXES)
 
 
-def _voice_intake_question_for_text(text: str) -> Optional[str]:
-    """Return the canonical intake question if the assistant turn is an actual intake prompt."""
+def _is_setup_question(text: str) -> bool:
+    """Return True if the text is a setup/greeting question (not an intake question)."""
+    t = text.lower().strip()
+    return any(re.search(p, t) for p in _SETUP_QUESTION_PATTERNS)
+
+
+def _is_clarification_request(text: str) -> bool:
+    """Return True if the candidate turn is a clarification/connection-check, not a real answer."""
+    t = _clean_str(text).lower().strip().rstrip(" .!?")
+    if not t:
+        return False
+    # Must be short — real answers are longer
+    if len(t) > 80:
+        return False
+    return any(re.search(p, t) for p in _CLARIFICATION_PATTERNS)
+
+
+# Statement-form intake prompts that don't end with '?' but are real information requests.
+_INTAKE_STATEMENT_PATTERNS = (
+    r"\btell me about (?:your|the) background\b",
+    r"\btell me about yourself\b",
+    r"\bdescribe your (?:background|experience|skills)\b",
+    r"\bwalk me through your (?:background|experience|career)\b",
+    r"\bshare (?:your|a bit about your) background\b",
+)
+
+
+def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
+    """
+    Extract the actual intake question from an assistant turn.
+    Handles both '?' questions and statement-form intake prompts.
+    """
     cleaned = _clean_str(text)
     if not cleaned:
         return None
 
-    # Keep the last sentence-like clause so we can ignore leading setup chatter such as
-    # "Take your time... Are you ready?"
-    candidates = [part.strip() for part in re.split(r"(?<=[?.!])\s+", cleaned) if part.strip()]
-    search_text = candidates[-1] if candidates else cleaned
-    lowered = search_text.lower().strip().rstrip(" .!?")
+    # Check statement-form intake prompts (e.g. "Tell me about your background.")
+    clauses = [c.strip() for c in re.split(r"(?<=[?.!])\s+", cleaned) if c.strip()]
+    for clause in reversed(clauses):
+        lowered = clause.lower().rstrip(" .!?")
+        if any(re.search(p, lowered) for p in _INTAKE_STATEMENT_PATTERNS):
+            return clause
 
-    for step in VOICE_INTAKE_QUESTION_FLOW:
-        if any(re.search(pattern, lowered) for pattern in step["patterns"]):
-            return step["question"]
+    if "?" not in cleaned:
+        return None
+
+    for clause in reversed(clauses):
+        if not clause.endswith("?"):
+            continue
+        if _is_setup_question(clause):
+            continue
+        if _is_acknowledgement(clause):
+            return None
+        return clause
     return None
+
+
+def _questions_are_rephrasing(q1: str, q2: str) -> bool:
+    """
+    Return True if q2 is likely a rephrasing of q1 (same topic, different wording).
+    Heuristic: significant word overlap (>= 40% of the shorter question's content words).
+    """
+    if not q1 or not q2:
+        return False
+    stop = {"a", "an", "the", "is", "are", "was", "were", "do", "does", "did",
+            "you", "your", "me", "my", "i", "it", "in", "on", "at", "to", "of",
+            "and", "or", "but", "for", "with", "that", "this", "what", "how",
+            "would", "could", "can", "will", "like", "about", "any", "some"}
+    w1 = {w for w in re.findall(r"[a-z]+", q1.lower()) if w not in stop and len(w) > 2}
+    w2 = {w for w in re.findall(r"[a-z]+", q2.lower()) if w not in stop and len(w) > 2}
+    if not w1 or not w2:
+        return False
+    overlap = len(w1 & w2)
+    shorter = min(len(w1), len(w2))
+    return overlap / shorter >= 0.4
 
 
 def _voice_notes_from_transcript(transcript: str) -> list[dict]:
@@ -403,23 +410,57 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
 
     Rules:
     - Only final turns are considered.
-    - Consecutive user fragments belonging to the same answer are combined.
+    - Consecutive assistant fragments are combined before question detection.
     - An assistant turn that is a short acknowledgement does NOT start a new question;
       the previous real question remains active.
-    - A completed pair is recorded only when a real canonical assistant question is
-      followed by at least one user turn.
-    - User turns that occur before the first canonical question (setup/greeting phase)
-      are discarded entirely — never carried forward to a later question.
+    - Any assistant turn containing a real question (ends with '?', not setup/greeting)
+      is treated as an intake question — regardless of exact wording.
+    - If a new question is a rephrasing of the current pending question, keep the
+      original pending question text (do not create a new turn).
+    - Consecutive user fragments belonging to the same answer are combined.
+    - Candidate clarification requests ("Can you repeat?", "Are you there?", etc.)
+      do NOT count as answers and do NOT clear the pending question.
+    - User turns that occur before the first real question are discarded.
     - Returns (completed_pairs, pending_question) where pending_question is the last
-      real assistant question that has not yet received a user answer.
+      real assistant question that has not yet received a genuine user answer.
     """
     completed: list[dict] = []
-    # The last real (non-acknowledgement) canonical assistant question seen
     pending_question: Optional[str] = None
-    # True when the current assistant turn was setup/greeting, not a canonical question
-    question_is_setup = True
-    # Accumulated user answer fragments for the current canonical question
     answer_parts: list[str] = []
+    # Buffer consecutive assistant fragments so multi-fragment questions are combined
+    assistant_buffer: list[str] = []
+
+    def _flush_assistant_buffer() -> None:
+        """Process buffered assistant fragments as one combined turn."""
+        nonlocal pending_question, answer_parts
+        if not assistant_buffer:
+            return
+        combined = " ".join(assistant_buffer)
+        assistant_buffer.clear()
+
+        if _is_acknowledgement(combined):
+            return
+
+        detected_q = _extract_question_from_assistant_turn(combined)
+        if detected_q:
+            # Check if this is a rephrasing of the current pending question
+            if pending_question and _questions_are_rephrasing(pending_question, detected_q):
+                # Same question rephrased — keep original pending question, don't flush
+                return
+            # New real question: flush any accumulated answer first
+            if answer_parts and pending_question:
+                completed.append({
+                    "question": pending_question,
+                    "answer": " ".join(answer_parts),
+                })
+                answer_parts = []
+            pending_question = detected_q
+        else:
+            # Non-question, non-acknowledgement assistant turn (setup chatter, statement)
+            # Only flush+reset if we have no accumulated answer yet; otherwise keep
+            # the pending question open (Eve may be giving context before re-asking)
+            if not answer_parts:
+                pending_question = None
 
     for note in _normalize_voice_notes(voice_notes, transcript):
         role = note.get("role")
@@ -434,42 +475,26 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
             continue
 
         if role == "assistant":
-            # Acknowledgement-only turns ("Thanks for that.", "Got it.", etc.) must
-            # NEVER close the active answer or replace the pending question.
-            if _is_acknowledgement(cleaned):
-                continue
-
-            canonical_question = _voice_intake_question_for_text(cleaned)
-            if canonical_question:
-                # A new real canonical question: flush any accumulated answer first.
-                if answer_parts and pending_question:
-                    completed.append({
-                        "question": pending_question,
-                        "answer": " ".join(answer_parts),
-                    })
-                answer_parts = []
-                question_is_setup = False
-                pending_question = canonical_question
-            else:
-                # Non-acknowledgement, non-canonical assistant turn (e.g. greeting,
-                # setup chatter). Flush any open answer and reset.
-                if answer_parts and pending_question:
-                    completed.append({
-                        "question": pending_question,
-                        "answer": " ".join(answer_parts),
-                    })
-                answer_parts = []
-                pending_question = None
-                question_is_setup = True
-
+            # Flush any pending user answer before accumulating assistant text
+            # only when we're starting a new assistant segment after user spoke
+            if answer_parts:
+                _flush_assistant_buffer()
+            assistant_buffer.append(cleaned)
         elif role == "user":
-            # Discard brief acknowledgements ("yes", "ready", etc.) unconditionally
+            # Flush buffered assistant text before processing user turn
+            _flush_assistant_buffer()
+
             if _is_brief_user_acknowledgement(cleaned):
                 continue
-            # Only collect user turns that follow a real canonical question
-            if pending_question and not question_is_setup:
+            if _is_clarification_request(cleaned):
+                # Keep pending_question active; do not count as an answer
+                continue
+            if pending_question:
                 answer_parts.append(cleaned)
-            # else: setup/greeting response — discard entirely
+            # else: before first real question — discard
+
+    # Flush any remaining assistant buffer
+    _flush_assistant_buffer()
 
     # Flush any trailing answer that hasn't been closed yet
     if answer_parts and pending_question:
@@ -483,67 +508,239 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
 
 
 def _next_voice_intake_question(completed_turns: list[dict], pending_question: Optional[str] = None) -> Optional[str]:
-    answered = {str(turn.get("question") or "").strip() for turn in completed_turns if turn.get("question")}
-    if pending_question:
-        return pending_question
-    for step in VOICE_INTAKE_QUESTION_FLOW:
-        if step["question"] not in answered:
-            return step["question"]
-    return None
+    """Return the pending question if one exists; otherwise None (LLM will determine next)."""
+    return pending_question or None
+
+
+# ---------- LLM-driven intake analysis ----------
+
+VOICE_INTAKE_ANALYZE_SYSTEM = """You are an expert recruitment assistant analyzing a voice intake conversation.
+
+You will receive:
+- candidate_profile: existing resume/profile data already known
+- conversation: the voice intake conversation so far (Q&A pairs already completed + any partial answer)
+- intake_topics: high-level topics that should be covered
+
+Your job:
+1. Determine what information is already known (from profile OR conversation)
+2. Identify what was newly provided in the conversation
+3. Identify which intake topics are still genuinely missing
+4. Determine if the current pending question has been answered
+5. Suggest the single most useful next question to ask (or null if all topics covered)
+
+Rules:
+- Do NOT ask about information already present in the candidate profile
+- Do NOT create duplicate questions for the same topic
+- A topic is covered if the candidate provided meaningful information about it anywhere in the conversation or profile
+- next_question must be a natural, conversational question — not a hardcoded template
+- If all important topics are covered, set next_question to null and completed to true
+
+Return ONLY valid JSON:
+{
+  "known_topics": ["topic1", "topic2"],
+  "missing_topics": ["topic3"],
+  "newly_provided": {"topic": "summary of what candidate said"},
+  "current_question_answered": true,
+  "next_question": "What kind of backend role are you targeting next?",
+  "completed": false
+}"""
+
+
+async def _llm_analyze_intake(
+    candidate_profile: dict,
+    completed_turns: list[dict],
+    pending_question: Optional[str],
+    partial_answer: str = "",
+) -> dict:
+    """Ask the LLM to determine what's known, what's missing, and what to ask next."""
+    profile_summary = {
+        "name": candidate_profile.get("name") or candidate_profile.get("name"),
+        "current_role": candidate_profile.get("current_role") or candidate_profile.get("headline"),
+        "current_company": candidate_profile.get("current_company"),
+        "experience_years": candidate_profile.get("experience_years"),
+        "skills": candidate_profile.get("skills") or [],
+        "work_experience": [
+            {"title": w.get("title"), "company": w.get("company")}
+            for w in (candidate_profile.get("work_experience") or [])[:3]
+        ],
+        "education": [
+            {"degree": e.get("degree"), "institution": e.get("institution")}
+            for e in (candidate_profile.get("education") or [])[:2]
+        ],
+        "summary": candidate_profile.get("summary") or "",
+        "preferred_roles": candidate_profile.get("preferred_roles") or [],
+        "availability": candidate_profile.get("availability") or "",
+    }
+
+    context = {
+        "candidate_profile": profile_summary,
+        "conversation": completed_turns,
+        "pending_question": pending_question,
+        "partial_answer": partial_answer,
+        "intake_topics": VOICE_INTAKE_TOPICS,
+    }
+
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": VOICE_INTAKE_ANALYZE_SYSTEM},
+                {"role": "user", "content": json.dumps(context)[:6000]},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(resp.choices[0].message.content or "{}")
+    except Exception as e:
+        logger.warning("[voice-intake] LLM analysis failed: %s", e)
+        return {}
+
+
+def _merge_voice_intake_topic_list(existing_values: Any, new_values: Any) -> list[str]:
+    """
+    Preserve persisted topic state when the incoming LLM analysis is missing or
+    empty, while still using any new non-empty analysis.
+    """
+    if isinstance(new_values, list) and new_values:
+        source = new_values
+    elif isinstance(existing_values, list):
+        source = existing_values
+    else:
+        source = []
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in source:
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(cleaned)
+    return merged
+
+
+def _merge_completed_turns(existing_turns: list[dict], new_turns: list[dict]) -> list[dict]:
+    """
+    Return the union of existing and new completed turns.
+
+    We dedupe by question text, but also treat rephrased questions as the same
+    turn so repeated cumulative voice_notes do not create duplicates. Existing
+    turns remain the source of truth unless the new answer is a longer cumulative
+    version of the same turn.
+    """
+    merged = [dict(t) for t in existing_turns if _clean_str(t.get("question"))]
+
+    def _find_match(question: str) -> Optional[int]:
+        for idx, existing in enumerate(merged):
+            existing_q = _clean_str(existing.get("question"))
+            if not existing_q:
+                continue
+            if existing_q == question:
+                return idx
+            if _questions_are_rephrasing(existing_q, question) or _questions_are_rephrasing(question, existing_q):
+                return idx
+        return None
+
+    for turn in new_turns:
+        question = _clean_str(turn.get("question"))
+        answer = _clean_str(turn.get("answer"))
+        if not question:
+            continue
+
+        match_idx = _find_match(question)
+        if match_idx is None:
+            merged.append({"question": question, "answer": answer})
+            continue
+
+        existing = merged[match_idx]
+        existing_answer = _clean_str(existing.get("answer"))
+        if not existing_answer:
+            existing["answer"] = answer
+            continue
+        if not answer or answer == existing_answer:
+            continue
+        if len(answer) > len(existing_answer) and existing_answer in answer:
+            existing["answer"] = answer
+        elif len(existing_answer) > len(answer) and answer in existing_answer:
+            continue
+        elif answer not in existing_answer:
+            existing["answer"] = f"{existing_answer} {answer}".strip()
+    return merged
 
 
 def _build_voice_intake_resume_from_notes(
     voice_notes: Any,
     transcript: str = "",
     existing_resume: Optional[dict] = None,
+    candidate_profile: Optional[dict] = None,
+    llm_analysis: Optional[dict] = None,
 ) -> dict:
-    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
-    next_question = _next_voice_intake_question(completed_turns, pending_question)
-    progress = len(completed_turns)
-    status = "completed" if progress >= VOICE_INTAKE_TOTAL_QUESTIONS and not next_question else "in_progress"
+    """
+    Build the voice intake resume state from conversation notes.
+    Uses LLM analysis when available; falls back to structural parsing.
 
-    resume = {
+    completed_turns is ALWAYS the union of previously persisted turns and
+    newly parsed turns — never a replacement.
+    """
+    new_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+
+    # Merge with any previously persisted turns so we never lose history
+    existing_turns = (existing_resume or {}).get("completed_turns") or []
+    completed_turns = _merge_completed_turns(existing_turns, new_turns)
+    progress = len(completed_turns)
+
+    # Prefer LLM-derived state; fall back to persisted state; fall back to parsed state
+    existing_next_q = (existing_resume or {}).get("next_question") or ""
+    existing_current_q = (existing_resume or {}).get("current_question") or ""
+    existing_missing = (existing_resume or {}).get("missing_topics") or []
+    existing_known = (existing_resume or {}).get("known_topics") or []
+    existing_status = str((existing_resume or {}).get("status") or "in_progress").lower()
+
+    if llm_analysis:
+        llm_next_q = _clean_str(llm_analysis.get("next_question"))
+        next_question = llm_next_q or pending_question or existing_next_q or existing_current_q
+        is_completed = bool(llm_analysis.get("completed")) and not next_question
+        missing_topics = _merge_voice_intake_topic_list(existing_missing, llm_analysis.get("missing_topics"))
+        known_topics = _merge_voice_intake_topic_list(existing_known, llm_analysis.get("known_topics"))
+    else:
+        next_question = pending_question or existing_next_q or existing_current_q
+        missing_topics = existing_missing
+        known_topics = existing_known
+        is_completed = False
+
+    # Never mark completed if there are still missing topics or a pending question
+    if missing_topics or pending_question:
+        is_completed = False
+
+    if existing_status == "completed":
+        return existing_resume  # type: ignore[return-value]
+
+    status = "completed" if is_completed else "in_progress"
+    current_question = pending_question or existing_current_q or next_question
+
+    resume: dict = {
         "status": status,
         "progress": progress,
-        "voice_notes": _normalize_voice_notes(voice_notes, transcript),
+        "voice_notes": _normalize_voice_notes(voice_notes, transcript) or (existing_resume or {}).get("voice_notes") or [],
         "completed_turns": completed_turns,
-        "has_open_question": bool(pending_question),
+        "has_open_question": bool(pending_question or next_question),
+        "known_topics": known_topics,
+        "missing_topics": missing_topics,
     }
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
     if next_question:
         resume["next_question"] = next_question
+    if current_question:
+        resume["current_question"] = current_question
 
-    if not existing_resume:
-        return resume
-
-    existing_progress = int(existing_resume.get("progress") or 0)
-    existing_status = str(existing_resume.get("status") or "in_progress").lower()
-    if existing_status == "completed":
-        return existing_resume
-    if status == "completed":
-        return resume
-    if progress > existing_progress:
-        return resume
-    if progress < existing_progress:
-        return existing_resume
-
-    merged = dict(existing_resume)
-    if not merged.get("voice_notes"):
-        merged["voice_notes"] = resume["voice_notes"]
-    if not merged.get("completed_turns") and resume.get("completed_turns"):
-        merged["completed_turns"] = resume["completed_turns"]
-    if not merged.get("latest_completed_question") and resume.get("latest_completed_question"):
-        merged["latest_completed_question"] = resume["latest_completed_question"]
-    if not merged.get("latest_completed_answer") and resume.get("latest_completed_answer"):
-        merged["latest_completed_answer"] = resume["latest_completed_answer"]
-    if resume.get("next_question"):
-        merged["next_question"] = resume["next_question"]
-    merged["progress"] = existing_progress
-    merged["status"] = "in_progress"
-    merged["has_open_question"] = bool(merged.get("next_question"))
-    return merged
+    return resume
 
 
 def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
@@ -559,35 +756,44 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     saved_completed_turns = voice_intake.get("completed_turns") or []
     saved_progress = voice_intake.get("progress")
     saved_next_question = voice_intake.get("next_question")
+    saved_current_question = voice_intake.get("current_question")
+    saved_missing_topics = voice_intake.get("missing_topics") or []
+    saved_known_topics = voice_intake.get("known_topics") or []
 
     if saved_completed_turns:
         completed_turns = saved_completed_turns
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = saved_next_question or _next_voice_intake_question(completed_turns)
+        next_question = saved_current_question or saved_next_question
     else:
         voice_notes = voice_intake.get("voice_notes") or []
         completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes)
         progress = int(saved_progress) if saved_progress is not None else len(completed_turns)
-        next_question = pending_question or saved_next_question or _next_voice_intake_question(completed_turns)
+        next_question = pending_question or saved_current_question or saved_next_question
 
     resume = {
         "status": status,
         "progress": progress,
         "completed_turns": completed_turns[-3:],
         "has_open_question": bool(next_question),
+        "missing_topics": saved_missing_topics,
+        "known_topics": saved_known_topics,
     }
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
     if next_question:
         resume["next_question"] = next_question
+    if saved_current_question or next_question:
+        resume["current_question"] = saved_current_question or next_question
     return resume
 
 
 async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
     existing = await _get_candidate_row(candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
-    raw_data["voice_intake"] = resume
+    existing_voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+    existing_voice_intake.update(resume)
+    raw_data["voice_intake"] = existing_voice_intake
 
     async with SessionLocal() as db:
         await db.execute(
@@ -1866,6 +2072,21 @@ async def _extract_voice_info(transcript: str) -> dict:
 
 # ---------- Safe profile merge ----------
 
+def _merge_list(existing: list, new_items: list) -> list:
+    """Generic merge with case-insensitive dedup for strings; always append dicts."""
+    if not new_items:
+        return existing
+    merged = list(existing)
+    seen = {str(x).lower() for x in existing if not isinstance(x, dict)}
+    for item in new_items:
+        if isinstance(item, dict):
+            merged.append(item)
+        elif str(item).lower() not in seen:
+            merged.append(item)
+            seen.add(str(item).lower())
+    return merged
+
+
 def _merge_skills(existing: list, new_items: list) -> list:
     """Merge skill lists with case-insensitive deduplication."""
     if not new_items:
@@ -2016,6 +2237,8 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
                 existing_certs.append(cert)
                 seen_certs.add(cert.lower())
         raw_data["certifications"] = existing_certs
+        # Also merge certifications into skills so they appear in profile
+        merged["skills"] = _merge_skills(merged.get("skills") or [], voice["certifications"])
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
 
@@ -2058,7 +2281,6 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     # 3. Persist intake record (status=pending)
     intake_id = str(uuid.uuid4())
     voice_notes = _normalize_voice_notes(request.voice_notes, transcript)
-    voice_notes_json = json.dumps(voice_notes)
     async with SessionLocal() as db:
         await db.execute(
             text("""
@@ -2070,7 +2292,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
                 "id": intake_id,
                 "cid": request.candidate_id,
                 "transcript": transcript,
-                "notes": voice_notes_json,
+                "notes": json.dumps(voice_notes),
             },
         )
         await db.commit()
@@ -2078,7 +2300,13 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     existing_candidate = await _get_candidate_row(request.candidate_id)
     existing_raw = _parse_raw_data(existing_candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
-    completed_resume = _build_voice_intake_resume_from_notes(voice_notes, transcript, existing_vi)
+    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+    llm_analysis = await _llm_analyze_intake(existing_candidate, completed_turns, pending_question)
+    completed_resume = _build_voice_intake_resume_from_notes(
+        voice_notes, transcript, existing_vi,
+        candidate_profile=existing_candidate,
+        llm_analysis=llm_analysis,
+    )
 
     # 4. Extract structured info via LLM
     voice_data = await _extract_voice_info(transcript)
@@ -2111,7 +2339,9 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # Always persist raw_data (availability, preferred_roles, certifications, etc.)
     merged_raw = merged.get("raw_data") or {}
-    merged_raw["voice_intake"] = completed_resume
+    existing_voice_intake = _parse_raw_data(merged_raw.get("voice_intake"))
+    existing_voice_intake.update(completed_resume)
+    merged_raw["voice_intake"] = existing_voice_intake
     set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
     update_params["raw_data"] = json.dumps(merged_raw)
 
@@ -2165,12 +2395,18 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
     candidate = await _get_candidate_row(request.candidate_id)
-    voice_notes = _normalize_voice_notes(request.voice_notes, (request.transcript or "").strip())
+    transcript = (request.transcript or "").strip()
+    voice_notes = _normalize_voice_notes(request.voice_notes, transcript)
 
-    # Load existing saved state to preserve next_question if we can't derive a better one
     existing_raw = _parse_raw_data(candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
-    resume = _build_voice_intake_resume_from_notes(voice_notes, (request.transcript or "").strip(), existing_vi)
+    completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+    llm_analysis = await _llm_analyze_intake(candidate, completed_turns, pending_question)
+    resume = _build_voice_intake_resume_from_notes(
+        voice_notes, transcript, existing_vi,
+        candidate_profile=candidate,
+        llm_analysis=llm_analysis,
+    )
     if not resume.get("status"):
         resume["status"] = "in_progress"
 
