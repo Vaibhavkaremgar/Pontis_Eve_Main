@@ -2208,6 +2208,22 @@ def _split_update_list(text: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _looks_like_target_role_phrase(text: str) -> bool:
+    """Return True when a phrase is describing a desired role, not a current role."""
+    if not isinstance(text, str):
+        return False
+    t = text.strip().lower()
+    return t.startswith((
+        "targeting ",
+        "looking for ",
+        "seeking ",
+        "wanting ",
+        "aiming for ",
+        "interested in ",
+        "open to ",
+    ))
+
+
 def _extract_first_match(text: str, patterns: list[str]) -> Optional[str]:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
@@ -2249,6 +2265,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     skills = _extract_first_match(
         text,
         [
+            r"\bpreferably\s+with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:preferably\s+)?working with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bskills?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
             r"\bexperience with\s+(?P<value>.+?)(?:[.!?;]|$)",
@@ -2276,10 +2293,12 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     current_role = _extract_first_match(
         text,
         [
-            r"\b(?:i(?:'m| am)|currently(?:\s+working)? as|i work as|i'm working as|my current role is)\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
+            r"\bmy current (?:role|title) is\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
+            r"\b(?:i(?:'m| am)\s+currently\s+(?:working\s+as|work(?:ing)?\s+as)|currently\s+(?:working\s+as|work(?:ing)?\s+as)|i\s+work\s+as|i(?:'m| am)\s+working\s+as|working\s+as)\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
+            r"\b(?:i(?:'m| am)\s+(?:a|an))\s+(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
         ],
     )
-    if current_role:
+    if current_role and not _looks_like_target_role_phrase(current_role):
         updates["current_role"] = current_role
 
     experience_match = re.search(r"\b(?P<value>\d+(?:\.\d+)?)\s*\+?\s*years?\b", lower)
