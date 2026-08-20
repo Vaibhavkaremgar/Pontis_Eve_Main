@@ -13,9 +13,11 @@ Covers:
 """
 import os
 import json
+import asyncio
 import uuid
 import pytest
 import requests
+from sqlalchemy import text
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001").rstrip("/")
 API = f"{BASE_URL}/api"
@@ -51,6 +53,52 @@ def _create_candidate(name="Test Voice", email=None) -> str:
     cid = data.get("candidate_id") or data.get("candidateId")
     assert cid, f"No candidate_id in response: {data}"
     return cid
+
+
+def _fetch_candidate_preferences(candidate_id: str) -> dict:
+    import sys
+    import os as _os
+
+    sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from server import SessionLocal
+
+    async def _query():
+        async with SessionLocal() as db:
+            row = await db.execute(
+                text(
+                    "SELECT candidate_id, preferred_roles, notice_period "
+                    "FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"
+                ),
+                {"cid": candidate_id},
+            )
+            result = row.mappings().fetchone()
+        return dict(result) if result else {}
+
+    return asyncio.run(_query())
+
+
+def _count_candidate_preferences_rows(candidate_id: str) -> int:
+    import sys
+    import os as _os
+
+    sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from server import SessionLocal
+
+    async def _query():
+        async with SessionLocal() as db:
+            row = await db.execute(
+                text("SELECT COUNT(*) FROM candidate_preferences WHERE candidate_id = :cid"),
+                {"cid": candidate_id},
+            )
+            return int(row.scalar() or 0)
+
+    return asyncio.run(_query())
+
+
+def _fetch_candidate_profile(candidate_id: str) -> dict:
+    r = requests.get(f"{API}/candidate/{candidate_id}/profile", timeout=15)
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 SAMPLE_TRANSCRIPT = (
@@ -513,6 +561,220 @@ class TestProfileMerge:
         # Original skills must still be present
         for skill in original_skills:
             assert skill in after_skills, f"Skill '{skill}' was lost after voice intake"
+
+
+class TestVoiceIntakePersistenceRegression:
+    def test_persistence_helper_writes_preferences_and_voice_intake_state(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        executed = []
+        state = {"existing_preference": None}
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                executed.append((sql, params or {}))
+                if "FROM candidate_preferences" in sql and "SELECT" in sql:
+                    if state["existing_preference"] is None:
+                        return FakeResult([])
+                    return FakeResult([state["existing_preference"]])
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        candidate = {
+            "id": "candidate-1",
+            "summary": "",
+            "current_role": "",
+            "current_company": "",
+            "location": "",
+            "experience_years": None,
+            "skills": [],
+            "work_experience": [],
+            "education": [],
+            "raw_data": {},
+        }
+        voice_data = {
+            "preferred_roles": ["Java Backend Developer", "java backend developer"],
+            "availability": "I can join immediately.",
+            "role_preference_bio": "Looking for Java backend roles.",
+        }
+        voice_intake_state = {
+            "status": "in_progress",
+            "progress": 1,
+            "current_question": "What kind of role are you looking for next?",
+            "missing_topics": ["availability_location"],
+            "completed_turns": [
+                {
+                    "question": "What kind of role are you looking for next?",
+                    "answer": "I want a Java Backend Developer role and I can join immediately.",
+                }
+            ],
+        }
+
+        merged = asyncio.run(
+            server._persist_voice_intake_profile_state("candidate-1", candidate, voice_data, voice_intake_state)
+        )
+
+        assert merged["raw_data"]["voice_intake"] == voice_intake_state
+        assert merged["raw_data"]["preferred_roles"] == ["Java Backend Developer"]
+        assert merged["raw_data"]["availability"] == "I can join immediately."
+        assert any("UPDATE candidates SET" in sql for sql, _ in executed)
+        assert any("INSERT INTO candidate_preferences" in sql for sql, _ in executed)
+        insert_params = next(params for sql, params in executed if "INSERT INTO candidate_preferences" in sql)
+        assert "Java Backend Developer" in insert_params["preferred_roles"]
+        assert insert_params["notice_period"] == "I can join immediately."
+
+    def test_target_role_persists_to_profile_and_candidate_preferences(self):
+        cid = _create_candidate("Target Role Persistence")
+        transcript = (
+            "Assistant: What kind of role are you looking for next?\n"
+            "Candidate: I want a Java Backend Developer or Engineer role."
+        )
+        voice_notes = [
+            {"role": "assistant", "text": "What kind of role are you looking for next?", "final": True},
+            {"role": "user", "text": "I want a Java Backend Developer or Engineer role.", "final": True},
+        ]
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        profile = _fetch_candidate_profile(cid)
+        assert "Java Backend Developer" in (profile.get("preferred_roles") or [])
+        prefs = _fetch_candidate_preferences(cid)
+        assert "Java Backend Developer" in (prefs.get("preferred_roles") or [])
+        assert _count_candidate_preferences_rows(cid) == 1
+
+    def test_availability_persists_to_profile_and_candidate_preferences(self):
+        cid = _create_candidate("Availability Persistence")
+        transcript = (
+            "Assistant: When would you be able to start a new position?\n"
+            "Candidate: I can join immediately."
+        )
+        voice_notes = [
+            {"role": "assistant", "text": "When would you be able to start a new position?", "final": True},
+            {"role": "user", "text": "I can join immediately.", "final": True},
+        ]
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": transcript, "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        profile = _fetch_candidate_profile(cid)
+        assert "immed" in (profile.get("availability") or "").lower()
+        prefs = _fetch_candidate_preferences(cid)
+        assert "immed" in (prefs.get("notice_period") or "").lower()
+        assert _count_candidate_preferences_rows(cid) == 1
+
+    def test_voice_intake_state_advances_after_answer(self):
+        cid = _create_candidate("Resume Advancement")
+        voice_notes = [
+            {"role": "assistant", "text": "What roles are you targeting right now?", "final": True},
+            {"role": "user", "text": "I'm looking for senior Java backend roles.", "final": True},
+        ]
+
+        r = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": "", "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+
+        resume = r.json()["voice_intake_resume"]
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 1
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 1
+        assert turns[0]["question"] == "What roles are you targeting right now?"
+        assert resume.get("current_question") != "What roles are you targeting right now?"
+
+        profile = _fetch_candidate_profile(cid)
+        vir = profile.get("voice_intake_resume") or {}
+        assert vir.get("progress") == 1
+        assert len(vir.get("completed_turns") or []) == 1
+        assert vir.get("current_question") != "What roles are you targeting right now?"
+
+    def test_repeated_progress_submission_does_not_duplicate_completed_turns(self):
+        cid = _create_candidate("Repeated Progress Submission")
+        voice_notes = [
+            {"role": "assistant", "text": "What kind of role are you looking for next?", "final": True},
+            {"role": "user", "text": "I want a Java Backend Developer role.", "final": True},
+        ]
+
+        first = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": "", "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert first.status_code == 200, first.text
+
+        second = requests.post(
+            f"{API}/voice/candidate-intake/progress",
+            json={"transcript": "", "voice_notes": voice_notes, "candidate_id": cid},
+            timeout=60,
+        )
+        assert second.status_code == 200, second.text
+
+        resume = second.json()["voice_intake_resume"]
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 1
+        assert _count_candidate_preferences_rows(cid) == 1
+
+    def test_existing_resume_and_interruption_behavior_is_preserved(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes
+
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 2,
+            "completed_turns": [
+                {"question": "What made you start exploring your next opportunity?", "answer": "I was interested in Java."},
+                {"question": "Which Java technologies or frameworks do you enjoy working with the most?", "answer": "Spring Boot and Hibernate."},
+            ],
+            "current_question": "What kind of projects have you worked on using Spring Boot and Hibernate?",
+            "next_question": "What kind of team or work environment helps you do your best work in your next role?",
+            "missing_topics": ["projects"],
+            "known_topics": ["java", "spring boot", "hibernate"],
+        }
+
+        resumed = _build_voice_intake_resume_from_notes([], "", existing_resume)
+        assert resumed["progress"] == 2
+        assert resumed["current_question"] == existing_resume["current_question"]
+        assert resumed["next_question"] == existing_resume["next_question"]
+        assert resumed["completed_turns"] == existing_resume["completed_turns"]
 
 
 # ─────────────────────────────────────────────

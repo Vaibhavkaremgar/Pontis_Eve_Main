@@ -187,6 +187,29 @@ def _normalize_for_frontend(c: dict) -> dict:
     return profile
 
 
+async def _load_candidate_certificates(candidate_id: str) -> list[dict]:
+    """Load certificate rows for a single candidate."""
+    async with SessionLocal() as db:
+        rows = await db.execute(
+            text(
+                "SELECT id, file_name, file_path "
+                "FROM candidate_certificates "
+                "WHERE candidate_id = :cid "
+                "ORDER BY created_at ASC"
+            ),
+            {"cid": candidate_id},
+        )
+        result = rows.fetchall()
+    return [
+        {
+            "id": str(row[0]),
+            "file_name": row[1],
+            "file_path": row[2],
+        }
+        for row in result
+    ]
+
+
 def _parse_raw_data(raw_data: Any) -> dict:
     if isinstance(raw_data, dict):
         return dict(raw_data)
@@ -213,6 +236,20 @@ def _has_list_items(value: Any) -> bool:
             _has_text(item.get(key))
             for key in ("name", "title", "degree", "institution", "company", "description", "value")
         ):
+            return True
+    return False
+
+
+def _has_candidate_certificates(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if isinstance(item, dict):
+            if any(_has_text(item.get(key)) for key in ("id", "file_name", "file_path")):
+                return True
+            if item:
+                return True
+        elif _has_text(item):
             return True
     return False
 
@@ -260,6 +297,8 @@ def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = Non
 
     for field, fallback in fallback_map.items():
         strength_profile[field] = _prefer_canonical_value(strength_profile.get(field), fallback)
+
+    strength_profile["candidate_certificates"] = profile.get("candidate_certificates") or []
 
     return strength_profile
 
@@ -426,7 +465,7 @@ def _calculate_profile_strength(profile: dict, raw_data: Optional[dict] = None) 
         score += weights["projects"]
     if _has_list_items(strength_profile.get("education")):
         score += weights["education"]
-    if _has_list_items(strength_profile.get("certifications") or raw.get("certifications")):
+    if _has_candidate_certificates(strength_profile.get("candidate_certificates")):
         score += weights["certifications"]
     if _has_preferences(strength_profile, raw):
         score += weights["preferences"]
@@ -1655,7 +1694,9 @@ async def get_candidate_chat(candidate_id: str):
 @api_router.get("/candidate/{candidate_id}/profile")
 async def get_candidate_profile(candidate_id: str):
     row = await _get_candidate_row(candidate_id)
-    return _normalize_for_frontend(row)
+    enriched = dict(row)
+    enriched["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    return _normalize_for_frontend(enriched)
 
 
 @api_router.get("/candidate/{candidate_id}/documents")
@@ -1745,7 +1786,9 @@ async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
 
     asyncio.ensure_future(_trigger_matching(candidate_id))
 
-    profile = _normalize_for_frontend({**parsed, "id": candidate_id})
+    profile_row = {**parsed, "id": candidate_id}
+    profile_row["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    profile = _normalize_for_frontend(profile_row)
     return {"status": "replaced", "filename": file.filename, "profile": profile}
 
 
@@ -2778,6 +2821,152 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     return merged
 
 
+def _normalize_preferred_roles(roles: Any) -> list[str]:
+    """Normalize role preference strings for idempotent persistence."""
+    if not isinstance(roles, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for role in roles:
+        if not isinstance(role, str):
+            continue
+        cleaned = role.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _availability_to_notice_period(availability: Any) -> str:
+    """Map the extracted availability answer onto the preferences schema."""
+    if not isinstance(availability, str):
+        return ""
+    return availability.strip()
+
+
+async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
+    """
+    Persist voice-derived preferences into the existing candidate_preferences table.
+
+    This keeps the canonical preferences row aligned with the profile payload
+    while remaining idempotent across repeated cumulative submissions.
+    """
+    preferred_roles = _normalize_preferred_roles(voice.get("preferred_roles"))
+    notice_period = _availability_to_notice_period(voice.get("availability"))
+    if not preferred_roles and not notice_period:
+        return
+
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text(
+                "SELECT id, preferred_roles, notice_period FROM candidate_preferences "
+                "WHERE candidate_id = :cid LIMIT 1"
+            ),
+            {"cid": candidate_id},
+        )
+        existing = row.mappings().fetchone()
+
+    if existing:
+        existing_roles = _normalize_preferred_roles(existing.get("preferred_roles") or [])
+        merged_roles = _normalize_preferred_roles(existing_roles + preferred_roles)
+        merged_notice_period = notice_period or (existing.get("notice_period") or "")
+
+        set_parts = []
+        params: dict[str, Any] = {"cid": candidate_id}
+        if merged_roles != existing_roles:
+            set_parts.append("preferred_roles = CAST(:preferred_roles AS jsonb)")
+            params["preferred_roles"] = json.dumps(merged_roles)
+        if merged_notice_period != (existing.get("notice_period") or ""):
+            set_parts.append("notice_period = :notice_period")
+            params["notice_period"] = merged_notice_period
+        if not set_parts:
+            return
+        set_parts.append("updated_at = now()")
+        async with SessionLocal() as db:
+            await db.execute(
+                text(f"UPDATE candidate_preferences SET {', '.join(set_parts)} WHERE candidate_id = :cid"),
+                params,
+            )
+            await db.commit()
+        return
+
+    insert_params = {
+        "id": str(uuid.uuid4()),
+        "cid": candidate_id,
+        "preferred_roles": json.dumps(preferred_roles),
+        "notice_period": notice_period or None,
+    }
+    async with SessionLocal() as db:
+        await db.execute(
+            text("""
+                INSERT INTO candidate_preferences
+                    (id, candidate_id, preferred_roles, notice_period, created_at, updated_at)
+                VALUES
+                    (:id, :cid, CAST(:preferred_roles AS jsonb), :notice_period, now(), now())
+            """),
+            insert_params,
+        )
+        await db.commit()
+
+
+async def _persist_voice_intake_profile_state(
+    candidate_id: str,
+    candidate: dict,
+    voice_data: dict,
+    voice_intake_state: dict,
+) -> dict:
+    """
+    Persist the canonical profile, preferences, and voice intake resume in sync.
+
+    The same helper is used by both the final intake endpoint and the progress
+    endpoint so repeated cumulative submissions remain idempotent.
+    """
+    merged = _merge_voice_into_profile(candidate, voice_data)
+
+    update_params: dict[str, Any] = {"cid": candidate_id}
+    set_clauses: list[str] = []
+
+    for field, col in [
+        ("summary", "summary"),
+        ("current_role", '"current_role"'),
+        ("current_company", "current_company"),
+        ("location", "location"),
+    ]:
+        if merged.get(field) != candidate.get(field):
+            set_clauses.append(f"{col} = :{field}")
+            update_params[field] = merged[field]
+
+    if merged.get("experience_years") != candidate.get("experience_years"):
+        set_clauses.append("experience_years = :experience_years")
+        update_params["experience_years"] = merged.get("experience_years")
+
+    for field in ("skills", "work_experience", "education"):
+        if merged.get(field) != candidate.get(field):
+            set_clauses.append(f"{field} = CAST(:{field} AS json)")
+            update_params[field] = json.dumps(merged.get(field) or [])
+
+    merged_raw = merged.get("raw_data") or {}
+    merged_raw["voice_intake"] = voice_intake_state
+    set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
+    update_params["raw_data"] = json.dumps(merged_raw)
+
+    set_clauses.append("updated_at = now()")
+    set_clauses.append("updated_by_source = 'eve_voice'")
+    async with SessionLocal() as db:
+        await db.execute(
+            text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
+            update_params,
+        )
+        await db.commit()
+
+    await _upsert_candidate_preferences(candidate_id, voice_data)
+    return merged
+
+
 # ---------- Voice intake endpoint ----------
 
 @api_router.post("/voice/candidate-intake")
@@ -2844,48 +3033,15 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript)
 
-    # 5. Merge into existing profile
-    merged = _merge_voice_into_profile(candidate, voice_data)
+    # 5. Merge into existing profile, preferences, and resume state.
+    merged = await _persist_voice_intake_profile_state(
+        request.candidate_id,
+        candidate,
+        voice_data,
+        voice_intake_state,
+    )
 
-    # 6. Build update params
-    update_params: dict = {"cid": request.candidate_id}
-    set_clauses = []
-
-    for field, col in [
-        ("summary", "summary"),
-        ("current_role", '"current_role"'),
-        ("current_company", "current_company"),
-        ("location", "location"),
-    ]:
-        if merged.get(field) != candidate.get(field):
-            set_clauses.append(f"{col} = :{field}")
-            update_params[field] = merged[field]
-
-    if merged.get("experience_years") != candidate.get("experience_years"):
-        set_clauses.append("experience_years = :experience_years")
-        update_params["experience_years"] = merged.get("experience_years")
-
-    for field in ("skills", "work_experience", "education"):
-        if merged.get(field) != candidate.get(field):
-            set_clauses.append(f"{field} = CAST(:{field} AS json)")
-            update_params[field] = json.dumps(merged.get(field) or [])
-
-    # Always persist raw_data (availability, preferred_roles, certifications, etc.)
-    merged_raw = merged.get("raw_data") or {}
-    merged_raw["voice_intake"] = voice_intake_state
-    set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
-    update_params["raw_data"] = json.dumps(merged_raw)
-
-    set_clauses.append("updated_at = now()")
-    set_clauses.append("updated_by_source = 'eve_voice'")
-    async with SessionLocal() as db:
-        await db.execute(
-            text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
-            update_params,
-        )
-        await db.commit()
-
-    # 7. Mark intake as completed only when the actual intake questions have all been answered.
+    # 6. Mark intake as completed only when the actual intake questions have all been answered.
     async with SessionLocal() as db:
         await db.execute(
             text("""
@@ -2910,15 +3066,19 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # Return updated profile so dashboard can refresh immediately
     updated_candidate = await _get_candidate_row(request.candidate_id)
-    updated_profile = _normalize_for_frontend(updated_candidate)
+    updated_profile_row = dict(updated_candidate)
+    updated_profile_row["candidate_certificates"] = await _load_candidate_certificates(request.candidate_id)
+    updated_profile = _normalize_for_frontend(updated_profile_row)
     updated_profile["voice_intake_resume"] = voice_intake_state
 
     return {
         "status": voice_intake_state["status"],
         "intake_id": intake_id,
         "candidate_id": request.candidate_id,
-        "fields_updated": [c.split(" ")[0].strip('"') for c in set_clauses
-                           if not c.startswith("updated") and not c.startswith("raw_data")],
+        "fields_updated": [
+            field for field in ("summary", "current_role", "current_company", "location", "experience_years", "skills", "work_experience", "education")
+            if merged.get(field) != candidate.get(field)
+        ],
         "profile": updated_profile,
         "voice_intake_state": voice_intake_state,
     }
@@ -2944,6 +3104,9 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
         resume["status"] = "in_progress"
 
     await _save_voice_intake_resume(request.candidate_id, resume)
+    voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
+    voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
+    await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
     return {
         "status": "saved",
         "candidate_id": request.candidate_id,
