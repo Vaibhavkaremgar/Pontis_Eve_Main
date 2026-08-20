@@ -1,0 +1,165 @@
+"""
+Unit tests for profile strength scoring.
+"""
+import os
+import sys
+
+# Allow importing server module directly
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from server import _calculate_profile_strength
+
+
+def _base_profile():
+    return {
+        "name": "",
+        "email": "",
+        "phone": "",
+        "location": "",
+        "current_role": "",
+        "headline": "",
+        "current_company": "",
+        "summary": "",
+        "experience_years": None,
+        "skills": [],
+        "work_experience": [],
+        "education": [],
+        "certifications": [],
+        "raw_data": {},
+    }
+
+
+def test_empty_profile_scores_zero():
+    percent, label = _calculate_profile_strength(_base_profile())
+    assert percent == 0
+    assert label == "Building"
+
+
+def test_resume_only_profile_scores_baseline_completeness():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "current_role": "Backend Engineer",
+            "skills": ["Python", "FastAPI"],
+            "work_experience": [
+                {"title": "Engineer", "company": "Acme", "description": "Built APIs"}
+            ],
+        }
+    )
+
+    percent, label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert percent == 60
+    assert label == "Developing"
+
+
+def test_experienced_candidate_scores_higher_with_resume_depth():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "location": "Remote",
+            "current_role": "Senior Backend Engineer",
+            "skills": ["Python", "FastAPI", "PostgreSQL"],
+            "work_experience": [
+                {"title": "Lead Engineer", "company": "Acme", "description": "Led platform work"}
+            ],
+            "education": [{"degree": "B.Tech", "institution": "Example University"}],
+        }
+    )
+
+    percent, label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert percent == 80
+    assert label == "Strong"
+
+
+def test_fresher_profile_redistributes_work_experience_weight():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "experience_years": 0,
+            "current_role": "Fresher Backend Developer",
+            "skills": ["Python", "FastAPI", "Git"],
+            "education": [{"degree": "B.Tech", "institution": "Example University"}],
+            "certifications": ["AWS Cloud Practitioner"],
+            "raw_data": {
+                "preferred_roles": ["Backend Developer"],
+                "availability": "Immediate",
+                "location_preferences": ["Remote"],
+                "projects": ["Campus project for a REST API platform"],
+            },
+        }
+    )
+
+    percent, label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert percent == 100
+    assert label == "Strong"
+
+
+def test_voice_intake_additions_increase_score_without_double_counting():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "current_role": "Backend Engineer",
+            "skills": ["Python", "FastAPI"],
+            "work_experience": [
+                {"title": "Engineer", "company": "Acme", "description": "Built APIs"}
+            ],
+            "raw_data": {
+                "voice_intake": {
+                    "status": "in_progress",
+                    "completed_turns": [
+                        {
+                            "question": "What kind of projects have you worked on recently?",
+                            "answer": "I built an AI automation project for onboarding.",
+                        }
+                    ],
+                },
+                "availability": "Immediate",
+                "location_preferences": ["Remote"],
+            },
+        }
+    )
+
+    percent, label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert percent == 85
+    assert label == "Strong"
+
+
+def test_fully_completed_profile_scores_hundred():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "location": "Remote",
+            "current_role": "Senior Backend Engineer",
+            "skills": ["Python", "FastAPI", "PostgreSQL"],
+            "work_experience": [
+                {"title": "Lead Engineer", "company": "Acme", "description": "Led platform work"}
+            ],
+            "education": [{"degree": "B.Tech", "institution": "Example University"}],
+            "certifications": ["AWS Certified Solutions Architect"],
+            "raw_data": {
+                "availability": "Immediate",
+                "location_preferences": ["Remote", "Hybrid"],
+                "preferred_roles": ["Senior Backend Engineer"],
+                "projects": ["AI automation platform"],
+            },
+        }
+    )
+
+    percent, label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert percent == 100
+    assert label == "Strong"

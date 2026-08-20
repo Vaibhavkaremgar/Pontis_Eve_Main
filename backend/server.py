@@ -156,6 +156,8 @@ def _normalize_for_frontend(c: dict) -> dict:
     if not isinstance(voice_intake_resume, dict):
         voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
 
+    strength_percent, strength_label = _calculate_profile_strength(c, raw_data)
+
     profile = {
         "candidate_id": str(c.get("id") or c.get("candidate_id") or ""),
         "name": c.get("name", ""),
@@ -175,6 +177,10 @@ def _normalize_for_frontend(c: dict) -> dict:
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
         "photo_url": raw_data.get("photo_url") or None,
+        "profile_strength_percent": strength_percent,
+        "profile_strength_label": strength_label,
+        "strengthPercent": strength_percent,
+        "strength": strength_label,
     }
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
@@ -191,6 +197,195 @@ def _parse_raw_data(raw_data: Any) -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _has_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _has_list_items(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            return True
+        if isinstance(item, dict) and any(
+            _has_text(item.get(key))
+            for key in ("name", "title", "degree", "institution", "company", "description", "value")
+        ):
+            return True
+    return False
+
+
+def _has_work_experience(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if any(_has_text(item.get(key)) for key in ("title", "company", "description", "summary")):
+            return True
+    return False
+
+
+def _has_photo(profile: dict, raw_data: dict) -> bool:
+    return bool(_clean_str(raw_data.get("photo_url") or raw_data.get("photo_file_path") or profile.get("photo_url")))
+
+
+def _has_target_role(profile: dict, raw_data: dict) -> bool:
+    return any(
+        _has_text(value)
+        for value in (
+            profile.get("headline"),
+            profile.get("current_role"),
+        )
+    ) or _has_list_items(raw_data.get("preferred_roles"))
+
+
+_PROJECT_HINT_PATTERNS = (
+    r"\bproject(?:s)?\b",
+    r"\bportfolio\b",
+    r"\bcase study\b",
+    r"\binitiative(?:s)?\b",
+    r"\bwork sample(?:s)?\b",
+)
+
+
+def _has_projects(profile: dict, raw_data: dict) -> bool:
+    if _has_list_items(raw_data.get("projects")) or _has_list_items(profile.get("projects")):
+        return True
+
+    project_summary = raw_data.get("project_summary") or raw_data.get("projects_summary")
+    if _has_text(project_summary):
+        return True
+
+    voice_intake = raw_data.get("voice_intake")
+    completed_turns = (voice_intake or {}).get("completed_turns") or []
+    for turn in completed_turns:
+        question = _clean_str((turn or {}).get("question"))
+        answer = _clean_str((turn or {}).get("answer"))
+        if not answer:
+            continue
+        if any(re.search(pattern, question, re.IGNORECASE) for pattern in _PROJECT_HINT_PATTERNS):
+            return True
+        if any(re.search(pattern, answer, re.IGNORECASE) for pattern in _PROJECT_HINT_PATTERNS):
+            return True
+    return False
+
+
+def _has_preferences(profile: dict, raw_data: dict) -> bool:
+    values = [
+        profile.get("location"),
+        raw_data.get("availability"),
+        raw_data.get("location_preferences"),
+        raw_data.get("work_type_preference"),
+        raw_data.get("notice_period"),
+        raw_data.get("salary_expectation"),
+        raw_data.get("career_goals"),
+        raw_data.get("target_industries"),
+    ]
+    return any(_has_text(v) or _has_list_items(v) for v in values)
+
+
+PROFILE_STRENGTH_WEIGHTS = (
+    ("name", 5),
+    ("email", 5),
+    ("photo", 5),
+    ("work_experience", 15),
+    ("skills", 15),
+    ("target_role", 15),
+    ("projects", 15),
+    ("education", 10),
+    ("certifications", 5),
+    ("preferences", 10),
+)
+
+
+_FRESHER_ROLE_HINTS = (
+    "student",
+    "intern",
+    "fresher",
+    "graduate",
+    "new grad",
+    "entry level",
+    "junior",
+    "trainee",
+)
+
+
+def _is_fresher_profile(profile: dict, raw_data: dict) -> bool:
+    """Best-effort fresher detection so missing work history is not penalized."""
+    if _has_work_experience(profile.get("work_experience") or profile.get("experience")):
+        return False
+
+    years = profile.get("experience_years")
+    try:
+        if years is not None and float(years) >= 2:
+            return False
+    except (TypeError, ValueError):
+        pass
+
+    role_text = " ".join(
+        str(value).lower()
+        for value in (
+            profile.get("headline"),
+            profile.get("current_role"),
+            raw_data.get("current_role"),
+        )
+        if _has_text(value)
+    )
+    if any(hint in role_text for hint in _FRESHER_ROLE_HINTS):
+        return True
+
+    # If there is no work history and no strong seniority signal, treat the
+    # profile as fresher so skills/education/projects can carry the score.
+    return not role_text or not any(token in role_text for token in ("senior", "lead", "principal", "manager", "director"))
+
+
+def _profile_strength_weights(profile: dict, raw_data: dict) -> dict[str, int]:
+    weights = {name: weight for name, weight in PROFILE_STRENGTH_WEIGHTS}
+    if not _is_fresher_profile(profile, raw_data):
+        return weights
+
+    weights["work_experience"] = 0
+    weights["skills"] += 4
+    weights["projects"] += 4
+    weights["education"] += 2
+    weights["certifications"] += 2
+    weights["target_role"] += 2
+    weights["preferences"] += 1
+    return weights
+
+
+def _calculate_profile_strength(profile: dict, raw_data: Optional[dict] = None) -> tuple[int, str]:
+    raw = raw_data if isinstance(raw_data, dict) else _parse_raw_data(profile.get("raw_data"))
+    weights = _profile_strength_weights(profile, raw)
+
+    score = 0
+    if _has_text(profile.get("name")):
+        score += weights["name"]
+    if _has_text(profile.get("email")):
+        score += weights["email"]
+    if _has_photo(profile, raw):
+        score += weights["photo"]
+    if _has_work_experience(profile.get("work_experience") or profile.get("experience")):
+        score += weights["work_experience"]
+    if _has_list_items(profile.get("skills") or profile.get("keySkills")):
+        score += weights["skills"]
+    if _has_target_role(profile, raw):
+        score += weights["target_role"]
+    if _has_projects(profile, raw):
+        score += weights["projects"]
+    if _has_list_items(profile.get("education")):
+        score += weights["education"]
+    if _has_list_items(profile.get("certifications") or raw.get("certifications")):
+        score += weights["certifications"]
+    if _has_preferences(profile, raw):
+        score += weights["preferences"]
+
+    percent = min(score, 100)
+    label = "Strong" if percent >= 75 else "Developing" if percent >= 50 else "Building"
+    return percent, label
 
 
 def _clean_str(value: Any) -> str:

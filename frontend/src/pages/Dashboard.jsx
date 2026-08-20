@@ -14,43 +14,23 @@ import {
 } from "../mock";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
 import { buildDashboardEveGreetingFromProfile } from "../lib/dashboardMessaging";
+import { hydrateProfileStrength } from "../lib/profileStrength";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// voiceCompleted: whether the candidate fully finished voice intake (all questions answered).
-// An interrupted intake with only partial answers must NOT count as completed.
-// Resume alone contributes at most 20%; a genuinely completed voice intake drives the rest.
-const VOICE_INTAKE_TOTAL_QUESTIONS = 5; // minimum questions to consider intake "complete"
+export function getVoiceIntakeCenterView(voiceIntakeResume) {
+  const currentQuestion = voiceIntakeResume?.current_question || "";
+  const isInProgress =
+    voiceIntakeResume?.status === "in_progress" &&
+    Boolean(voiceIntakeResume?.has_open_question) &&
+    Boolean(currentQuestion);
 
-function computeStrength(p, voiceCompleted = false) {
-  // Determine actual intake completion: voiceCompleted flag AND sufficient answered questions.
-  const vir = p.voice_intake_resume;
-  const intakeProgress = vir?.progress ?? 0;
-  const intakeFullyDone = voiceCompleted && (!vir || vir.status === "completed" || intakeProgress >= VOICE_INTAKE_TOTAL_QUESTIONS);
-
-  if (!intakeFullyDone) {
-    const fields = [p.name, p.email, p.headline, p.location];
-    const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
-    const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
-    const hasSkills = Array.isArray(p.keySkills) && p.keySkills.length > 0 ? 1 : 0;
-    const raw = filled + hasExp + hasSkills;
-    const percent = Math.round(10 + (raw / 6) * 10);
-    return { strengthPercent: Math.min(percent, 20), strength: "Building" };
-  }
-  const fields = [p.name, p.email, p.phone, p.headline, p.location, p.bio];
-  const filled = fields.filter((f) => typeof f === "string" && f.trim() !== "").length;
-  const hasExp = Array.isArray(p.experience) && p.experience.length > 0 ? 1 : 0;
-  const hasEdu = Array.isArray(p.education) && p.education.length > 0 ? 1 : 0;
-  const hasSkills = Array.isArray(p.keySkills) && p.keySkills.length > 0 ? 1 : 0;
-  const hasAvail = p.availability ? 1 : 0;
-  const hasRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0 ? 1 : 0;
-  const total = filled + hasExp + hasEdu + hasSkills + hasAvail + hasRoles;
-  const percent = Math.round(20 + (total / 11) * 80);
-  const label = percent >= 75 ? "Strong" : percent >= 50 ? "Developing" : "Building";
-  return { strengthPercent: Math.min(percent, 100), strength: label };
+  if (isInProgress) return "chat";
+  if (voiceIntakeResume?.status === "completed") return "swipe";
+  return null;
 }
 
 function buildFallbackProfile(isOpenToMatches = true) {
@@ -77,10 +57,6 @@ function buildFallbackProfile(isOpenToMatches = true) {
   };
 }
 
-function applyStrength(profile, voiceCompleted = false) {
-  return { ...profile, ...computeStrength(profile, voiceCompleted) };
-}
-
 function ResizeHandle({ testId, subtle = false }) {
   return (
     <PanelResizeHandle
@@ -103,7 +79,6 @@ function Dashboard() {
   const stored = React.useMemo(() => loadOnboardingState(), []);
   const [candidateId, setCandidateId] = React.useState(() => loadOnboardingState().candidateId ?? null);
   const isOpenToMatches = stored.isOpenToMatches ?? true;
-  const voiceCompleted = stored.voiceIntakeCompleted ?? false;
 
   const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
 
@@ -116,14 +91,17 @@ function Dashboard() {
   });
 
   const [userProfile, setUserProfile] = React.useState(() =>
-    applyStrength(buildFallbackProfile(isOpenToMatches), voiceCompleted)
+    hydrateProfileStrength(buildFallbackProfile(isOpenToMatches))
   );
   const voiceIntakeResume = userProfile.voice_intake_resume;
   const voiceIntakeResumeQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
+  const voiceIntakeCurrentQuestion = voiceIntakeResume?.current_question || "";
   const voiceIntakeInProgress =
     voiceIntakeResume?.status === "in_progress" &&
     Boolean(voiceIntakeResume?.has_open_question) &&
-    Boolean(voiceIntakeResumeQuestion);
+    Boolean(voiceIntakeCurrentQuestion);
+  const voiceIntakeCompleted = voiceIntakeResume?.status === "completed";
+  const voiceIntakeCenterView = getVoiceIntakeCenterView(voiceIntakeResume);
 
   // All state declarations up front so effects can reference them
   const [chats, setChats] = React.useState([
@@ -149,7 +127,7 @@ function Dashboard() {
       .get(`${API}/candidate/${candidateId}/profile`)
       .then((res) => {
         const data = res.data;
-        setUserProfile(applyStrength({
+        setUserProfile(hydrateProfileStrength({
           avatar: data.photo_url ?? null,
           isOpenToMatches,
           name: data.name ?? "",
@@ -167,11 +145,13 @@ function Dashboard() {
           certifications: data.certifications ?? [],
           additional_information: data.additional_information ?? "",
           voice_intake_resume: data.voice_intake_resume ?? null,
-        }, voiceCompleted));
+          profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent,
+          profile_strength_label: data.profile_strength_label ?? data.strength,
+        }));
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
-        setUserProfile(applyStrength({
+        setUserProfile(hydrateProfileStrength({
           avatar: null,
           isOpenToMatches,
           name: parsed.name ?? "",
@@ -189,19 +169,26 @@ function Dashboard() {
           certifications: parsed.certifications ?? [],
           additional_information: parsed.additional_information ?? "",
           voice_intake_resume: parsed.voice_intake_resume ?? null,
-        }, voiceCompleted));
+          profile_strength_percent: parsed.profile_strength_percent ?? parsed.strengthPercent,
+          profile_strength_label: parsed.profile_strength_label ?? parsed.strength,
+        }));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]);
+
+  React.useEffect(() => {
+    if (voiceIntakeCenterView) {
+      setCenterView(voiceIntakeCenterView);
+    }
+  }, [voiceIntakeCenterView]);
 
   const refreshProfile = React.useCallback(async () => {
     if (!candidateId) return;
     try {
       const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
       const data = res.data;
-      const vc = loadOnboardingState().voiceIntakeCompleted ?? false;
       setUserProfile((prev) =>
-        applyStrength({
+        hydrateProfileStrength({
           ...prev,
           avatar: data.photo_url ?? prev.avatar ?? null,
           name: data.name ?? prev.name,
@@ -219,7 +206,9 @@ function Dashboard() {
           certifications: data.certifications?.length ? data.certifications : prev.certifications,
           additional_information: data.additional_information ?? prev.additional_information,
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
-        }, vc)
+          profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent ?? prev.profile_strength_percent,
+          profile_strength_label: data.profile_strength_label ?? data.strength ?? prev.strength,
+        })
       );
     } catch (err) {
       console.error("refreshProfile failed", err);
@@ -228,7 +217,8 @@ function Dashboard() {
 
   const handlePhotoChange = React.useCallback((url) => {
     setUserProfile((prev) => ({ ...prev, avatar: url }));
-  }, []);
+    refreshProfile();
+  }, [refreshProfile]);
 
   const handleLogout = React.useCallback(() => {
     clearOnboardingState();
@@ -307,12 +297,12 @@ function Dashboard() {
 
   // Show weak-profile popup once profile loads if voice intake is incomplete and strength < 75
   React.useEffect(() => {
-    if (!voiceCompleted && userProfile.strengthPercent > 0 && userProfile.strengthPercent < 75) {
+    if (!voiceIntakeCompleted && userProfile.strengthPercent > 0 && userProfile.strengthPercent < 75) {
       const t = setTimeout(() => setShowWeakProfilePopup(true), 800);
       return () => clearTimeout(t);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile.strengthPercent]);
+  }, [userProfile.strengthPercent, voiceIntakeCompleted]);
 
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback(() => {
@@ -516,7 +506,7 @@ function Dashboard() {
                 data-testid="weak-profile-chat-btn"
                 onClick={() => {
                   setShowWeakProfilePopup(false);
-                  setCenterView(voiceIntakeInProgress ? "chat" : "voice");
+                  setCenterView(voiceIntakeInProgress || voiceIntakeCompleted ? "chat" : "voice");
                 }}
                 className="flex-1 bg-[#1F1F1F] text-white text-[13px] font-medium rounded-full py-2.5 hover:bg-black transition-colors"
               >
@@ -567,7 +557,7 @@ function Dashboard() {
                 onClick={() => {
                   if (voiceIntakeInProgress) {
                     setCenterView("chat");
-                  } else if (!voiceCompleted) {
+                  } else if (!voiceIntakeCompleted) {
                     setCenterView("voice");
                   } else {
                     setCenterView("chat");
@@ -585,7 +575,7 @@ function Dashboard() {
 
             {centerView === "voice" ? (
               <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
-                <VoiceIntake
+              <VoiceIntake
                   firstName={userProfile.name?.split(" ")[0] || "there"}
                   candidateId={candidateId}
                   candidateProfile={userProfile}
@@ -595,7 +585,6 @@ function Dashboard() {
                       result?.status === "completed" || result?.status === "duplicate";
                     saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
                     refreshProfile();
-                    setCenterView("chat");
                   }}
                 />
               </div>
