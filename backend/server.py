@@ -2105,6 +2105,8 @@ FIELD DEFINITIONS — use exactly these keys:
                    NEVER put a technology, tool, or database name here (e.g. PostgreSQL, FastAPI, Python are NOT job titles).
   experience_years: Total years of professional experience as a number.
   skills         : List of technology/tool strings (e.g. ["FastAPI", "PostgreSQL", "Python"]).
+  preferred_roles: List of job titles the candidate explicitly says they want.
+  availability / notice_period: Plain string describing when the candidate can start or their notice period.
   work_experience: List of job objects. Each object must have:
                      {{"title": "<job title>", "company": "<company name>", "description": "<responsibilities>"}}
                    title   = the role/position held (e.g. "Python Backend Developer")
@@ -2175,12 +2177,13 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     return "\n".join(lines) if lines else "No profile data yet.", missing
 
 
-def _extract_profile_updates(reply_text: str) -> tuple[str, Optional[dict]]:
+def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tuple[str, Optional[dict]]:
     """Split LLM reply into (clean_reply, profile_updates_dict)."""
     marker_start = "<<<PROFILE_UPDATES>>>"
     marker_end = "<<<END_UPDATES>>>"
     if marker_start not in reply_text:
-        return reply_text.strip(), None
+        fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
+        return reply_text.strip(), fallback_updates or None
     parts = reply_text.split(marker_start, 1)
     clean = parts[0].strip()
     rest = parts[1].split(marker_end, 1)[0].strip()
@@ -2189,12 +2192,162 @@ def _extract_profile_updates(reply_text: str) -> tuple[str, Optional[dict]]:
         updates = data.get("profile_updates")
         return clean, updates if isinstance(updates, dict) else None
     except Exception:
-        return clean, None
+        fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
+        return clean, fallback_updates or None
+
+
+def _split_update_list(text: str) -> list[str]:
+    """Split a natural-language list into normalized items."""
+    if not isinstance(text, str):
+        return []
+    cleaned = text.strip().strip(".,;: ")
+    if not cleaned:
+        return []
+    cleaned = re.sub(r"\s+(?:and|or|&)\s+", ", ", cleaned, flags=re.IGNORECASE)
+    parts = [part.strip(" .;:") for part in re.split(r"[,/|]", cleaned)]
+    return [part for part in parts if part]
+
+
+def _extract_first_match(text: str, patterns: list[str]) -> Optional[str]:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        value = match.group("value") if "value" in match.groupdict() else match.group(0)
+        value = re.sub(r"^[,\s:-]+", "", value).strip(" .;:")
+        if value:
+            return value
+    return None
+
+
+def _infer_profile_updates_from_message(message: str) -> dict:
+    """
+    Deterministically infer explicit profile updates from the candidate's message.
+
+    This is a conservative fallback used when the LLM reply does not emit the
+    structured markers. It only extracts fields that are directly stated.
+    """
+    if not isinstance(message, str) or not message.strip():
+        return {}
+
+    text = " ".join(message.split())
+    lower = text.lower()
+    updates: dict[str, Any] = {}
+
+    preferred_roles = _extract_first_match(
+        text,
+        [
+            r"\b(?:i(?:'m| am)?\s+)?(?:targeting|looking for|seeking|want(?:ing)?|interested in|open to)\s+(?P<value>.+?)(?:\s+roles?\b|\s+positions?\b|\s+opportunities\b|[.!?;]|$)",
+            r"\bpreferred roles?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if preferred_roles:
+        roles = _normalize_preferred_roles(_split_update_list(preferred_roles))
+        if roles:
+            updates["preferred_roles"] = roles
+
+    skills = _extract_first_match(
+        text,
+        [
+            r"\b(?:preferably\s+)?working with\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bskills?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bexperience with\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\busing\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if skills:
+        normalized_skills = _merge_skills([], _split_update_list(skills))
+        if normalized_skills:
+            updates["skills"] = normalized_skills
+
+    availability = _extract_first_match(
+        text,
+        [
+            r"\b(?:i(?:'m| am)?\s+)?(?:available|can join|can start|start)\s+(?P<value>immediately|right away|now|today|within\b.+?)(?:[.!?;]|$)",
+            r"\b(?:i(?:'m| am)?\s+)?(?:available immediately|can join immediately|can start immediately)\b",
+            r"\bnotice period\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if availability:
+        availability = availability.strip()
+        updates["availability"] = availability
+        updates["notice_period"] = availability
+
+    current_role = _extract_first_match(
+        text,
+        [
+            r"\b(?:i(?:'m| am)|currently(?:\s+working)? as|i work as|i'm working as|my current role is)\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
+        ],
+    )
+    if current_role:
+        updates["current_role"] = current_role
+
+    experience_match = re.search(r"\b(?P<value>\d+(?:\.\d+)?)\s*\+?\s*years?\b", lower)
+    if experience_match:
+        try:
+            updates["experience_years"] = float(experience_match.group("value"))
+        except ValueError:
+            pass
+
+    location = _extract_first_match(
+        text,
+        [
+            r"\b(?:based in|located in|live in|living in|from)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if location:
+        updates["location"] = location
+
+    work_company = _extract_first_match(
+        text,
+        [
+            r"\bworked at\s+(?P<value>.+?)(?:\s+as\b|\s+building\b|[.!?;]|$)",
+        ],
+    )
+    work_title = _extract_first_match(
+        text,
+        [
+            r"\bworked at\s+.+?\s+as\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if work_company and work_title:
+        description = _extract_first_match(
+            text,
+            [
+                r"\bworked at\s+.+?(?:\.\s*|\s+and\s+|\s+while\s+)(?P<value>.+)$",
+            ],
+        ) or ""
+        updates["work_experience"] = [
+            {
+                "title": work_title.strip(),
+                "company": work_company.strip(),
+                "description": description.strip(" .;:"),
+            }
+        ]
+
+    education = _extract_first_match(
+        text,
+        [
+            r"\b(?:studied|graduated from|earned(?:\s+an?)?)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ],
+    )
+    if education:
+        updates["education"] = [
+            {
+                "degree": education.strip(),
+                "institution": "",
+                "start_date": "",
+                "end_date": "",
+            }
+        ]
+
+    return updates
 
 
 VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
+    "preferred_roles", "availability", "notice_period",
 }
 
 
@@ -2206,60 +2359,117 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
 
     # Fetch existing candidate row for merging lists
     existing = await _get_candidate_row(candidate_id)
+    existing_raw = _parse_raw_data(existing.get("raw_data"))
 
     set_clauses = []
     params: dict = {"cid": candidate_id}
     current_role_set = False
+    raw_data_changed = False
+    has_preference_payload = False
 
     for field, value in safe.items():
         if field == "skills":
             if not isinstance(value, list):
                 continue
             merged = _merge_skills(existing.get("skills") or [], value)
-            set_clauses.append("skills = CAST(:skills AS json)")
-            params["skills"] = json.dumps(merged)
+            if merged != (existing.get("skills") or []):
+                set_clauses.append("skills = CAST(:skills AS json)")
+                params["skills"] = json.dumps(merged)
         elif field == "work_experience":
             if not isinstance(value, list):
                 continue
             merged = _merge_work_experience(existing.get("work_experience") or [], value)
-            set_clauses.append("work_experience = CAST(:work_experience AS json)")
-            params["work_experience"] = json.dumps(merged)
+            if merged != (existing.get("work_experience") or []):
+                set_clauses.append("work_experience = CAST(:work_experience AS json)")
+                params["work_experience"] = json.dumps(merged)
         elif field == "education":
             if not isinstance(value, list):
                 continue
             merged = _merge_education(existing.get("education") or [], value)
-            set_clauses.append("education = CAST(:education AS json)")
-            params["education"] = json.dumps(merged)
+            if merged != (existing.get("education") or []):
+                set_clauses.append("education = CAST(:education AS json)")
+                params["education"] = json.dumps(merged)
         elif field in ("headline", "current_role"):
-            if not current_role_set:
+            existing_role = (existing.get("current_role") or existing.get("headline") or "")
+            new_role = str(value)
+            if not current_role_set and new_role != existing_role:
                 set_clauses.append('"current_role" = :current_role')
-                params["current_role"] = str(value)
+                params["current_role"] = new_role
                 current_role_set = True
         elif field == "bio":
-            set_clauses.append("summary = :bio")
-            params["bio"] = str(value)
+            new_bio = str(value)
+            if new_bio != (existing.get("summary") or ""):
+                set_clauses.append("summary = :bio")
+                params["bio"] = new_bio
         elif field == "experience_years":
             try:
-                set_clauses.append("experience_years = :experience_years")
-                params["experience_years"] = float(value)
+                new_years = float(value)
+                existing_years = existing.get("experience_years")
+                existing_years = float(existing_years) if existing_years is not None else None
+                if new_years != existing_years:
+                    set_clauses.append("experience_years = :experience_years")
+                    params["experience_years"] = new_years
             except (TypeError, ValueError):
                 pass
+        elif field == "preferred_roles":
+            if not isinstance(value, list):
+                continue
+            has_preference_payload = True
+            merged_roles = _normalize_preferred_roles(
+                (existing_raw.get("preferred_roles") or []) + value
+            )
+            existing_roles = _normalize_preferred_roles(existing_raw.get("preferred_roles") or [])
+            if merged_roles != existing_roles:
+                existing_raw["preferred_roles"] = merged_roles
+                raw_data_changed = True
+        elif field in ("availability", "notice_period"):
+            if not isinstance(value, str):
+                continue
+            has_preference_payload = True
+            availability_value = value.strip()
+            if not availability_value:
+                continue
+            if existing_raw.get("availability") != availability_value:
+                existing_raw["availability"] = availability_value
+                raw_data_changed = True
         else:
-            set_clauses.append(f"{field} = :{field}")
-            params[field] = str(value)
+            new_value = str(value)
+            if field == "location":
+                existing_value = existing.get("location") or ""
+            else:
+                existing_value = existing.get(field) or ""
+            if new_value != existing_value:
+                set_clauses.append(f"{field} = :{field}")
+                params[field] = new_value
 
-    if not set_clauses:
+    if raw_data_changed:
+        set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
+        params["raw_data"] = json.dumps(existing_raw)
+
+    if not set_clauses and not has_preference_payload:
         return
 
-    set_clauses.append("updated_at = now()")
-    set_clauses.append("updated_by_source = 'eve_chat'")
+    if set_clauses:
+        set_clauses.append("updated_at = now()")
+        set_clauses.append("updated_by_source = 'eve_chat'")
 
-    async with SessionLocal() as db:
-        await db.execute(
-            text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
-            params,
+        async with SessionLocal() as db:
+            await db.execute(
+                text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
+                params,
+            )
+            await db.commit()
+
+    preferred_roles = _normalize_preferred_roles(existing_raw.get("preferred_roles") or [])
+    availability_value = (existing_raw.get("availability") or "").strip()
+    if preferred_roles or availability_value:
+        await _upsert_candidate_preferences(
+            candidate_id,
+            {
+                "preferred_roles": preferred_roles,
+                "availability": availability_value,
+            },
         )
-        await db.commit()
 
 
 _JOB_SEARCH_PHRASES = (
@@ -2509,7 +2719,7 @@ async def chat(request: ChatRequest):
         logger.exception("LLM chat failure")
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
-    clean_reply, profile_updates = _extract_profile_updates(raw_reply)
+    clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
 
     # Persist updated window (includes assistant reply)
     if request.candidate_id:

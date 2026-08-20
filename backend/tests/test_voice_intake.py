@@ -2340,3 +2340,229 @@ class TestExactProductionGreetingLeakRegression:
 
         assert resume["current_question"] == self.Q3
         assert resume.get("next_question") in (None, "")
+
+
+class TestChatProfileUpdatePersistenceRegression:
+    def test_role_preference_and_skills_extract_and_persist_idempotently(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        executed = []
+        state = {
+            "candidate": {
+                "id": "candidate-1",
+                "raw_data": {},
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                params = params or {}
+                executed.append((sql, params))
+                if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
+                    return FakeResult([state["candidate"]])
+                if "FROM candidate_preferences" in sql and "SELECT" in sql:
+                    if state["prefs"] is None:
+                        return FakeResult([])
+                    return FakeResult([state["prefs"]])
+                if "UPDATE candidates SET" in sql:
+                    if "skills" in params:
+                        state["candidate"]["skills"] = json.loads(params["skills"])
+                    if "work_experience" in params:
+                        state["candidate"]["work_experience"] = json.loads(params["work_experience"])
+                    if "education" in params:
+                        state["candidate"]["education"] = json.loads(params["education"])
+                    if "current_role" in params:
+                        state["candidate"]["current_role"] = params["current_role"]
+                    if "bio" in params:
+                        state["candidate"]["summary"] = params["bio"]
+                    if "experience_years" in params:
+                        state["candidate"]["experience_years"] = params["experience_years"]
+                    if "location" in params:
+                        state["candidate"]["location"] = params["location"]
+                    if "raw_data" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    return FakeResult()
+                if "INSERT INTO candidate_preferences" in sql:
+                    state["prefs"] = {
+                        "candidate_id": params["cid"],
+                        "preferred_roles": json.loads(params["preferred_roles"]),
+                        "notice_period": params["notice_period"],
+                    }
+                    return FakeResult()
+                if "UPDATE candidate_preferences SET" in sql:
+                    if state["prefs"] is None:
+                        state["prefs"] = {"candidate_id": params["cid"], "preferred_roles": [], "notice_period": ""}
+                    if "preferred_roles" in params:
+                        state["prefs"]["preferred_roles"] = json.loads(params["preferred_roles"])
+                    if "notice_period" in params:
+                        state["prefs"]["notice_period"] = params["notice_period"]
+                    return FakeResult()
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        clean, updates = server._extract_profile_updates(
+            "Thanks for sharing that.",
+            "I'm targeting Java Backend Developer or Java Backend Engineer roles, preferably working with Java, Spring Boot, Hibernate, and REST APIs.",
+        )
+
+        assert clean == "Thanks for sharing that."
+        assert updates is not None
+        assert updates["preferred_roles"] == ["Java Backend Developer", "Java Backend Engineer"]
+        assert "Java" in updates["skills"]
+        assert "Spring Boot" in updates["skills"]
+        assert "Hibernate" in updates["skills"]
+        assert "REST APIs" in updates["skills"]
+
+        asyncio.run(server._apply_profile_updates("candidate-1", updates))
+        asyncio.run(server._apply_profile_updates("candidate-1", updates))
+
+        assert sum(1 for sql, _ in executed if "UPDATE candidates SET" in sql) == 1
+        assert sum(1 for sql, _ in executed if "INSERT INTO candidate_preferences" in sql) == 1
+        assert state["candidate"]["raw_data"]["preferred_roles"] == [
+            "Java Backend Developer",
+            "Java Backend Engineer",
+        ]
+        assert state["candidate"]["skills"][:4] == ["Java", "Spring Boot", "Hibernate", "REST APIs"]
+        assert state["prefs"]["preferred_roles"] == [
+            "Java Backend Developer",
+            "Java Backend Engineer",
+        ]
+
+    def test_availability_immediately_persists_to_notice_period(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = {
+            "candidate": {
+                "id": "candidate-2",
+                "raw_data": {},
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                params = params or {}
+                if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
+                    return FakeResult([state["candidate"]])
+                if "FROM candidate_preferences" in sql and "SELECT" in sql:
+                    if state["prefs"] is None:
+                        return FakeResult([])
+                    return FakeResult([state["prefs"]])
+                if "UPDATE candidates SET" in sql:
+                    if "raw_data" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    return FakeResult()
+                if "INSERT INTO candidate_preferences" in sql:
+                    state["prefs"] = {
+                        "candidate_id": params["cid"],
+                        "preferred_roles": json.loads(params["preferred_roles"]),
+                        "notice_period": params["notice_period"],
+                    }
+                    return FakeResult()
+                if "UPDATE candidate_preferences SET" in sql:
+                    if state["prefs"] is None:
+                        state["prefs"] = {"candidate_id": params["cid"], "preferred_roles": [], "notice_period": ""}
+                    if "preferred_roles" in params:
+                        state["prefs"]["preferred_roles"] = json.loads(params["preferred_roles"])
+                    if "notice_period" in params:
+                        state["prefs"]["notice_period"] = params["notice_period"]
+                    return FakeResult()
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        clean, updates = server._extract_profile_updates(
+            "Sounds good.",
+            "I can join immediately.",
+        )
+
+        assert clean == "Sounds good."
+        assert updates is not None
+        assert updates["availability"]
+        assert updates["notice_period"] == updates["availability"]
+
+        asyncio.run(server._apply_profile_updates("candidate-2", updates))
+
+        assert state["candidate"]["raw_data"]["availability"] == updates["availability"]
+        assert "immed" in (state["prefs"]["notice_period"] or "").lower()
+
+    def test_conversational_reply_without_profile_data_produces_no_fake_updates(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _extract_profile_updates
+
+        clean, updates = _extract_profile_updates(
+            "Thanks for sharing. Let's keep going.",
+            "That's helpful, tell me more about the team.",
+        )
+
+        assert clean == "Thanks for sharing. Let's keep going."
+        assert updates is None
