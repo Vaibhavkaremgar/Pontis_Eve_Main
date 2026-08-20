@@ -2076,6 +2076,8 @@ def _format_voice_intake_resume_context(resume: dict) -> str:
         lines.append(f"- Latest completed question: {resume['latest_completed_question']}")
     if resume.get("latest_completed_answer"):
         lines.append(f"- Latest completed answer: {resume['latest_completed_answer']}")
+    if resume.get("current_question"):
+        lines.append(f"- Current unanswered question: {resume['current_question']}")
     if resume.get("next_question"):
         lines.append(f"- Next question to ask: {resume['next_question']}")
     if resume.get("completed_turns"):

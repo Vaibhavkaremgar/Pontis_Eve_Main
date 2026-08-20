@@ -13,6 +13,7 @@ import {
   QUICK_ACTIONS,
 } from "../mock";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
+import { buildDashboardEveGreeting } from "../lib/dashboardMessaging";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 
@@ -119,6 +120,7 @@ function Dashboard() {
   );
   const voiceIntakeResume = userProfile.voice_intake_resume;
   const voiceIntakeInProgress = !voiceCompleted && voiceIntakeResume?.status === "in_progress";
+  const voiceIntakeResumeQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
 
   // All state declarations up front so effects can reference them
   const [chats, setChats] = React.useState([
@@ -259,41 +261,27 @@ function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]);
 
-  // Update greeting once real profile loads — personalise with name, never ask for already-known info
+  // Update greeting once real profile loads - personalise with name, never ask for already-known info
   React.useEffect(() => {
     if (chatRestored) return;
     const firstName = userProfile.name?.split(" ")[0];
-    if (!firstName) return;
     const hasResume = documents?.resume != null;
     const profileComplete = userProfile.headline && userProfile.keySkills?.length > 0;
-    const greeting = profileComplete
-      ? `Hi ${firstName} — great to connect. Your profile looks good. I can help you explore job matches, prep for outreach, or refine any details. What would you like to work on?`
-      : `Hi ${firstName} — great to connect. I have your profile in front of me.${
-          hasResume ? "" : " Feel free to share any details you'd like to add."
-        } What would you like to work on?`;
+    const greeting = buildDashboardEveGreeting({
+      firstName,
+      profileComplete,
+      hasResume,
+      voiceIntakeInProgress,
+      voiceIntakeResumeQuestion,
+    });
+    if (!greeting) return;
     setChats((prev) =>
       prev[0]?.id === "msg-1"
         ? [{ ...prev[0], content: greeting }, ...prev.slice(1)]
         : prev
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatRestored, userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
-
-  // If voice intake was interrupted, replace the default greeting with a resume prompt.
-  React.useEffect(() => {
-    if (chatRestored) return;
-    const firstName = userProfile.name?.split(" ")[0];
-    if (!firstName) return;
-    if (!voiceIntakeInProgress || !voiceIntakeResume?.next_question) return;
-
-    const resumeGreeting = `Hi ${firstName} - we were in the middle of your intake. ${voiceIntakeResume.next_question}`;
-    setChats((prev) =>
-      prev[0]?.id === "msg-1"
-        ? [{ ...prev[0], content: resumeGreeting }, ...prev.slice(1)]
-        : prev
-    );
-  }, [chatRestored, userProfile.name, voiceIntakeInProgress, voiceIntakeResume?.next_question]);
-
+  }, [chatRestored, voiceIntakeInProgress, voiceIntakeResumeQuestion, userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
   // Opportunities count
   React.useEffect(() => {
     if (!candidateId) return;
