@@ -2285,6 +2285,53 @@ class TestExactProductionCumulativeReconstruction:
         assert resumed["current_question"] == self.Q3
         assert resumed["status"] == "in_progress"
 
+    def test_H_final_answer_completes_resume_and_clears_open_state(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes
+
+        final_question = "Can you describe a recent backend project you worked on and what your specific responsibilities were?"
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 5,
+            "completed_turns": [
+                {"question": self.Q1, "answer": "I was looking for a stronger backend role."},
+                {"question": self.Q2, "answer": "I wanted a backend developer role with Java."},
+                {"question": self.Q3, "answer": "I'd like to focus on backend projects."},
+                {"question": "What kind of team or work environment helps you do your best work in your next role?", "answer": "A collaborative product team."},
+                {"question": "What made you start exploring your next opportunity?", "answer": "I wanted more ownership."},
+            ],
+            "current_question": final_question,
+            "missing_topics": ["responsibilities_projects"],
+            "known_topics": ["background_experience", "target_role", "career_preferences", "availability_location"],
+        }
+        notes = [
+            {"role": "assistant", "text": final_question, "final": True},
+            {
+                "role": "user",
+                "text": "I recently built a backend service for order processing and handled API design, database work, and deployment.",
+                "final": True,
+            },
+        ]
+        llm_analysis = {
+            "completed": True,
+            "current_question_answered": True,
+            "next_question": None,
+            "missing_topics": [],
+            "known_topics": ["background_experience", "target_role", "career_preferences", "availability_location", "responsibilities_projects"],
+        }
+
+        resume = _build_voice_intake_resume_from_notes(notes, "", existing_resume, llm_analysis=llm_analysis)
+
+        assert resume["status"] == "completed"
+        assert resume["progress"] == 6
+        assert resume.get("missing_topics") == []
+        assert resume.get("current_question") is None
+        assert resume.get("has_open_question") is False
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 6
+        assert turns[-1]["question"] == final_question
+
 
 class TestExactProductionGreetingLeakRegression:
     """
@@ -3027,3 +3074,99 @@ class TestChatVoiceIntakeStateAdvance:
         response = asyncio.run(server.chat(request))
         assert response.reply == "Thanks, let's keep going."
         assert state["candidate"]["raw_data"]["voice_intake"] == before
+
+    def test_chat_final_answer_completes_voice_intake_state(self, monkeypatch):
+        import sys, os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        final_question = "Can you describe a recent backend project you worked on and what your specific responsibilities were?"
+        state = {
+            "candidate": {
+                "id": "candidate-chat-final",
+                "name": "Candidate",
+                "email": "candidate@example.com",
+                "phone": "",
+                "raw_data": {
+                    "voice_intake": {
+                        "status": "in_progress",
+                        "progress": 5,
+                        "current_question": final_question,
+                        "has_open_question": True,
+                        "missing_topics": ["responsibilities_projects"],
+                        "known_topics": ["background_experience", "target_role", "career_preferences", "availability_location"],
+                        "completed_turns": [
+                            {
+                                "question": "What made you start exploring your next opportunity?",
+                                "answer": "I wanted a stronger backend role.",
+                            },
+                            {
+                                "question": "What are your key skills?",
+                                "answer": "Java, Spring Boot, Hibernate, REST APIs.",
+                            },
+                            {
+                                "question": "What kind of backend role are you targeting next?",
+                                "answer": "A backend developer role focused on APIs.",
+                            },
+                            {
+                                "question": "What kind of team or work environment helps you do your best work in your next role?",
+                                "answer": "A collaborative product team.",
+                            },
+                            {
+                                "question": "What would make your next role a really good fit beyond the technologies you mentioned?",
+                                "answer": "Having ownership and room to grow.",
+                            },
+                        ],
+                    }
+                },
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "current_company": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks for sharing.",
+            profile_updates=None,
+            llm_analysis={
+                "known_topics": [
+                    "background_experience",
+                    "target_role",
+                    "career_preferences",
+                    "availability_location",
+                    "responsibilities_projects",
+                ],
+                "missing_topics": [],
+                "current_question_answered": True,
+                "next_question": None,
+                "completed": True,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[server.ChatMessageIn(role="user", content="I recently built a backend service for order processing and handled API design, database work, and deployment.")],
+            session_id="session-chat-final",
+            candidate_id="candidate-chat-final",
+        )
+
+        response = asyncio.run(server.chat(request))
+        assert response.reply == "Thanks for sharing."
+
+        voice_intake = state["candidate"]["raw_data"]["voice_intake"]
+        assert voice_intake["status"] == "completed"
+        assert voice_intake["progress"] == 6
+        assert voice_intake.get("missing_topics") == []
+        assert voice_intake.get("current_question") is None
+        assert voice_intake.get("has_open_question") is False
+        turns = voice_intake.get("completed_turns") or []
+        assert len(turns) == 6
+        assert turns[-1]["question"] == final_question

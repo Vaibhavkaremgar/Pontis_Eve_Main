@@ -1327,8 +1327,15 @@ def _build_voice_intake_resume_from_notes(
         known_topics = existing_known
         is_completed = False
 
-    # Never mark completed if there are still missing topics or a pending question
-    if missing_topics or pending_question:
+    completion_ready = bool(llm_analysis and llm_analysis.get("completed")) and not next_question and not pending_question
+
+    # Preserve the existing state machine's completion decision, but do not let
+    # stale persisted missing_topics block the final transition once the last
+    # required question has been answered.
+    if completion_ready:
+        is_completed = True
+        missing_topics = []
+    elif missing_topics or pending_question:
         is_completed = False
 
     if existing_status == "completed":
@@ -1346,6 +1353,9 @@ def _build_voice_intake_resume_from_notes(
         next_question = ""
     if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
         next_question = ""
+    if is_completed:
+        current_question = None
+        next_question = None
 
     resume: dict = {
         "status": status,
