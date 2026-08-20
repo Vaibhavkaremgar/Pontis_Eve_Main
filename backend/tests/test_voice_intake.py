@@ -2412,6 +2412,8 @@ class TestChatProfileUpdatePersistenceRegression:
                         state["candidate"]["location"] = params["location"]
                     if "raw_data" in params:
                         state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    if "rd" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["rd"])
                     return FakeResult()
                 if "INSERT INTO candidate_preferences" in sql:
                     state["prefs"] = {
@@ -2745,3 +2747,283 @@ class TestChatProfileUpdatePersistenceRegression:
 
         assert clean == "Thanks for sharing. Let's keep going."
         assert updates is None
+
+
+class TestChatVoiceIntakeStateAdvance:
+    CURRENT_QUESTION = (
+        "What would make your next backend developer role a really good fit for you beyond the technologies?"
+    )
+    NEXT_QUESTION = "What is your availability and preferred location for the role?"
+
+    def _setup_chat_mocks(self, monkeypatch, state, clean_reply, profile_updates, llm_analysis):
+        import sys, os
+        from types import SimpleNamespace
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                params = params or {}
+                if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
+                    return FakeResult([state["candidate"]])
+                if "FROM candidate_preferences" in sql and "SELECT" in sql:
+                    if state["prefs"] is None:
+                        return FakeResult([])
+                    return FakeResult([state["prefs"]])
+                if "UPDATE candidates SET" in sql:
+                    if "skills" in params:
+                        state["candidate"]["skills"] = json.loads(params["skills"])
+                    if "work_experience" in params:
+                        state["candidate"]["work_experience"] = json.loads(params["work_experience"])
+                    if "education" in params:
+                        state["candidate"]["education"] = json.loads(params["education"])
+                    if "current_role" in params:
+                        state["candidate"]["current_role"] = params["current_role"]
+                    if "bio" in params:
+                        state["candidate"]["summary"] = params["bio"]
+                    if "experience_years" in params:
+                        state["candidate"]["experience_years"] = params["experience_years"]
+                    if "location" in params:
+                        state["candidate"]["location"] = params["location"]
+                    if "raw_data" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    if "rd" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["rd"])
+                    return FakeResult()
+                if "INSERT INTO candidate_preferences" in sql:
+                    state["prefs"] = {
+                        "candidate_id": params["cid"],
+                        "preferred_roles": json.loads(params["preferred_roles"]),
+                        "notice_period": params["notice_period"],
+                    }
+                    return FakeResult()
+                if "UPDATE candidate_preferences SET" in sql:
+                    if state["prefs"] is None:
+                        state["prefs"] = {"candidate_id": params["cid"], "preferred_roles": [], "notice_period": ""}
+                    if "preferred_roles" in params:
+                        state["prefs"]["preferred_roles"] = json.loads(params["preferred_roles"])
+                    if "notice_period" in params:
+                        state["prefs"]["notice_period"] = params["notice_period"]
+                    return FakeResult()
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        class FakeCompletions:
+            async def create(self, *args, **kwargs):
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="Thanks for sharing."))]
+                )
+
+        async def _fake_llm_analyze_intake(*args, **kwargs):
+            return llm_analysis
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(server, "_load_chat_window", _noop)
+        monkeypatch.setattr(server, "_save_chat_window", _noop)
+        monkeypatch.setattr(server, "_trigger_matching", _noop)
+        monkeypatch.setattr(server, "_load_candidate_certificates", _noop)
+        monkeypatch.setattr(server, "_llm_analyze_intake", _fake_llm_analyze_intake)
+        monkeypatch.setattr(
+            server,
+            "_extract_profile_updates",
+            lambda raw_reply, candidate_message="": (clean_reply, profile_updates),
+        )
+        monkeypatch.setattr(server, "openai_client", SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())))
+        return server
+
+    def _base_state(self):
+        return {
+            "candidate": {
+                "id": "candidate-chat-voice",
+                "name": "Candidate",
+                "email": "candidate@example.com",
+                "phone": "",
+                "raw_data": {
+                    "voice_intake": {
+                        "status": "in_progress",
+                        "progress": 3,
+                        "current_question": self.CURRENT_QUESTION,
+                        "has_open_question": True,
+                        "missing_topics": ["career_preferences", "availability_location"],
+                        "known_topics": ["background_experience", "target_role"],
+                        "completed_turns": [
+                            {
+                                "question": "What made you start exploring your next opportunity?",
+                                "answer": "I was looking for a stronger backend role.",
+                            },
+                            {
+                                "question": "What are your key skills?",
+                                "answer": "Java, Spring Boot, Hibernate, REST APIs.",
+                            },
+                            {
+                                "question": "What kind of backend role are you targeting next?",
+                                "answer": "A backend developer role focused on APIs.",
+                            },
+                        ],
+                    }
+                },
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "current_company": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+    def test_chat_answer_advances_voice_intake_and_persists_completed_turn(self, monkeypatch):
+        import sys, os
+        from types import SimpleNamespace
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = self._base_state()
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks for sharing.",
+            profile_updates={
+                "preferred_roles": ["Java Backend Developer"],
+                "availability": "30 days",
+            },
+            llm_analysis={
+                "known_topics": ["background_experience", "target_role", "career_preferences"],
+                "missing_topics": ["availability_location"],
+                "current_question_answered": True,
+                "next_question": self.NEXT_QUESTION,
+                "completed": False,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[
+                server.ChatMessageIn(role="assistant", content="Hi"),
+                server.ChatMessageIn(
+                    role="user",
+                    content=(
+                        "I want a backend developer role where I can keep growing with Java and Spring Boot, "
+                        "and I can start in 30 days from Bangalore."
+                    ),
+                ),
+            ],
+            session_id="session-chat-advance",
+            candidate_id="candidate-chat-voice",
+        )
+
+        response = asyncio.run(server.chat(request))
+        assert response.reply == "Thanks for sharing."
+        assert response.profile_updates is not None
+        assert state["prefs"]["preferred_roles"] == ["Java Backend Developer"]
+
+        voice_intake = state["candidate"]["raw_data"]["voice_intake"]
+        turns = voice_intake.get("completed_turns") or []
+        assert len(turns) == 4
+        assert turns[-1]["question"] == self.CURRENT_QUESTION
+        assert "Java and Spring Boot" in turns[-1]["answer"]
+        assert voice_intake["current_question"] == self.NEXT_QUESTION
+        assert voice_intake["has_open_question"] is True
+        assert voice_intake["progress"] == 4
+        assert voice_intake["status"] == "in_progress"
+
+    def test_chat_duplicate_submission_does_not_duplicate_or_advance_twice(self, monkeypatch):
+        import sys, os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = self._base_state()
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks for sharing.",
+            profile_updates=None,
+            llm_analysis={
+                "known_topics": ["background_experience", "target_role", "career_preferences"],
+                "missing_topics": ["availability_location"],
+                "current_question_answered": True,
+                "next_question": self.NEXT_QUESTION,
+                "completed": False,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[server.ChatMessageIn(role="user", content="I can start in 30 days from Bangalore.")],
+            session_id="session-chat-duplicate",
+            candidate_id="candidate-chat-voice",
+        )
+
+        first = asyncio.run(server.chat(request))
+        assert first.reply == "Thanks for sharing."
+        first_voice_intake = json.loads(json.dumps(state["candidate"]["raw_data"]["voice_intake"]))
+
+        second = asyncio.run(server.chat(request))
+        assert second.reply == "Thanks for sharing."
+        second_voice_intake = state["candidate"]["raw_data"]["voice_intake"]
+
+        assert second_voice_intake["completed_turns"] == first_voice_intake["completed_turns"]
+        assert len(second_voice_intake.get("completed_turns") or []) == 4
+        assert second_voice_intake["current_question"] == self.NEXT_QUESTION
+        assert second_voice_intake["progress"] == 4
+
+    def test_chat_ordinary_message_does_not_modify_voice_intake(self, monkeypatch):
+        import sys, os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = self._base_state()
+        before = json.loads(json.dumps(state["candidate"]["raw_data"]["voice_intake"]))
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks, let's keep going.",
+            profile_updates=None,
+            llm_analysis={
+                "known_topics": ["background_experience", "target_role"],
+                "missing_topics": ["career_preferences", "availability_location"],
+                "current_question_answered": False,
+                "next_question": self.NEXT_QUESTION,
+                "completed": False,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[server.ChatMessageIn(role="user", content="Thanks, let's talk about the team culture next.")],
+            session_id="session-chat-ordinary",
+            candidate_id="candidate-chat-voice",
+        )
+
+        response = asyncio.run(server.chat(request))
+        assert response.reply == "Thanks, let's keep going."
+        assert state["candidate"]["raw_data"]["voice_intake"] == before

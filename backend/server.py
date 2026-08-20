@@ -660,6 +660,49 @@ _QUESTION_START_PATTERN = re.compile(
 )
 
 
+_ASSISTANT_FRAGMENT_FILLERS = frozenset({"um", "uh", "er", "ah"})
+_ASSISTANT_FRAGMENT_CONNECTORS = frozenset({
+    "using", "with", "for", "to", "in", "on", "at", "from", "about", "of", "and", "or", "but",
+})
+
+
+def _normalize_assistant_question_clause(clause: str) -> str:
+    """Clean a single assistant clause before question extraction."""
+    text = _clean_str(clause)
+    if not text:
+        return ""
+
+    lowered = text.lower().strip(" ,.-")
+    if lowered in _ASSISTANT_FRAGMENT_FILLERS:
+        return ""
+
+    text = re.sub(r"\b(?:um|uh|er|ah)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,.-")
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if lowered in _ASSISTANT_FRAGMENT_CONNECTORS:
+        return lowered
+    return text
+
+
+def _normalize_extracted_question_text(question_text: str) -> str:
+    """Normalize extracted assistant question text into one canonical question."""
+    text = _clean_str(question_text)
+    if not text:
+        return ""
+
+    clauses = [c.strip() for c in re.split(r"(?<=[?.!])\s+", text) if c.strip()]
+    normalized_clauses = [_normalize_assistant_question_clause(clause) for clause in clauses]
+    text = " ".join(clause for clause in normalized_clauses if clause)
+    text = re.sub(r"\s+[,.!?]+\s+(?=\b(?:using|with|for|to|in|on|at|from|about|of|and|or|but)\b)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:using|with|for|to|in|on|at|from|about|of|and|or|but)\.\s+(?=\w)", lambda m: f"{m.group(0).split('.')[0]} ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:um|uh|er|ah)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,.-")
+    return text
+
+
 def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     """
     Extract the actual intake question from an assistant turn.
@@ -670,6 +713,12 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
         return None
 
     clauses = [c.strip() for c in re.split(r"(?<=[?.!])\s+", cleaned) if c.strip()]
+    intake_start_idx: Optional[int] = None
+    for idx, clause in enumerate(clauses):
+        lowered = clause.lower().rstrip(" .!?")
+        if any(re.search(p, lowered) for p in _INTAKE_STATEMENT_PATTERNS) or _QUESTION_START_PATTERN.search(clause):
+            intake_start_idx = idx
+            break
 
     # Check statement-form intake prompts (e.g. "Tell me about your background.")
     for clause in reversed(clauses):
@@ -679,9 +728,13 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
 
     question_clause = next((clause for clause in reversed(clauses) if "?" in clause), "")
     if not question_clause:
-        return None
+        if intake_start_idx is None:
+            return None
+        question_clause = " ".join(clauses[intake_start_idx:])
 
     question_text = question_clause[: question_clause.rfind("?") + 1]
+    if question_text == question_clause and not question_text.endswith("?"):
+        question_text = question_text.rstrip(" .!,-") + "?"
     matches = list(_QUESTION_START_PATTERN.finditer(question_text))
     if matches:
         first_match = matches[0]
@@ -690,8 +743,10 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
         if first_match.start() > 0 and prefix_word_count <= 5:
             question_text = question_text[first_match.start():]
 
-    question_text = re.sub(r"\b(?:um|uh|er|ah)\b", " ", question_text, flags=re.IGNORECASE)
-    question_text = re.sub(r"\s+", " ", question_text).strip(" ,.-")
+    if not _is_intake_question(question_text) and intake_start_idx is not None:
+        question_text = _clean_str(" ".join(clauses[intake_start_idx:]))
+
+    question_text = _normalize_extracted_question_text(question_text)
     if not question_text:
         return None
 
@@ -1240,7 +1295,7 @@ def _build_voice_intake_resume_from_notes(
 
     existing_turns = (existing_resume or {}).get("completed_turns") or []
     normalized_incoming_notes = _normalize_voice_notes(voice_notes, transcript)
-    source_turns = new_turns if normalized_incoming_notes else existing_turns
+    source_turns = _merge_completed_turns(existing_turns, new_turns) if existing_turns else list(new_turns)
     completed_turns = [
         {
             "question": _clean_str(turn.get("question")),
@@ -1285,6 +1340,10 @@ def _build_voice_intake_resume_from_notes(
         current_question = existing_current_q
     if not current_question and answered_question and next_question and not _question_in_completed_turns(next_question, completed_turns):
         current_question = next_question
+    promoted_current = _choose_active_current_question(current_question or "", next_question or "")
+    if promoted_current and promoted_current != current_question:
+        current_question = promoted_current
+        next_question = ""
     if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
         next_question = ""
 
@@ -1370,6 +1429,111 @@ async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
             {"rd": json.dumps(raw_data), "cid": candidate_id},
         )
         await db.commit()
+
+
+def _voice_intake_resume_to_voice_notes(
+    resume: dict,
+    candidate_answer: str = "",
+) -> list[dict]:
+    """Reconstruct voice notes from a persisted resume plus an optional current answer."""
+    notes: list[dict] = []
+    for turn in resume.get("completed_turns") or []:
+        question = _clean_str(turn.get("question"))
+        answer = _clean_str(turn.get("answer"))
+        if not question:
+            continue
+        notes.append({"role": "assistant", "text": question, "final": True})
+        if answer:
+            notes.append({"role": "user", "text": answer, "final": True})
+
+    current_question = _clean_str(resume.get("current_question"))
+    candidate_answer = _clean_str(candidate_answer)
+    if current_question and candidate_answer:
+        notes.append({"role": "assistant", "text": current_question, "final": True})
+        notes.append({"role": "user", "text": candidate_answer, "final": True})
+    return notes
+
+
+async def _advance_voice_intake_from_chat(
+    candidate_id: str,
+    candidate_message: str,
+) -> Optional[dict]:
+    """
+    Advance persisted Voice Intake state when a chat message answers the active question.
+
+    This reuses the same voice-intake parsing and resume builder as the VAPI flow.
+    """
+    candidate = await _get_candidate_row(candidate_id)
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+    existing_resume = _parse_raw_data(raw_data.get("voice_intake"))
+    if not existing_resume:
+        return None
+
+    current_question = _clean_str(existing_resume.get("current_question"))
+    if not current_question:
+        return None
+
+    completed_turns = existing_resume.get("completed_turns") or []
+    if any(_clean_str(turn.get("question")) == current_question for turn in completed_turns):
+        return None
+
+    candidate_answer = _clean_str(candidate_message)
+    if not candidate_answer:
+        return None
+
+    latest_completed_answer = _clean_str(existing_resume.get("latest_completed_answer"))
+    latest_completed_question = _clean_str(existing_resume.get("latest_completed_question"))
+    if (
+        latest_completed_answer
+        and candidate_answer == latest_completed_answer
+        and latest_completed_question
+        and latest_completed_question != current_question
+    ):
+        return None
+
+    if _is_brief_user_acknowledgement(candidate_answer):
+        return None
+    if _is_clarification_request(candidate_answer):
+        return None
+    if _candidate_fragment_is_off_topic(current_question, candidate_answer):
+        return None
+
+    merged_turns = [dict(t) for t in completed_turns if _clean_str(t.get("question"))]
+    if any(
+        _clean_str(turn.get("question")) == current_question
+        and _clean_str(turn.get("answer")) == candidate_answer
+        for turn in merged_turns
+    ):
+        return None
+    merged_turns.append({"question": current_question, "answer": candidate_answer})
+
+    staged_resume = dict(existing_resume)
+    staged_resume["completed_turns"] = merged_turns
+    staged_resume["current_question"] = current_question
+    staged_resume["progress"] = len(merged_turns)
+    staged_resume["status"] = str(existing_resume.get("status") or "in_progress").lower()
+
+    llm_analysis = await _llm_analyze_intake(
+        candidate,
+        merged_turns,
+        None,
+    )
+    if not llm_analysis or not llm_analysis.get("current_question_answered"):
+        return None
+
+    updated_resume = _build_voice_intake_resume_from_notes(
+        [],
+        "",
+        staged_resume,
+        candidate_profile=candidate,
+        llm_analysis=llm_analysis,
+    )
+
+    if updated_resume == existing_resume:
+        return None
+
+    await _save_voice_intake_resume(candidate_id, updated_resume)
+    return updated_resume
 
 
 async def _get_candidate_row(candidate_id: str) -> dict:
@@ -2753,6 +2917,12 @@ async def chat(request: ChatRequest):
         except Exception as e:
             logger.warning("Profile update failed: %s", e)
             profile_updates = None
+
+    if request.candidate_id:
+        try:
+            await _advance_voice_intake_from_chat(request.candidate_id, last_user.content)
+        except Exception as e:
+            logger.warning("Chat voice intake advance failed: %s", e)
 
     return ChatResponse(
         reply=clean_reply,
