@@ -215,12 +215,18 @@ VOICE_INTAKE_TOTAL_QUESTIONS = len(VOICE_INTAKE_TOPICS)
 _SETUP_QUESTION_PATTERNS = (
     r"^how are you",
     r"^how(?:'re| are) you doing",
+    r"^how is your day going",
+    r"^how'?s your day going",
+    r"^what are you doing today",
+    r"^what are you up to today",
     r"^are you ready",
+    r"^are you there",
     r"^(?:hi|hello|hey)[,!]?",
     r"^(?:good (?:morning|afternoon|evening))[,!]?",
     r"^(?:nice to meet you|great to meet you)",
     r"^(?:shall we (?:get started|begin|start))",
     r"^(?:ready to (?:get started|begin|start))",
+    r"^(?:can you hear me)",
 )
 
 # Candidate phrases that are clarification requests, not real answers.
@@ -262,6 +268,25 @@ _USER_ACK_PREFIXES = (
     "sure", "absolutely", "okay", "ok", "of course", "sounds good",
 )
 
+_USER_ACK_EXACT = frozenset({
+    "doing good",
+    "doing good what about you",
+    "i'm good",
+    "im good",
+    "i am good",
+    "i'm fine",
+    "im fine",
+    "fine",
+    "good",
+    "hello",
+    "hi",
+    "hey",
+    "yes",
+    "yes i'm ready",
+    "yes im ready",
+    "yes ready",
+})
+
 
 def _is_acknowledgement(text: str) -> bool:
     """Return True when an assistant turn is a short acknowledgement, not a real question."""
@@ -283,6 +308,8 @@ def _is_brief_user_acknowledgement(text: str) -> bool:
         return False
     if len(t) > 40:
         return False
+    if t in _USER_ACK_EXACT:
+        return True
     return any(t == p or t.startswith(f"{p} ") for p in _USER_ACK_PREFIXES)
 
 
@@ -310,6 +337,35 @@ _INTAKE_STATEMENT_PATTERNS = (
     r"\bdescribe your (?:background|experience|skills)\b",
     r"\bwalk me through your (?:background|experience|career)\b",
     r"\bshare (?:your|a bit about your) background\b",
+)
+
+_INTAKE_QUESTION_PATTERNS = (
+    r"\bopportunit(?:y|ies)\b",
+    r"\brole(?:s)?\b",
+    r"\bjob(?:s)?\b",
+    r"\bcareer(?:s)?\b",
+    r"\bbackground\b",
+    r"\bexperience\b",
+    r"\bskill(?:s)?\b",
+    r"\btechnolog(?:y|ies)\b",
+    r"\bframework(?:s)?\b",
+    r"\bproject(?:s)?\b",
+    r"\bteam\b",
+    r"\benvironment(?:s)?\b",
+    r"\bresponsibilit(?:y|ies)\b",
+    r"\bindustr(?:y|ies)\b",
+    r"\blocation\b",
+    r"\bremote\b",
+    r"\bonsite\b",
+    r"\beducation\b",
+    r"\bdegree\b",
+    r"\bcertification(?:s)?\b",
+    r"\bavailability\b",
+    r"\bnotice period\b",
+    r"\bsalary\b",
+    r"\bcompensation\b",
+    r"\bcurrent (?:role|job|company)\b",
+    r"\bnext (?:role|job|opportunity|move)\b",
 )
 
 _QUESTION_START_PATTERN = re.compile(
@@ -346,10 +402,12 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     question_text = question_clause[: question_clause.rfind("?") + 1]
     matches = list(_QUESTION_START_PATTERN.finditer(question_text))
     if matches:
-        question_text = question_text[matches[-1].start():]
+        first_match = matches[0]
+        prefix = question_text[: first_match.start()].strip(" ,.-")
+        prefix_word_count = len(re.findall(r"[a-zA-Z]+", prefix))
+        if first_match.start() > 0 and prefix_word_count <= 5:
+            question_text = question_text[first_match.start():]
 
-    # Collapse fragment separators while preserving the actual words.
-    question_text = re.sub(r"[.,;:]+", " ", question_text)
     question_text = re.sub(r"\b(?:um|uh|er|ah)\b", " ", question_text, flags=re.IGNORECASE)
     question_text = re.sub(r"\s+", " ", question_text).strip(" ,.-")
     if not question_text:
@@ -366,7 +424,21 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
         return None
     if _is_acknowledgement(question_text):
         return None
+    if not _is_intake_question(question_text):
+        return None
     return question_text
+
+
+def _is_intake_question(text: str) -> bool:
+    """Return True when an assistant question is genuinely asking for career/profile information."""
+    cleaned = _clean_str(text)
+    if not cleaned:
+        return False
+
+    lowered = cleaned.lower()
+    if any(re.search(pattern, lowered) for pattern in _INTAKE_STATEMENT_PATTERNS):
+        return True
+    return any(re.search(pattern, lowered) for pattern in _INTAKE_QUESTION_PATTERNS)
 
 
 def _questions_are_rephrasing(q1: str, q2: str) -> bool:
@@ -607,11 +679,9 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
                 answer_parts = []
             pending_question = detected_q
         else:
-            # Non-question, non-acknowledgement assistant turn (setup chatter, statement)
-            # Only flush+reset if we have no accumulated answer yet; otherwise keep
-            # the pending question open (Eve may be giving context before re-asking)
-            if not answer_parts:
-                pending_question = None
+            # Non-question assistant chatter should not disturb the active intake
+            # question. This includes setup/greeting context and profile statements.
+            pass
 
     for note in _normalize_voice_notes(voice_notes, transcript):
         role = note.get("role")

@@ -2022,3 +2022,59 @@ class TestExactProductionCumulativeReconstruction:
 
         assert resumed["current_question"] == self.Q3
         assert resumed["status"] == "in_progress"
+
+
+class TestExactProductionGreetingLeakRegression:
+    """
+    Exact regression for the production bug where setup/greeting chatter was
+    incorrectly counted as an intake turn and leaked into the first real answer.
+    """
+
+    Q1 = "What made you start exploring your next opportunity?"
+    Q2 = "What would make your next role a really good fit beyond the technologies you mentioned?"
+    Q3 = "Besides technology, are there particular responsibilities or work environments you prefer in your next role?"
+
+    PRODUCTION_NOTES = [
+        {"role": "assistant", "text": "Hi Suram, I'm Eve. How are you doing today?", "final": True},
+        {"role": "user", "text": "Doing good. What about you?", "final": True},
+        {"role": "assistant", "text": "Great. Are you ready?", "final": True},
+        {"role": "user", "text": "Yes, I'm ready.", "final": True},
+        {"role": "assistant", "text": Q1, "final": True},
+        {"role": "user", "text": "I'm a Python backend developer with experience in Java and Spring Boot.", "final": True},
+        {"role": "user", "text": "I've worked with Hibernate and Kubernetes on backend services.", "final": True},
+        {"role": "assistant", "text": Q2, "final": True},
+        {"role": "user", "text": "I want my next role to keep me growing in Java backend work.", "final": True},
+        {"role": "user", "text": "I am looking for a role where I can build useful backend systems.", "final": True},
+        {"role": "assistant", "text": Q3, "final": True},
+    ]
+
+    def test_unit_progress_equals_2_and_setup_turn_is_excluded(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes
+
+        resume = _build_voice_intake_resume_from_notes(self.PRODUCTION_NOTES, "")
+
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 2
+        turns = resume.get("completed_turns") or []
+        assert len(turns) == 2, f"Expected 2 completed turns, got {len(turns)}: {turns}"
+
+        assert turns[0]["question"] == self.Q1
+        assert turns[1]["question"] == self.Q2
+
+        first_answer = turns[0]["answer"]
+        assert "Doing good" not in first_answer
+        assert "Yes, I'm ready" not in first_answer
+        assert "Python backend developer" in first_answer
+        assert "Java" in first_answer
+        assert "Spring Boot" in first_answer
+        assert "Hibernate" in first_answer
+        assert "Kubernetes" in first_answer
+
+        second_answer = turns[1]["answer"]
+        assert "Java backend work" in second_answer or "Java" in second_answer
+        assert "growing" in second_answer.lower()
+
+        assert resume["current_question"] == self.Q3
+        assert resume.get("next_question") in (None, "")
