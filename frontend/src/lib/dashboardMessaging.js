@@ -17,3 +17,24 @@ export function buildDashboardEveGreeting({
         hasResume ? "" : " Feel free to share any details you'd like to add."
       } What would you like to work on?`;
 }
+
+export function buildDashboardEveGreetingFromProfile({
+  firstName,
+  profileComplete,
+  hasResume,
+  voiceIntakeResume,
+}) {
+  const currentQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
+  const voiceIntakeInProgress =
+    voiceIntakeResume?.status === "in_progress" &&
+    Boolean(voiceIntakeResume?.has_open_question) &&
+    Boolean(currentQuestion);
+
+  return buildDashboardEveGreeting({
+    firstName,
+    profileComplete,
+    hasResume,
+    voiceIntakeInProgress,
+    voiceIntakeResumeQuestion: currentQuestion,
+  });
+}

@@ -13,7 +13,7 @@ import {
   QUICK_ACTIONS,
 } from "../mock";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
-import { buildDashboardEveGreeting } from "../lib/dashboardMessaging";
+import { buildDashboardEveGreetingFromProfile } from "../lib/dashboardMessaging";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 
@@ -119,8 +119,11 @@ function Dashboard() {
     applyStrength(buildFallbackProfile(isOpenToMatches), voiceCompleted)
   );
   const voiceIntakeResume = userProfile.voice_intake_resume;
-  const voiceIntakeInProgress = !voiceCompleted && voiceIntakeResume?.status === "in_progress";
   const voiceIntakeResumeQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
+  const voiceIntakeInProgress =
+    voiceIntakeResume?.status === "in_progress" &&
+    Boolean(voiceIntakeResume?.has_open_question) &&
+    Boolean(voiceIntakeResumeQuestion);
 
   // All state declarations up front so effects can reference them
   const [chats, setChats] = React.useState([
@@ -267,12 +270,11 @@ function Dashboard() {
     const firstName = userProfile.name?.split(" ")[0];
     const hasResume = documents?.resume != null;
     const profileComplete = userProfile.headline && userProfile.keySkills?.length > 0;
-    const greeting = buildDashboardEveGreeting({
+    const greeting = buildDashboardEveGreetingFromProfile({
       firstName,
       profileComplete,
       hasResume,
-      voiceIntakeInProgress,
-      voiceIntakeResumeQuestion,
+      voiceIntakeResume,
     });
     if (!greeting) return;
     setChats((prev) =>
