@@ -1341,7 +1341,6 @@ def _build_voice_intake_resume_from_notes(
     if existing_status == "completed":
         return existing_resume  # type: ignore[return-value]
 
-    status = "completed" if is_completed else "in_progress"
     current_question = pending_question
     if not current_question and existing_current_q and not answered_question:
         current_question = existing_current_q
@@ -1351,8 +1350,15 @@ def _build_voice_intake_resume_from_notes(
     if promoted_current and promoted_current != current_question:
         current_question = promoted_current
         next_question = ""
-    if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
+    if llm_analysis and current_question and next_question and _questions_are_rephrasing(current_question, next_question):
         next_question = ""
+    if not is_completed and completed_turns and not current_question and not next_question and not pending_question:
+        # If the state machine has no active question left, normalize any stale
+        # persisted in_progress snapshot into the completed form.
+        is_completed = True
+        missing_topics = []
+
+    status = "completed" if is_completed else "in_progress"
     if is_completed:
         current_question = None
         next_question = None
@@ -1429,14 +1435,21 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
 
 
 async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
-    existing = await _get_candidate_row(candidate_id)
-    raw_data = _parse_raw_data(existing.get("raw_data"))
-    raw_data["voice_intake"] = dict(resume)
-
     async with SessionLocal() as db:
         await db.execute(
-            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now(), updated_by_source = 'eve_voice' WHERE id = :cid"),
-            {"rd": json.dumps(raw_data), "cid": candidate_id},
+            text("""
+                UPDATE candidates
+                SET raw_data = jsonb_set(
+                        COALESCE(raw_data, '{}'::jsonb),
+                        '{voice_intake}',
+                        CAST(:voice_intake AS jsonb),
+                        true
+                    ),
+                    updated_at = now(),
+                    updated_by_source = 'eve_voice'
+                WHERE id = :cid
+            """),
+            {"voice_intake": json.dumps(resume), "cid": candidate_id},
         )
         await db.commit()
 
@@ -1481,6 +1494,18 @@ async def _advance_voice_intake_from_chat(
 
     current_question = _clean_str(existing_resume.get("current_question"))
     if not current_question:
+        if str(existing_resume.get("status") or "").lower() == "completed":
+            return None
+        if not existing_resume.get("has_open_question"):
+            updated_resume = _build_voice_intake_resume_from_notes(
+                [],
+                "",
+                existing_resume,
+                candidate_profile=candidate,
+            )
+            if updated_resume != existing_resume:
+                await _save_voice_intake_resume(candidate_id, updated_resume)
+                return updated_resume
         return None
 
     completed_turns = existing_resume.get("completed_turns") or []

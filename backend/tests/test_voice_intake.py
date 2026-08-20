@@ -2442,7 +2442,7 @@ class TestChatProfileUpdatePersistenceRegression:
                     if state["prefs"] is None:
                         return FakeResult([])
                     return FakeResult([state["prefs"]])
-                if "UPDATE candidates SET" in sql:
+                if "UPDATE candidates" in sql:
                     if "skills" in params:
                         state["candidate"]["skills"] = json.loads(params["skills"])
                     if "work_experience" in params:
@@ -2461,6 +2461,9 @@ class TestChatProfileUpdatePersistenceRegression:
                         state["candidate"]["raw_data"] = json.loads(params["raw_data"])
                     if "rd" in params:
                         state["candidate"]["raw_data"] = json.loads(params["rd"])
+                    if "voice_intake" in params:
+                        state["candidate"].setdefault("raw_data", {})
+                        state["candidate"]["raw_data"]["voice_intake"] = json.loads(params["voice_intake"])
                     return FakeResult()
                 if "INSERT INTO candidate_preferences" in sql:
                     state["prefs"] = {
@@ -2839,7 +2842,7 @@ class TestChatVoiceIntakeStateAdvance:
                     if state["prefs"] is None:
                         return FakeResult([])
                     return FakeResult([state["prefs"]])
-                if "UPDATE candidates SET" in sql:
+                if "UPDATE candidates" in sql:
                     if "skills" in params:
                         state["candidate"]["skills"] = json.loads(params["skills"])
                     if "work_experience" in params:
@@ -2858,6 +2861,9 @@ class TestChatVoiceIntakeStateAdvance:
                         state["candidate"]["raw_data"] = json.loads(params["raw_data"])
                     if "rd" in params:
                         state["candidate"]["raw_data"] = json.loads(params["rd"])
+                    if "voice_intake" in params:
+                        state["candidate"].setdefault("raw_data", {})
+                        state["candidate"]["raw_data"]["voice_intake"] = json.loads(params["voice_intake"])
                     return FakeResult()
                 if "INSERT INTO candidate_preferences" in sql:
                     state["prefs"] = {
@@ -3167,6 +3173,125 @@ class TestChatVoiceIntakeStateAdvance:
         assert voice_intake.get("missing_topics") == []
         assert voice_intake.get("current_question") is None
         assert voice_intake.get("has_open_question") is False
+        turns = voice_intake.get("completed_turns") or []
+        assert len(turns) == 6
+        assert turns[-1]["question"] == final_question
+
+    def test_chat_stale_final_state_is_persisted_as_completed(self, monkeypatch):
+        import sys, os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        final_question = "Can you describe a recent backend project you worked on and what your specific responsibilities were?"
+        state = {
+            "candidate": {
+                "id": "candidate-chat-final-stale",
+                "name": "Candidate",
+                "email": "candidate@example.com",
+                "phone": "",
+                "raw_data": {
+                    "voice_intake": {
+                        "status": "in_progress",
+                        "progress": 6,
+                        "current_question": None,
+                        "has_open_question": False,
+                        "missing_topics": ["responsibilities_projects"],
+                        "known_topics": [
+                            "background_experience",
+                            "skills_technologies",
+                            "target_role",
+                            "career_preferences",
+                            "responsibilities_projects",
+                            "education_certifications",
+                            "availability_location",
+                        ],
+                        "completed_turns": [
+                            {
+                                "question": "What made you start exploring your next opportunity?",
+                                "answer": "I wanted a stronger backend role.",
+                            },
+                            {
+                                "question": "What are your key skills?",
+                                "answer": "Java, Spring Boot, Hibernate, REST APIs.",
+                            },
+                            {
+                                "question": "What kind of backend role are you targeting next?",
+                                "answer": "A backend developer role focused on APIs.",
+                            },
+                            {
+                                "question": "What kind of team or work environment helps you do your best work in your next role?",
+                                "answer": "A collaborative product team.",
+                            },
+                            {
+                                "question": "What would make your next role a really good fit beyond the technologies you mentioned?",
+                                "answer": "Having ownership and room to grow.",
+                            },
+                            {
+                                "question": final_question,
+                                "answer": "I recently built a backend service for order processing and handled API design, database work, and deployment.",
+                            },
+                        ],
+                    }
+                },
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "current_company": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks for sharing.",
+            profile_updates=None,
+            llm_analysis={
+                "known_topics": [
+                    "background_experience",
+                    "skills_technologies",
+                    "target_role",
+                    "career_preferences",
+                    "responsibilities_projects",
+                    "education_certifications",
+                    "availability_location",
+                ],
+                "missing_topics": [],
+                "current_question_answered": True,
+                "next_question": None,
+                "completed": True,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[server.ChatMessageIn(role="user", content="I recently built a backend service for order processing and handled API design, database work, and deployment.")],
+            session_id="session-chat-final-stale",
+            candidate_id="candidate-chat-final-stale",
+        )
+
+        response = asyncio.run(server.chat(request))
+        assert response.reply == "Thanks for sharing."
+
+        voice_intake = state["candidate"]["raw_data"]["voice_intake"]
+        assert voice_intake["status"] == "completed"
+        assert voice_intake["progress"] == 6
+        assert voice_intake.get("missing_topics") == []
+        assert voice_intake.get("current_question") is None
+        assert voice_intake.get("has_open_question") is False
+        assert voice_intake.get("known_topics") == [
+            "background_experience",
+            "skills_technologies",
+            "target_role",
+            "career_preferences",
+            "responsibilities_projects",
+            "education_certifications",
+            "availability_location",
+        ]
         turns = voice_intake.get("completed_turns") or []
         assert len(turns) == 6
         assert turns[-1]["question"] == final_question
