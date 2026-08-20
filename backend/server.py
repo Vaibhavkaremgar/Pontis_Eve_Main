@@ -217,6 +217,53 @@ def _has_list_items(value: Any) -> bool:
     return False
 
 
+def _prefer_canonical_value(primary: Any, fallback: Any) -> Any:
+    """Keep canonical profile data when present; only fall back to older resume JSON."""
+    if _has_text(primary) or _has_list_items(primary):
+        return primary
+    if isinstance(primary, (int, float)) and primary is not None:
+        return primary
+    if primary is not None and primary != "":
+        return primary
+    return fallback
+
+
+def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = None) -> dict:
+    """
+    Build the profile view used for strength scoring.
+
+    Canonical DB columns win over parsed_resume_json so stale resume snapshots
+    cannot override richer profile data already stored in the candidate row.
+    """
+    raw = raw_data if isinstance(raw_data, dict) else _parse_raw_data(profile.get("raw_data"))
+    parsed_resume = _parse_raw_data(profile.get("parsed_resume_json"))
+
+    strength_profile = dict(profile)
+    strength_profile["raw_data"] = raw
+
+    fallback_map = {
+        "name": parsed_resume.get("name"),
+        "email": parsed_resume.get("email"),
+        "phone": parsed_resume.get("phone"),
+        "location": parsed_resume.get("location"),
+        "headline": parsed_resume.get("headline"),
+        "current_role": parsed_resume.get("current_role") or parsed_resume.get("headline"),
+        "current_company": parsed_resume.get("current_company"),
+        "summary": parsed_resume.get("summary") or parsed_resume.get("bio"),
+        "experience_years": parsed_resume.get("experience_years"),
+        "skills": parsed_resume.get("skills"),
+        "work_experience": parsed_resume.get("work_experience"),
+        "education": parsed_resume.get("education"),
+        "certifications": parsed_resume.get("certifications"),
+        "photo_url": parsed_resume.get("photo_url"),
+    }
+
+    for field, fallback in fallback_map.items():
+        strength_profile[field] = _prefer_canonical_value(strength_profile.get(field), fallback)
+
+    return strength_profile
+
+
 def _has_work_experience(value: Any) -> bool:
     if not isinstance(value, list):
         return False
@@ -358,29 +405,30 @@ def _profile_strength_weights(profile: dict, raw_data: dict) -> dict[str, int]:
 
 
 def _calculate_profile_strength(profile: dict, raw_data: Optional[dict] = None) -> tuple[int, str]:
-    raw = raw_data if isinstance(raw_data, dict) else _parse_raw_data(profile.get("raw_data"))
-    weights = _profile_strength_weights(profile, raw)
+    strength_profile = _build_profile_strength_source(profile, raw_data)
+    raw = strength_profile.get("raw_data") or {}
+    weights = _profile_strength_weights(strength_profile, raw)
 
     score = 0
-    if _has_text(profile.get("name")):
+    if _has_text(strength_profile.get("name")):
         score += weights["name"]
-    if _has_text(profile.get("email")):
+    if _has_text(strength_profile.get("email")):
         score += weights["email"]
-    if _has_photo(profile, raw):
+    if _has_photo(strength_profile, raw):
         score += weights["photo"]
-    if _has_work_experience(profile.get("work_experience") or profile.get("experience")):
+    if _has_work_experience(strength_profile.get("work_experience") or strength_profile.get("experience")):
         score += weights["work_experience"]
-    if _has_list_items(profile.get("skills") or profile.get("keySkills")):
+    if _has_list_items(strength_profile.get("skills") or strength_profile.get("keySkills")):
         score += weights["skills"]
-    if _has_target_role(profile, raw):
+    if _has_target_role(strength_profile, raw):
         score += weights["target_role"]
-    if _has_projects(profile, raw):
+    if _has_projects(strength_profile, raw):
         score += weights["projects"]
-    if _has_list_items(profile.get("education")):
+    if _has_list_items(strength_profile.get("education")):
         score += weights["education"]
-    if _has_list_items(profile.get("certifications") or raw.get("certifications")):
+    if _has_list_items(strength_profile.get("certifications") or raw.get("certifications")):
         score += weights["certifications"]
-    if _has_preferences(profile, raw):
+    if _has_preferences(strength_profile, raw):
         score += weights["preferences"]
 
     percent = min(score, 100)

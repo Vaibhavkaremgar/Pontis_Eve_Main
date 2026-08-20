@@ -136,6 +136,64 @@ def test_voice_intake_additions_increase_score_without_double_counting():
     assert label == "Strong"
 
 
+def test_saving_voice_intake_cannot_reduce_score_when_canonical_profile_is_unchanged():
+    profile = _base_profile()
+    profile.update(
+        {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "photo_url": "/api/candidate/test/photo/view",
+            "location": "Remote",
+            "current_role": "Senior Backend Engineer",
+            "skills": ["Python", "FastAPI", "PostgreSQL"],
+            "work_experience": [
+                {"title": "Lead Engineer", "company": "Acme", "description": "Led platform work"}
+            ],
+            "education": [{"degree": "B.Tech", "institution": "Example University"}],
+            "certifications": ["AWS Certified Solutions Architect"],
+            "raw_data": {
+                "availability": "Immediate",
+                "location_preferences": ["Remote", "Hybrid"],
+                "preferred_roles": ["Senior Backend Engineer"],
+            },
+            # Stale resume JSON should never override stronger canonical DB fields.
+            "parsed_resume_json": {
+                "name": "Jane Doe",
+                "skills": ["Python"],
+                "work_experience": [],
+                "education": [],
+                "certifications": [],
+            },
+        }
+    )
+
+    before_percent, before_label = _calculate_profile_strength(profile, profile["raw_data"])
+    assert before_percent == 85
+    assert before_label == "Strong"
+
+    saved_voice_profile = dict(profile)
+    saved_voice_profile["raw_data"] = {
+        **profile["raw_data"],
+        "voice_intake": {
+            "status": "in_progress",
+            "completed_turns": [
+                {
+                    "question": "What kinds of projects have you worked on recently?",
+                    "answer": "I built a candidate dashboard and reporting workflow.",
+                }
+            ],
+        },
+    }
+
+    after_percent, after_label = _calculate_profile_strength(
+        saved_voice_profile,
+        saved_voice_profile["raw_data"],
+    )
+
+    assert after_percent >= before_percent
+    assert after_label == "Strong"
+
+
 def test_fully_completed_profile_scores_hundred():
     profile = _base_profile()
     profile.update(
