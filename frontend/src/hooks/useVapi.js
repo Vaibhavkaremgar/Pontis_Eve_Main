@@ -49,7 +49,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
         const updated = [...prev.slice(0, -1), { role, text, final: isFinal }];
         return updated;
       }
-      return [...prev, { role, text, final: isFinal }];
+      return [...prev, { role, text, final: isFinal }];   
     });
   }, []);
 

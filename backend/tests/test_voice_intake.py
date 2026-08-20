@@ -1928,3 +1928,97 @@ class TestVoiceIntakeStatePersistenceFix:
         assert "backend developer" in answer
         assert "Java" in answer
         assert "Spring Boot" in answer
+class TestExactProductionCumulativeReconstruction:
+    """
+    Regression coverage for the exact production-style cumulative transcript
+    described in the bug report.
+    """
+
+    Q1 = "What made you start exploring your next opportunity?"
+    Q2 = "What would make a backend developer role with Java really good fit for you compared to your current Python developer role?"
+    Q3 = "I see are there specific kinds of projects or industries you'd like to work in with Java Backend development?"
+    Q4 = "What kind of team or work environment helps you do your best work in your next role?"
+
+    CUMULATIVE_NOTES = [
+        {
+            "role": "assistant",
+            "text": "Cool. Let's do it together. I can already see your recent experience as seeking a challenging career where I can utilize my potential and skills. What made you start exploring your next opportunity?",
+            "final": True,
+        },
+        {"role": "user", "text": "Currently I was working as a Python developer.", "final": True},
+        {"role": "user", "text": "I was looking for backend developer roles.", "final": True},
+        {
+            "role": "assistant",
+            "text": "What would make a backend developer role with Java really good fit for you compared to your current Python developer role?",
+            "final": True,
+        },
+        {"role": "user", "text": "See, I want to explore jobs related to Java.", "final": True},
+        {
+            "role": "assistant",
+            "text": "I see are there specific kinds of projects or industries you'd like to work in with Java Backend development?",
+            "final": True,
+        },
+        {"role": "user", "text": "Can you reframe the question?", "final": True},
+    ]
+
+    ANSWERED_NOTES = CUMULATIVE_NOTES + [
+        {"role": "user", "text": "I would like to work on Java backend projects in product companies.", "final": True},
+        {"role": "assistant", "text": Q4, "final": True},
+    ]
+
+    def _build_resume(self, notes=None, existing_resume=None):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes
+
+        return _build_voice_intake_resume_from_notes(notes or self.CUMULATIVE_NOTES, "", existing_resume)
+
+    def test_A_same_cumulative_voice_notes_twice_is_idempotent(self):
+        first = self._build_resume()
+        second = self._build_resume(existing_resume=first)
+
+        assert second["progress"] == first["progress"]
+        assert second["completed_turns"] == first["completed_turns"]
+        assert len(second.get("completed_turns") or []) == len({t["question"] for t in second.get("completed_turns") or []})
+
+    def test_B_q1_question_is_isolated_from_contextual_statement(self):
+        resume = self._build_resume()
+        turns = resume.get("completed_turns") or []
+        assert turns[0]["question"] == self.Q1
+        assert "where i can utilize my potential and skills" not in turns[0]["question"].lower()
+
+    def test_C_q1_answer_appears_exactly_once(self):
+        first = self._build_resume()
+        second = self._build_resume(existing_resume=first)
+
+        answer = second["completed_turns"][0]["answer"]
+        assert answer.count("Currently I was working as a Python developer.") == 1
+        assert answer.count("I was looking for backend developer roles.") == 1
+
+    def test_D_reframe_request_does_not_increment_progress(self):
+        before = self._build_resume(self.CUMULATIVE_NOTES[:-1])
+        after = self._build_resume()
+
+        assert before["progress"] == after["progress"]
+        assert after["progress"] == 2
+
+    def test_E_current_unanswered_question_remains_current_question(self):
+        resume = self._build_resume()
+        assert resume["current_question"] == self.Q3
+        assert resume["current_question"] not in [turn["question"] for turn in resume.get("completed_turns") or []]
+
+    def test_F_answering_current_question_moves_to_next_question(self):
+        resume = self._build_resume(self.ANSWERED_NOTES)
+        questions = [turn["question"] for turn in resume.get("completed_turns") or []]
+
+        assert self.Q3 in questions
+        assert questions.count(self.Q3) == 1
+        assert resume["current_question"] == self.Q4
+        assert resume["progress"] == 3
+
+    def test_G_dashboard_resume_should_preserve_unanswered_question(self):
+        base = self._build_resume()
+        resumed = self._build_resume(existing_resume=base)
+
+        assert resumed["current_question"] == self.Q3
+        assert resumed["status"] == "in_progress"

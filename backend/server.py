@@ -331,20 +331,22 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     if not cleaned:
         return None
 
-    # Check statement-form intake prompts (e.g. "Tell me about your background.")
     clauses = [c.strip() for c in re.split(r"(?<=[?.!])\s+", cleaned) if c.strip()]
+
+    # Check statement-form intake prompts (e.g. "Tell me about your background.")
     for clause in reversed(clauses):
         lowered = clause.lower().rstrip(" .!?")
         if any(re.search(p, lowered) for p in _INTAKE_STATEMENT_PATTERNS):
             return clause
 
-    if "?" not in cleaned:
+    question_clause = next((clause for clause in reversed(clauses) if "?" in clause), "")
+    if not question_clause:
         return None
 
-    question_text = cleaned[: cleaned.rfind("?") + 1]
-    match = _QUESTION_START_PATTERN.search(question_text)
-    if match:
-        question_text = question_text[match.start():]
+    question_text = question_clause[: question_clause.rfind("?") + 1]
+    matches = list(_QUESTION_START_PATTERN.finditer(question_text))
+    if matches:
+        question_text = question_text[matches[-1].start():]
 
     # Collapse fragment separators while preserving the actual words.
     question_text = re.sub(r"[.,;:]+", " ", question_text)
@@ -884,9 +886,17 @@ def _build_voice_intake_resume_from_notes(
     """
     new_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
 
-    # Merge with any previously persisted turns so we never lose history
     existing_turns = (existing_resume or {}).get("completed_turns") or []
-    completed_turns = _merge_completed_turns(existing_turns, new_turns)
+    normalized_incoming_notes = _normalize_voice_notes(voice_notes, transcript)
+    source_turns = new_turns if normalized_incoming_notes else existing_turns
+    completed_turns = [
+        {
+            "question": _clean_str(turn.get("question")),
+            "answer": _clean_str(turn.get("answer")),
+        }
+        for turn in source_turns
+        if _clean_str(turn.get("question"))
+    ]
     progress = len(completed_turns)
 
     # Prefer LLM-derived state; fall back to persisted state; fall back to parsed state

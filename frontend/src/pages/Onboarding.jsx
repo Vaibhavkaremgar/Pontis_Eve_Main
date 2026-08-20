@@ -631,20 +631,11 @@ export default function Onboarding() {
       const elapsed = Date.now() - startedAt;
       setVoiceElapsedMs(elapsed);
     }
-    const completed =
-      intakeResult?.status === "completed" || intakeResult?.status === "duplicate";
-    setVoiceIntakeCompleted(completed);
-    // Merge returned profile into parsedProfile so bridge step reflects voice updates
-    if (intakeResult?.profile) {
-      setParsedProfile((prev) => ({
-        ...(prev || {}),
-        ...intakeResult.profile,
-      }));
-    }
+    setVoiceIntakeCompleted(true);
     // If we came from the dashboard (resume_voice flow), go back to dashboard
     if (resumeVoiceParam) {
       const s = loadOnboardingState();
-      saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+      saveOnboardingState({ ...s, voiceIntakeCompleted: true });
       navigate("/dashboard");
     } else {
       setStep(5);
@@ -707,7 +698,7 @@ export default function Onboarding() {
       const url = existingId
         ? `${API}/onboarding/parse-resume?existing_id=${existingId}`
         : `${API}/onboarding/parse-resume`;
-      const res = await axios.post(url, fd, {
+      const res = await axios.post(url, fd, {      
         headers: { "Content-Type": "multipart/form-data" },
       });
       const { candidate_id, ...profile } = res.data;
@@ -730,7 +721,7 @@ export default function Onboarding() {
           });
         }
       }
-      setParsingReady(true);
+        setParsingReady(true);
     } catch (err) {
       console.error("resume parse failed", err);
       const detail =
@@ -817,7 +808,6 @@ export default function Onboarding() {
               firstName={firstName}
               candidateId={candidateId}
               onComplete={finishVoiceIntake}
-              candidateProfile={parsedProfile}
             />
           )}
           {step === 5 && <StepBridge profile={parsedProfile} voiceIntakeCompleted={voiceIntakeCompleted} />}
