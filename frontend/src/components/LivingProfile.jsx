@@ -3,6 +3,7 @@ import axios from "axios";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
 import { JobDetailModal } from "./SwipeJobCard";
+import { normalizeProfileForDisplay } from "../lib/profileNormalization";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -235,7 +236,8 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 }
 
 export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
-  const profileCandidateId = user.candidate_id ?? user.candidateId ?? user.id ?? null;
+  const profile = normalizeProfileForDisplay(user);
+  const profileCandidateId = profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
 
   return (
     <div className="space-y-8" data-testid="living-profile-content">
@@ -243,10 +245,10 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       <div
         data-testid="profile-header-card"
         className={`relative rounded-2xl p-6 border border-black/[0.05] shadow-[0_1px_0_rgba(0,0,0,0.02)] overflow-hidden transition-opacity ${
-          user.isOpenToMatches ? "" : "opacity-60"
+          profile.isOpenToMatches ? "" : "opacity-60"
         }`}
         style={{
-          background: user.isOpenToMatches
+          background: profile.isOpenToMatches
             ? "linear-gradient(180deg, #EFEFED 0%, #F4F4F2 45%, #FAFAF8 100%)"
             : "linear-gradient(180deg, #E8E8E8 0%, #EFEFEF 45%, #F5F5F5 100%)",
         }}
@@ -254,42 +256,42 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
         <div className="flex items-start justify-between gap-5">
           <div className="flex-1 min-w-0">
             <h2 className="text-[19px] font-semibold text-[#1F1F1F] leading-tight tracking-tight">
-              {user.name || "Your Profile"}
+              {profile.name || "Your Profile"}
             </h2>
-            {user.headline && (
+            {profile.headline && (
               <p className="text-[13px] text-[#4A4A48] mt-2 leading-relaxed font-normal">
-                {user.headline}
+                {profile.headline}
               </p>
             )}
             <div className="mt-5 flex items-center gap-3 flex-wrap">
-              {user.location && (
+              {profile.location && (
                 <span className="inline-flex items-center gap-1.5 text-[12px] text-[#4A4A48] font-normal">
                   <MapPin className="w-3.5 h-3.5 text-[#9A9A98]" strokeWidth={1.75} />
-                  {user.location}
+                  {profile.location}
                 </span>
               )}
-              {user.experience_years != null && (
+              {profile.experience_years != null && (
                 <span className="text-[12px] text-[#4A4A48] font-normal">
-                  {user.experience_years} yr{user.experience_years !== 1 ? "s" : ""} exp
+                  {profile.experience_years} yr{profile.experience_years !== 1 ? "s" : ""} exp
                 </span>
               )}
-              <OpenToMatchesBadge isOpen={user.isOpenToMatches} onToggle={onToggleOpenToMatches} />
+              <OpenToMatchesBadge isOpen={profile.isOpenToMatches} onToggle={onToggleOpenToMatches} />
             </div>
-            {user.availability && (
+            {profile.availability && (
               <p className="mt-2 text-[12px] text-[#2E7538] font-normal">
-                Available: {user.availability}
+                Available: {profile.availability}
               </p>
             )}
           </div>
-          <ProfilePhotoUpload user={user} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} />
+          <ProfilePhotoUpload user={profile} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} />
         </div>
       </div>
 
       {/* Bio */}
       <div>
         <SectionLabel>Bio</SectionLabel>
-        {user.bio ? (
-          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{user.bio}</p>
+        {profile.bio ? (
+          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{profile.bio}</p>
         ) : (
           <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
         )}
@@ -299,17 +301,17 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       <div>
         <div className="flex items-center justify-between mb-3">
           <SectionLabel>
-            {user.name ? `Where ${user.name.split(" ")[0]} has worked` : "Experience"}
+            {profile.name ? `Where ${profile.name.split(" ")[0]} has worked` : "Experience"}
           </SectionLabel>
-          {user.experience?.length > 0 && (
+          {profile.experience?.length > 0 && (
             <button className="text-[11.5px] text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2 font-normal">
               See all experiences
             </button>
           )}
         </div>
-        {user.experience?.length > 0 ? (
+        {profile.experience?.length > 0 ? (
           <div className="space-y-1">
-            {user.experience.map((exp) => (
+            {profile.experience.map((exp) => (
               <ExperienceRow key={exp.id} exp={exp} />
             ))}
           </div>
@@ -321,9 +323,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       {/* Education */}
       <div>
         <SectionLabel>Education</SectionLabel>
-        {user.education?.length > 0 ? (
+        {profile.education?.length > 0 ? (
           <div className="space-y-1">
-            {user.education.map((edu) => (
+            {profile.education.map((edu) => (
               <EducationRow key={edu.id} edu={edu} />
             ))}
           </div>
@@ -335,9 +337,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       {/* Skills */}
       <div>
         <SectionLabel>Verified skills</SectionLabel>
-        {user.keySkills?.length > 0 ? (
+        {profile.keySkills?.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
-            {user.keySkills.map((sk) => (
+            {profile.keySkills.map((sk) => (
               <span key={sk} className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full font-normal">
                 {sk}
               </span>
@@ -349,11 +351,11 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       </div>
 
       {/* Preferred roles */}
-      {user.preferred_roles?.length > 0 && (
+      {profile.preferred_roles?.length > 0 && (
         <div>
           <SectionLabel>Preferred roles</SectionLabel>
           <div className="flex flex-wrap gap-1.5">
-            {user.preferred_roles.map((r) => (
+            {profile.preferred_roles.map((r) => (
               <span key={r} className="bg-[#E7E3F0] text-[#7B6FB8] text-[12px] px-2.5 py-1 rounded-full font-normal">
                 {r}
               </span>
@@ -363,11 +365,11 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       )}
 
       {/* Certifications */}
-      {user.certifications?.length > 0 && (
+      {profile.certifications?.length > 0 && (
         <div>
           <SectionLabel>Certifications</SectionLabel>
           <div className="flex flex-wrap gap-1.5">
-            {user.certifications.map((c) => (
+            {profile.certifications.map((c) => (
               <span key={c} className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full font-normal">
                 {c}
               </span>
@@ -377,10 +379,10 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       )}
 
       {/* Additional information */}
-      {user.additional_information && (
+      {profile.additional_information && (
         <div>
           <SectionLabel>Additional information</SectionLabel>
-          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{user.additional_information}</p>
+          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{profile.additional_information}</p>
         </div>
       )}
     </div>

@@ -1,6 +1,88 @@
 import json
 from typing import Any, Dict
 
+import re
+
+
+_CERTIFICATION_BOILERPLATE_WORDS = {
+    "cert",
+    "certificate",
+    "certificates",
+    "certification",
+    "certifications",
+    "certified",
+    "course",
+    "courses",
+    "credential",
+    "credentials",
+    "training",
+}
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _normalize_key(value: Any) -> str:
+    return _normalize_text(value).lower()
+
+
+def _relaxed_cert_key(value: Any) -> str:
+    stripped = re.sub(r"[^\w\s]+", " ", _normalize_key(value))
+    tokens = [token for token in stripped.split() if token not in _CERTIFICATION_BOILERPLATE_WORDS]
+    return " ".join(tokens) or stripped
+
+
+def _normalize_certifications(certifications: Any) -> list[str]:
+    if not isinstance(certifications, list):
+        return []
+    normalized: list[str] = []
+    seen_strict: set[str] = set()
+    seen_relaxed: set[str] = set()
+    for cert in certifications:
+        cleaned = _normalize_text(cert)
+        if not cleaned:
+            continue
+        strict_key = _normalize_key(cleaned)
+        relaxed_key = _relaxed_cert_key(cleaned)
+        if strict_key in seen_strict or relaxed_key in seen_relaxed:
+            continue
+        seen_strict.add(strict_key)
+        seen_relaxed.add(relaxed_key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
+    if not isinstance(skills, list):
+        return []
+
+    normalized_certs = _normalize_certifications(certifications or [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for skill in skills:
+        cleaned = _normalize_text(skill.get("name") if isinstance(skill, dict) else skill)
+        if not cleaned:
+            continue
+        key = _normalize_key(cleaned)
+        if key in seen:
+            continue
+        if any(_normalize_key(cert) == key for cert in normalized_certs) and (
+            re.search(r"\b(?:cert|certificate|certificates|certification|certifications|certified|course|courses|credential|credentials|training|license|licence)\b", cleaned, re.I)
+            or any(
+                re.search(r"\b(?:cert|certificate|certificates|certification|certifications|certified|course|courses|credential|credentials|training|license|licence)\b", cert, re.I)
+                for cert in normalized_certs
+            )
+        ):
+            continue
+        seen.add(key)
+        normalized.append(cleaned)
+
+    return normalized
+
 
 def build_candidate_text(candidate: Dict[str, Any]) -> str:
     """
@@ -38,7 +120,8 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
             skills_raw = json.loads(skills_raw)
         except Exception:
             skills_raw = []
-    skill_names = [s["name"] if isinstance(s, dict) else str(s) for s in skills_raw if s]
+    certifications = _normalize_certifications(raw_data.get("certifications") or [])
+    skill_names = _normalize_skills(skills_raw, certifications=certifications)
     if skill_names:
         parts.append(f"Skills:\n{', '.join(skill_names)}")
 
@@ -83,7 +166,6 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
     if preferred_roles:
         parts.append(f"Target / Preferred Roles:\n{', '.join(preferred_roles)}")
 
-    certifications = raw_data.get("certifications") or []
     if certifications:
         parts.append(f"Certifications:\n{', '.join(certifications)}")
 

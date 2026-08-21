@@ -10,7 +10,7 @@ import pytest
 # Allow importing server module directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from server import _merge_list, _merge_voice_into_profile
+from server import _merge_list, _merge_skills, _merge_voice_into_profile, _normalize_certifications
 
 
 class TestMergeList:
@@ -77,6 +77,14 @@ class TestMergeVoiceIntoProfile:
         assert "docker" in lower
         assert "kubernetes" in lower
 
+    def test_merge_skills_deduplicates_case_and_whitespace(self):
+        result = _merge_skills(["Python"], [" python ", "PYTHON", " FastAPI "])
+        assert result == ["Python", "FastAPI"]
+
+    def test_merge_skills_keeps_different_languages_separate(self):
+        result = _merge_skills(["Java"], ["JavaScript"])
+        assert result == ["Java", "JavaScript"]
+
     def test_existing_skills_preserved(self):
         profile = self._base_profile()
         voice = {"skills": ["Go"]}
@@ -111,13 +119,30 @@ class TestMergeVoiceIntoProfile:
         merged = _merge_voice_into_profile(profile, voice)
         assert merged["experience_years"] == 7.0
 
-    def test_certifications_added_to_skills(self):
+    def test_certifications_are_kept_out_of_skills_when_they_are_clearly_certifications(self):
         profile = self._base_profile()
-        voice = {"certifications": ["AWS Certified", "GCP Professional"]}
+        voice = {
+            "skills": ["AWS Certified Solutions Architect - Associate", "Python"],
+            "certifications": [
+                "aws certified solutions architect associate",
+                "AWS Certified Solutions Architect - Associate",
+            ],
+        }
         merged = _merge_voice_into_profile(profile, voice)
         lower = [s.lower() for s in merged["skills"]]
-        assert "aws certified" in lower
-        assert "gcp professional" in lower
+        assert "python" in lower
+        assert "aws certified solutions architect - associate" not in lower
+        assert merged["raw_data"]["certifications"] == [
+            "aws certified solutions architect associate"
+        ]
+
+    def test_normalize_certifications_collapses_near_duplicates(self):
+        result = _normalize_certifications([
+            "AWS Certified Solutions Architect - Associate",
+            "aws certified solutions architect associate",
+            "AWS Solutions Architect Associate",
+        ])
+        assert result == ["AWS Certified Solutions Architect - Associate"]
 
     def test_work_experience_appended(self):
         profile = self._base_profile()

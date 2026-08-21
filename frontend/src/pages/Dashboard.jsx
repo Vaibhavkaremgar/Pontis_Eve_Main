@@ -16,6 +16,7 @@ import {
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
 import { buildDashboardEveGreetingFromProfile } from "../lib/dashboardMessaging";
 import { hydrateProfileStrength } from "../lib/profileStrength";
+import { normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 
@@ -60,6 +61,10 @@ function buildFallbackProfile(isOpenToMatches = true) {
   };
 }
 
+function hydrateDisplayProfile(profile) {
+  return hydrateProfileStrength(normalizeProfileForDisplay(profile));
+}
+
 function ResizeHandle({ testId, subtle = false }) {
   return (
     <PanelResizeHandle
@@ -96,7 +101,7 @@ function Dashboard() {
   });
 
   const [userProfile, setUserProfile] = React.useState(() =>
-    hydrateProfileStrength(buildFallbackProfile(isOpenToMatches))
+    hydrateDisplayProfile(buildFallbackProfile(isOpenToMatches))
   );
   const voiceIntakeResume = userProfile.voice_intake_resume;
   const voiceIntakeResumeQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
@@ -137,7 +142,7 @@ function Dashboard() {
           setCandidateId(profileCandidateId);
           saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
         }
-        setUserProfile(hydrateProfileStrength({
+        setUserProfile(hydrateDisplayProfile({
           candidate_id: profileCandidateId,
           candidateId: profileCandidateId,
           avatar: data.photo_url ?? null,
@@ -163,7 +168,7 @@ function Dashboard() {
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
-        setUserProfile(hydrateProfileStrength({
+        setUserProfile(hydrateDisplayProfile({
           candidate_id: candidateId,
           candidateId,
           avatar: null,
@@ -208,7 +213,7 @@ function Dashboard() {
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       setUserProfile((prev) =>
-        hydrateProfileStrength({
+        hydrateDisplayProfile({
           ...prev,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,

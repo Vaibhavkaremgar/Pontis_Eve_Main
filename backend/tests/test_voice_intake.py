@@ -2515,6 +2515,86 @@ class TestChatProfileUpdatePersistenceRegression:
             "Java Backend Engineer",
         ]
 
+    def test_skill_merge_skips_existing_values_and_existing_certifications(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        executed = []
+        state = {
+            "candidate": {
+                "id": "candidate-merge-skills",
+                "raw_data": {
+                    "certifications": ["AWS Certified Solutions Architect - Associate"],
+                },
+                "skills": ["Python"],
+                "work_experience": [],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                params = params or {}
+                executed.append((sql, params))
+                if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
+                    return FakeResult([state["candidate"]])
+                if "UPDATE candidates SET" in sql:
+                    if "skills" in params:
+                        state["candidate"]["skills"] = json.loads(params["skills"])
+                    if "raw_data" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    return FakeResult()
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        updates = {
+            "skills": [
+                "Python",
+                "FastAPI",
+                "AWS Certified Solutions Architect - Associate",
+            ]
+        }
+
+        asyncio.run(server._apply_profile_updates("candidate-merge-skills", updates))
+        asyncio.run(server._apply_profile_updates("candidate-merge-skills", updates))
+
+        assert state["candidate"]["skills"] == ["Python", "FastAPI"]
+        assert sum(1 for sql, _ in executed if "UPDATE candidates SET" in sql) == 1
+        assert state["candidate"]["raw_data"]["certifications"] == [
+            "AWS Certified Solutions Architect - Associate"
+        ]
+
     def test_target_role_statement_updates_preferred_roles_and_skills_but_not_current_role(self, monkeypatch):
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

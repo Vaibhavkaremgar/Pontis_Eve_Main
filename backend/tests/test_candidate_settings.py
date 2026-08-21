@@ -112,17 +112,22 @@ def test_delete_candidate_account_removes_candidate_rows_and_storage(tmp_path, m
     assert not candidate_dir.exists()
 
 
-def test_candidate_help_sends_email_with_auth(monkeypatch):
+def test_candidate_help_sends_email_with_resend(monkeypatch):
     captured = {}
 
     async def fake_get_candidate_row(cid):
         return {"id": cid, "name": "Jane Doe", "email": "jane@example.com"}
 
-    async def fake_send_support_email(message):
-        captured["message"] = message
+    class FakeEmails:
+        @staticmethod
+        def send(params):
+            captured["params"] = params
+            return {"id": "email-123"}
 
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
-    monkeypatch.setattr(server, "_send_support_email", fake_send_support_email)
+    monkeypatch.setattr(server, "resend", type("FakeResend", (), {"api_key": None, "Emails": FakeEmails})())
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "support@pontis.one")
 
     token = server._issue_candidate_session_token("cand-123")
     result = asyncio.run(
@@ -138,6 +143,42 @@ def test_candidate_help_sends_email_with_auth(monkeypatch):
     )
 
     assert result == {"status": "sent"}
-    assert captured["message"]["To"] == "info@pontis.one"
-    assert "Need help with matching" in captured["message"]["Subject"]
-    assert "I cannot see job matches" in captured["message"].get_content()
+    assert captured["params"]["from"] == "support@pontis.one"
+    assert captured["params"]["to"] == ["info@pontis.one"]
+    assert captured["params"]["subject"] == "Need help with matching"
+    assert captured["params"]["reply_to"] == "jane@example.com"
+    assert "Candidate ID: cand-123" in captured["params"]["text"]
+    assert "Candidate Name: Jane Doe" in captured["params"]["text"]
+    assert "I cannot see job matches in my dashboard." in captured["params"]["text"]
+    assert server.resend.api_key == "re_test_key"
+
+
+def test_candidate_help_returns_502_when_resend_fails(monkeypatch):
+    async def fake_get_candidate_row(cid):
+        return {"id": cid, "name": "Jane Doe", "email": "jane@example.com"}
+
+    class FakeEmails:
+        @staticmethod
+        def send(params):
+            raise RuntimeError("resend unavailable")
+
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+    monkeypatch.setattr(server, "resend", type("FakeResend", (), {"api_key": None, "Emails": FakeEmails})())
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "support@pontis.one")
+
+    token = server._issue_candidate_session_token("cand-123")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            server.candidate_help(
+                "cand-123",
+                server.CandidateHelpRequest(
+                    candidate_id="cand-123",
+                    subject="Need help with matching",
+                    message="I cannot see job matches in my dashboard.",
+                ),
+                authorization=f"Bearer {token}",
+            )
+        )
+
+    assert exc.value.status_code == 502

@@ -13,9 +13,7 @@ import hashlib
 import shutil
 import re
 import secrets
-import smtplib
 from pathlib import Path
-from email.message import EmailMessage
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
 import uuid
@@ -24,6 +22,11 @@ from openai import AsyncOpenAI
 import pypdf
 import io
 import asyncio
+
+try:
+    import resend
+except ImportError:  # pragma: no cover - exercised in environments without the SDK installed
+    resend = None
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -165,9 +168,6 @@ def _normalize_for_frontend(c: dict) -> dict:
             "dates": dates,
         })
 
-    skills_raw = c.get("skills") or []
-    key_skills = [(s["name"] if isinstance(s, dict) else s) for s in skills_raw]
-
     # Pull voice-derived extras from raw_data
     raw_data = c.get("raw_data") or {}
     if isinstance(raw_data, str):
@@ -181,6 +181,8 @@ def _normalize_for_frontend(c: dict) -> dict:
         voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
 
     strength_percent, strength_label = _calculate_profile_strength(c, raw_data)
+    certifications = _normalize_certifications(raw_data.get("certifications") or [])
+    key_skills = _normalize_skills(c.get("skills") or [], certifications=certifications)
 
     profile = {
         "candidate_id": str(c.get("id") or c.get("candidate_id") or ""),
@@ -197,7 +199,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "education": education,
         "availability": raw_data.get("availability", ""),
         "preferred_roles": raw_data.get("preferred_roles") or [],
-        "certifications": raw_data.get("certifications") or [],
+        "certifications": certifications,
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
         "photo_url": _candidate_photo_url(c, raw_data),
@@ -278,12 +280,7 @@ def _get_bearer_token(authorization: Optional[str]) -> str:
     return authorization[7:].strip()
 
 
-def _build_support_email(subject: str, message: str, candidate_id: str, candidate_name: str = "", candidate_email: str = "") -> EmailMessage:
-    email = EmailMessage()
-    email["To"] = SUPPORT_EMAIL_TO
-    email["From"] = os.environ.get("SUPPORT_EMAIL_FROM", SUPPORT_EMAIL_TO)
-    email["Subject"] = subject.strip()
-    email["Reply-To"] = candidate_email.strip() or email["From"]
+def _build_support_email_text(subject: str, message: str, candidate_id: str, candidate_name: str = "", candidate_email: str = "") -> str:
     body_lines = [
         f"Candidate ID: {candidate_id}",
     ]
@@ -292,34 +289,49 @@ def _build_support_email(subject: str, message: str, candidate_id: str, candidat
     if candidate_email.strip():
         body_lines.append(f"Candidate Email: {candidate_email.strip()}")
     body_lines.extend(["", message.strip()])
-    email.set_content("\n".join(body_lines))
-    return email
+    return "\n".join(body_lines)
 
 
-async def _send_support_email(message: EmailMessage) -> None:
-    host = os.environ.get("SMTP_HOST", "").strip()
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    username = os.environ.get("SMTP_USERNAME", "").strip()
-    password = os.environ.get("SMTP_PASSWORD", "").strip()
-    if not host:
+async def _send_support_email(
+    subject: str,
+    message: str,
+    candidate_id: str,
+    candidate_name: str = "",
+    candidate_email: str = "",
+) -> None:
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    from_email = os.environ.get("RESEND_FROM_EMAIL", "").strip()
+    if not api_key or not from_email:
         raise HTTPException(status_code=503, detail="Support email is not configured.")
+    if resend is None or not hasattr(resend, "Emails"):
+        raise HTTPException(status_code=503, detail="Support email is unavailable.")
 
-    use_ssl = os.environ.get("SMTP_USE_SSL", "false").lower() == "true"
-    use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+    params: Dict[str, Any] = {
+        "from": from_email,
+        "to": [SUPPORT_EMAIL_TO],
+        "subject": subject.strip(),
+        "text": _build_support_email_text(
+            subject=subject,
+            message=message,
+            candidate_id=candidate_id,
+            candidate_name=candidate_name,
+            candidate_email=candidate_email,
+        ),
+    }
+    if candidate_email.strip():
+        params["reply_to"] = candidate_email.strip()
 
-    def _deliver() -> None:
-        if use_ssl:
-            client = smtplib.SMTP_SSL(host, port, timeout=20)
-        else:
-            client = smtplib.SMTP(host, port, timeout=20)
-        with client as smtp:
-            if use_tls and not use_ssl:
-                smtp.starttls()
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(message)
+    def _deliver() -> Any:
+        resend.api_key = api_key
+        return resend.Emails.send(params)
 
-    await asyncio.to_thread(_deliver)
+    try:
+        await asyncio.to_thread(_deliver)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to send candidate help email via Resend: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to send support email.") from exc
 
 
 def _candidate_photo_dir(candidate_id: str) -> Path:
@@ -1761,7 +1773,12 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
     When force_new=True (new-candidate onboarding), always insert a fresh record.
     Returns the candidate UUID.
     """
-    skills_json = json.dumps(parsed.get("skills") or [])
+    normalized_certs = _normalize_certifications(parsed.get("certifications") or [])
+    normalized_skills = _normalize_skills(parsed.get("skills") or [], certifications=normalized_certs)
+    parsed = dict(parsed)
+    parsed["skills"] = normalized_skills
+    parsed["certifications"] = normalized_certs
+    skills_json = json.dumps(normalized_skills)
     work_exp_json = json.dumps(parsed.get("work_experience") or [])
     edu_json = json.dumps(parsed.get("education") or [])
 
@@ -2183,14 +2200,13 @@ async def candidate_help(
     if len(message) > 5000:
         raise HTTPException(status_code=400, detail="Message is too long.")
 
-    email_message = _build_support_email(
+    await _send_support_email(
         subject=subject,
         message=message,
         candidate_id=candidate_id,
         candidate_name=str(candidate.get("name") or ""),
         candidate_email=str(candidate.get("email") or ""),
     )
-    await _send_support_email(email_message)
     return {"status": "sent"}
 
 
@@ -2901,7 +2917,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
         if field == "skills":
             if not isinstance(value, list):
                 continue
-            merged = _merge_skills(existing.get("skills") or [], value)
+            merged = _merge_skills(
+                existing.get("skills") or [],
+                value,
+                certifications=existing_raw.get("certifications") or [],
+            )
             if merged != (existing.get("skills") or []):
                 set_clauses.append("skills = CAST(:skills AS json)")
                 params["skills"] = json.dumps(merged)
@@ -3408,18 +3428,119 @@ def _merge_list(existing: list, new_items: list) -> list:
     return merged
 
 
-def _merge_skills(existing: list, new_items: list) -> list:
-    """Merge skill lists with case-insensitive deduplication."""
-    if not new_items:
-        return existing
-    seen = {str(x).lower() for x in existing}
-    merged = list(existing)
-    for item in new_items:
-        s = item["name"] if isinstance(item, dict) else str(item)
-        if s.lower() not in seen:
-            merged.append(item)
-            seen.add(s.lower())
-    return merged
+_CERTIFICATION_BOILERPLATE_WORDS = {
+    "cert",
+    "certificate",
+    "certificates",
+    "certification",
+    "certifications",
+    "certified",
+    "course",
+    "courses",
+    "credential",
+    "credentials",
+    "training",
+}
+
+
+def _normalize_profile_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _normalize_profile_key(value: Any) -> str:
+    return _normalize_profile_text(value).lower()
+
+
+def _certification_relaxed_key(value: Any) -> str:
+    text = re.sub(r"[^\w\s]+", " ", _normalize_profile_key(value))
+    tokens = [token for token in text.split() if token not in _CERTIFICATION_BOILERPLATE_WORDS]
+    return " ".join(tokens) or text
+
+
+def _looks_like_certification(value: Any) -> bool:
+    text = _normalize_profile_key(value)
+    return bool(
+        re.search(
+            r"\b(?:cert|certificate|certificates|certification|certifications|certified|course|courses|credential|credentials|training|license|licence)\b",
+            text,
+        )
+    )
+
+
+def _normalize_certifications(certifications: Any) -> list[str]:
+    if not isinstance(certifications, list):
+        return []
+    normalized: list[str] = []
+    seen_strict: set[str] = set()
+    seen_relaxed: set[str] = set()
+    for cert in certifications:
+        cleaned = _normalize_profile_text(cert)
+        if not cleaned:
+            continue
+        strict_key = _normalize_profile_key(cleaned)
+        relaxed_key = _certification_relaxed_key(cleaned)
+        if strict_key in seen_strict or relaxed_key in seen_relaxed:
+            continue
+        seen_strict.add(strict_key)
+        seen_relaxed.add(relaxed_key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
+    skill_key = _normalize_profile_key(skill_text)
+    cert_key = _normalize_profile_key(cert_text)
+    if skill_key == cert_key:
+        return True
+
+    skill_relaxed = _certification_relaxed_key(skill_text)
+    cert_relaxed = _certification_relaxed_key(cert_text)
+    if skill_relaxed != cert_relaxed:
+        return False
+
+    # Keep the filter conservative so we do not swallow unrelated skills like "Docker"
+    # simply because a certificate is titled "Docker Course".
+    return len(cert_relaxed.split()) >= 2
+
+
+def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
+    if not isinstance(skills, list):
+        return []
+
+    normalized_certs = _normalize_certifications(certifications or [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for item in skills:
+        if isinstance(item, dict):
+            cleaned = _normalize_profile_text(item.get("name"))
+        else:
+            cleaned = _normalize_profile_text(item)
+        if not cleaned:
+            continue
+
+        key = _normalize_profile_key(cleaned)
+        if key in seen:
+            continue
+
+        if any(
+            _skill_needs_certification_filter(cleaned, cert)
+            and (_looks_like_certification(cleaned) or _looks_like_certification(cert))
+            for cert in normalized_certs
+        ):
+            continue
+
+        seen.add(key)
+        normalized.append(cleaned)
+
+    return normalized
+
+
+def _merge_skills(existing: list, new_items: list, certifications: Any = None) -> list[str]:
+    """Merge skill lists with case-insensitive and whitespace-normalized deduplication."""
+    return _normalize_skills([*(existing or []), *(new_items or [])], certifications=certifications)
 
 
 def _work_exp_key(entry: dict) -> str:
@@ -3520,17 +3641,6 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         except (TypeError, ValueError):
             pass
 
-    # Merge lists
-    merged["skills"] = _merge_skills(
-        merged.get("skills") or [], voice.get("skills") or []
-    )
-    merged["work_experience"] = _merge_work_experience(
-        merged.get("work_experience") or [], voice.get("work_experience") or []
-    )
-    merged["education"] = _merge_education(
-        merged.get("education") or [], voice.get("education") or []
-    )
-
     # Store voice-only fields in raw_data (no new DB columns needed)
     existing_raw = merged.get("raw_data") or {}
     if isinstance(existing_raw, str):
@@ -3552,16 +3662,23 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         raw_data["preferred_roles"] = existing_pr
     if voice.get("certifications"):
         existing_certs = raw_data.get("certifications") or []
-        seen_certs = {c.lower() for c in existing_certs}
-        for cert in voice["certifications"]:
-            if isinstance(cert, str) and cert.lower() not in seen_certs:
-                existing_certs.append(cert)
-                seen_certs.add(cert.lower())
-        raw_data["certifications"] = existing_certs
-        # Also merge certifications into skills so they appear in profile
-        merged["skills"] = _merge_skills(merged.get("skills") or [], voice["certifications"])
+        raw_data["certifications"] = _normalize_certifications([*existing_certs, *voice["certifications"]])
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
+
+    # Merge lists after raw_data is normalized so certifications can be excluded
+    # from the skill list when they are clearly certifications.
+    merged["skills"] = _merge_skills(
+        merged.get("skills") or [],
+        voice.get("skills") or [],
+        certifications=raw_data.get("certifications") or [],
+    )
+    merged["work_experience"] = _merge_work_experience(
+        merged.get("work_experience") or [], voice.get("work_experience") or []
+    )
+    merged["education"] = _merge_education(
+        merged.get("education") or [], voice.get("education") or []
+    )
 
     merged["raw_data"] = raw_data
     return merged
