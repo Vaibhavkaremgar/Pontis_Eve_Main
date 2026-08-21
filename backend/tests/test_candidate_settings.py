@@ -143,13 +143,13 @@ def test_candidate_help_sends_email_with_resend(monkeypatch):
     )
 
     assert result == {"status": "sent"}
-    assert captured["params"]["from"] == "support@pontis.one"
-    assert captured["params"]["to"] == ["info@pontis.one"]
-    assert captured["params"]["subject"] == "Need help with matching"
-    assert captured["params"]["reply_to"] == "jane@example.com"
-    assert "Candidate ID: cand-123" in captured["params"]["text"]
-    assert "Candidate Name: Jane Doe" in captured["params"]["text"]
-    assert "I cannot see job matches in my dashboard." in captured["params"]["text"]
+    assert captured["params"] == {
+        "from": "support@pontis.one",
+        "to": ["info@pontis.one"],
+        "subject": "Need help with matching",
+        "text": "I cannot see job matches in my dashboard.",
+        "reply_to": "jane@example.com",
+    }
     assert server.resend.api_key == "re_test_key"
 
 

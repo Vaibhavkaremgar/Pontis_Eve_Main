@@ -280,23 +280,13 @@ def _get_bearer_token(authorization: Optional[str]) -> str:
     return authorization[7:].strip()
 
 
-def _build_support_email_text(subject: str, message: str, candidate_id: str, candidate_name: str = "", candidate_email: str = "") -> str:
-    body_lines = [
-        f"Candidate ID: {candidate_id}",
-    ]
-    if candidate_name.strip():
-        body_lines.append(f"Candidate Name: {candidate_name.strip()}")
-    if candidate_email.strip():
-        body_lines.append(f"Candidate Email: {candidate_email.strip()}")
-    body_lines.extend(["", message.strip()])
-    return "\n".join(body_lines)
+def _build_support_email_text(message: str) -> str:
+    return message.strip()
 
 
 async def _send_support_email(
     subject: str,
     message: str,
-    candidate_id: str,
-    candidate_name: str = "",
     candidate_email: str = "",
 ) -> None:
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
@@ -310,13 +300,7 @@ async def _send_support_email(
         "from": from_email,
         "to": [SUPPORT_EMAIL_TO],
         "subject": subject.strip(),
-        "text": _build_support_email_text(
-            subject=subject,
-            message=message,
-            candidate_id=candidate_id,
-            candidate_name=candidate_name,
-            candidate_email=candidate_email,
-        ),
+        "text": _build_support_email_text(message=message),
     }
     if candidate_email.strip():
         params["reply_to"] = candidate_email.strip()
@@ -2203,8 +2187,6 @@ async def candidate_help(
     await _send_support_email(
         subject=subject,
         message=message,
-        candidate_id=candidate_id,
-        candidate_name=str(candidate.get("name") or ""),
         candidate_email=str(candidate.get("email") or ""),
     )
     return {"status": "sent"}
