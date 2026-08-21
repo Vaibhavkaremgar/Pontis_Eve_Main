@@ -187,10 +187,11 @@ function Dashboard() {
     try {
       const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
       const data = res.data;
+      const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       setUserProfile((prev) =>
         hydrateProfileStrength({
           ...prev,
-          avatar: data.photo_url ?? prev.avatar ?? null,
+          avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
           name: data.name ?? prev.name,
           email: data.email ?? prev.email,
           phone: data.phone ?? prev.phone,

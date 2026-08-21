@@ -36,6 +36,12 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 DOCS_DIR = Path(os.environ.get("EVE_DOCS_DIR", "/tmp/eve_docs"))
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024
+ALLOWED_PROFILE_PHOTO_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -176,7 +182,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "certifications": raw_data.get("certifications") or [],
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
-        "photo_url": raw_data.get("photo_url") or None,
+        "photo_url": _candidate_photo_url(c, raw_data),
         "profile_strength_percent": strength_percent,
         "profile_strength_label": strength_label,
         "strengthPercent": strength_percent,
@@ -220,6 +226,71 @@ def _parse_raw_data(raw_data: Any) -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _candidate_photo_dir(candidate_id: str) -> Path:
+    return (DOCS_DIR / candidate_id / "photo").resolve()
+
+
+def _photo_view_url(candidate_id: str) -> str:
+    return f"/api/candidate/{candidate_id}/photo/view"
+
+
+def _resolve_candidate_photo_path(candidate_id: str, file_path: Any) -> Optional[Path]:
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None
+    try:
+        resolved = Path(file_path).resolve()
+    except Exception:
+        return None
+    photo_dir = _candidate_photo_dir(candidate_id)
+    try:
+        resolved.relative_to(photo_dir)
+    except Exception:
+        return None
+    return resolved
+
+
+async def _delete_candidate_photo(candidate_id: str, file_path: Any = None) -> None:
+    resolved = _resolve_candidate_photo_path(candidate_id, file_path)
+    if resolved and resolved.exists():
+        try:
+            resolved.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Could not delete candidate photo %s: %s", resolved, e)
+
+
+def _validate_candidate_photo_upload(content_type: str, file_bytes: bytes) -> str:
+    normalized = (content_type or "").lower().strip()
+    if normalized not in ALLOWED_PROFILE_PHOTO_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported image type. Please upload a JPG, JPEG, PNG, or WEBP image.",
+        )
+    if len(file_bytes) > MAX_PROFILE_PHOTO_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be smaller than 5 MB.")
+    return ALLOWED_PROFILE_PHOTO_CONTENT_TYPES[normalized]
+
+
+def _candidate_photo_url(candidate: dict, raw_data: dict) -> Optional[str]:
+    candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "")
+    if not candidate_id:
+        stored_url = candidate.get("photo_url")
+        return _clean_str(stored_url) or None
+
+    stored_url = raw_data.get("photo_url")
+    if _clean_str(stored_url):
+        return stored_url
+
+    profile_url = candidate.get("photo_url")
+    if _clean_str(profile_url):
+        return profile_url
+
+    stored_path = raw_data.get("photo_file_path")
+    if _resolve_candidate_photo_path(candidate_id, stored_path):
+        return _photo_view_url(candidate_id)
+
+    return None
 
 
 def _has_text(value: Any) -> bool:
@@ -315,7 +386,7 @@ def _has_work_experience(value: Any) -> bool:
 
 
 def _has_photo(profile: dict, raw_data: dict) -> bool:
-    return bool(_clean_str(raw_data.get("photo_url") or raw_data.get("photo_file_path") or profile.get("photo_url")))
+    return bool(_candidate_photo_url(profile, raw_data))
 
 
 def _has_target_role(profile: dict, raw_data: dict) -> bool:
@@ -1834,52 +1905,72 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
 
 @api_router.post("/candidate/{candidate_id}/photo")
 async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
-    await _get_candidate_row(candidate_id)
-    allowed = ("image/jpeg", "image/png", "image/webp", "image/gif")
-    if file.content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported image type.")
-    file_bytes = await file.read()
-    if len(file_bytes) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be smaller than 5 MB.")
-    dest_dir = DOCS_DIR / candidate_id / "photo"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    ext = Path(file.filename or "photo").suffix or ".jpg"
-    dest_path = dest_dir / f"{uuid.uuid4()}{ext}"
-    dest_path.write_bytes(file_bytes)
-
-    photo_url = f"/api/candidate/{candidate_id}/photo/view"
-
     existing = await _get_candidate_row(candidate_id)
+    file_bytes = await file.read()
+    ext = _validate_candidate_photo_upload(file.content_type or "", file_bytes)
+
+    dest_dir = _candidate_photo_dir(candidate_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"{uuid.uuid4()}{ext}"
+
     raw_data = _parse_raw_data(existing.get("raw_data"))
-    # Remove old photo file if present
     old_path = raw_data.get("photo_file_path")
-    if old_path and old_path != str(dest_path):
+    previous_photo_path = _resolve_candidate_photo_path(candidate_id, old_path)
+
+    try:
+        dest_path.write_bytes(file_bytes)
+        raw_data["photo_url"] = _photo_view_url(candidate_id)
+        raw_data["photo_file_path"] = str(dest_path)
+        async with SessionLocal() as db:
+            await db.execute(
+                text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+                {"rd": json.dumps(raw_data), "cid": candidate_id},
+            )
+            await db.commit()
+    except Exception:
         try:
-            Path(old_path).unlink(missing_ok=True)
+            dest_path.unlink(missing_ok=True)
         except Exception:
             pass
-    raw_data["photo_url"] = photo_url
-    raw_data["photo_file_path"] = str(dest_path)
-    async with SessionLocal() as db:
-        await db.execute(
-            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
-            {"rd": json.dumps(raw_data), "cid": candidate_id},
-        )
-        await db.commit()
-    return {"photo_url": photo_url}
+        raise
+
+    if previous_photo_path and previous_photo_path != dest_path:
+        await _delete_candidate_photo(candidate_id, str(previous_photo_path))
+
+    return {"photo_url": raw_data["photo_url"]}
 
 
 @api_router.get("/candidate/{candidate_id}/photo/view")
 async def view_profile_photo(candidate_id: str):
     existing = await _get_candidate_row(candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
-    file_path = raw_data.get("photo_file_path")
-    if not file_path or not Path(file_path).exists():
+    file_path = _resolve_candidate_photo_path(candidate_id, raw_data.get("photo_file_path"))
+    if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="No profile photo.")
     suffix = Path(file_path).suffix.lower()
     media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                   "webp": "image/webp", "gif": "image/gif"}.get(suffix.lstrip("."), "image/jpeg")
     return FileResponse(file_path, media_type=media_type)
+
+
+@api_router.delete("/candidate/{candidate_id}/photo")
+async def delete_profile_photo(candidate_id: str):
+    existing = await _get_candidate_row(candidate_id)
+    raw_data = _parse_raw_data(existing.get("raw_data"))
+    photo_path = raw_data.get("photo_file_path")
+
+    raw_data.pop("photo_url", None)
+    raw_data.pop("photo_file_path", None)
+
+    async with SessionLocal() as db:
+        await db.execute(
+            text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+            {"rd": json.dumps(raw_data), "cid": candidate_id},
+        )
+        await db.commit()
+
+    await _delete_candidate_photo(candidate_id, photo_path)
+    return {"photo_url": None, "status": "deleted"}
 
 
 @api_router.get("/candidate/{candidate_id}/chat")

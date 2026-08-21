@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera } from "lucide-react";
+import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
 import { JobDetailModal } from "./SwipeJobCard";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -110,20 +110,25 @@ function EducationRow({ edu }) {
   );
 }
 
-const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 
-function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
+export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const inputRef = React.useRef(null);
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
+  const [deleting, setDeleting] = React.useState(false);
 
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
+
+  const clearInput = () => {
+    if (inputRef.current) inputRef.current.value = "";
+  };
 
   const handleFile = async (file) => {
     if (!file || !candidateId) return;
     if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
-      alert("Please upload a JPEG, PNG, WebP, or GIF image.");
+      alert("Please upload a JPG, JPEG, PNG, or WebP image.");
       return;
     }
     if (file.size > MAX_PHOTO_BYTES) {
@@ -142,35 +147,66 @@ function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
       alert("Photo upload failed. Please try again.");
     } finally {
       setUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
+      clearInput();
     }
   };
 
-  const initials = user.name
-    ? user.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
-    : "?";
+  const handleDelete = async () => {
+    if (!candidateId || !photoUrl || deleting || uploading) return;
+    const confirmDelete = window.confirm("Delete your profile photo?");
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await axios.delete(`${API}/candidate/${candidateId}/photo`);
+      setPhotoUrl(null);
+      onPhotoChange?.(null);
+    } catch {
+      alert("Photo delete failed. Please try again.");
+    } finally {
+      setDeleting(false);
+      clearInput();
+    }
+  };
 
   return (
-    <div className="relative w-14 h-14 shrink-0 group">
+    <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
       {photoUrl ? (
-        <img src={photoUrl} alt={user.name} className="w-14 h-14 rounded-full object-cover" />
+        <img
+          src={photoUrl}
+          alt={user.name || "Candidate profile photo"}
+          className="w-14 h-14 rounded-full object-cover"
+        />
       ) : (
-        <div className="w-14 h-14 rounded-full bg-[#E7E3F0] flex items-center justify-center">
-          <span className="text-[18px] font-medium text-[#7B6FB8]">{initials}</span>
+        <div
+          data-testid="candidate-photo-placeholder"
+          className="w-14 h-14 rounded-full bg-[#E7E3F0] flex items-center justify-center border border-black/[0.04]"
+        >
+          <UserCircle2 className="w-7 h-7 text-[#7B6FB8]" strokeWidth={1.5} />
         </div>
       )}
       <button
         onClick={() => inputRef.current?.click()}
-        disabled={uploading}
+        disabled={uploading || deleting}
         aria-label="Upload profile photo"
         className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors disabled:opacity-50"
       >
         <Camera className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={1.75} />
       </button>
+      {photoUrl && (
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={uploading || deleting}
+          aria-label="Delete profile photo"
+          className="absolute -bottom-1 -right-1 inline-flex h-6 w-6 items-center justify-center rounded-full border border-black/[0.08] bg-white text-[#4A4A48] shadow-sm opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[#F7F7F5] disabled:opacity-40"
+        >
+          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </button>
+      )}
       <input
         ref={inputRef}
         type="file"
-        accept="image/jpeg,image/png,image/webp,image/gif"
+        accept="image/jpeg,image/png,image/webp"
         className="hidden"
         onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
       />
@@ -178,7 +214,7 @@ function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   );
 }
 
-function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
+export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
   return (
     <div className="space-y-8" data-testid="living-profile-content">
       {/* Header */}
