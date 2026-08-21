@@ -8,6 +8,7 @@ import Sidebar from "../components/Sidebar";
 import ChatHub from "../components/ChatHub";
 import LivingProfile from "../components/LivingProfile";
 import SwipeJobDeck from "../components/SwipeJobCard";
+import CandidateSettingsModal from "../components/CandidateSettingsModal";
 import {
   MOCK_RECENT_ACTIVITY,
   QUICK_ACTIONS,
@@ -80,7 +81,9 @@ function Dashboard() {
   const navigate = useNavigate();
   const stored = React.useMemo(() => loadOnboardingState(), []);
   const [candidateId, setCandidateId] = React.useState(() => loadOnboardingState().candidateId ?? null);
+  const [candidateToken] = React.useState(() => loadOnboardingState().candidateToken ?? null);
   const isOpenToMatches = stored.isOpenToMatches ?? true;
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
 
@@ -240,6 +243,11 @@ function Dashboard() {
   }, [refreshProfile]);
 
   const handleLogout = React.useCallback(() => {
+    clearOnboardingState();
+    navigate("/");
+  }, [navigate]);
+
+  const handleDeleteSuccess = React.useCallback(() => {
     clearOnboardingState();
     navigate("/");
   }, [navigate]);
@@ -553,6 +561,7 @@ function Dashboard() {
             opportunitiesCount={opportunitiesCount}
             recentActivity={MOCK_RECENT_ACTIVITY}
             onLogout={handleLogout}
+            onSettings={() => setSettingsOpen(true)}
           />
         </Panel>
 
@@ -676,6 +685,15 @@ function Dashboard() {
           />
         </Panel>
       </PanelGroup>
+      <CandidateSettingsModal
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        candidateId={candidateId}
+        candidateToken={candidateToken}
+        candidateName={userProfile.name}
+        candidateEmail={userProfile.email}
+        onDeleteSuccess={handleDeleteSuccess}
+      />
     </div>
   );
 }
@@ -686,12 +704,13 @@ export default function DashboardGuard() {
 
   const candidateId = React.useMemo(() => {
     const fromUrl = searchParams.get("candidate_id");
+    const candidateToken = searchParams.get("candidate_token");
     console.log("[LinkedIn] current URL:", window.location.href);
     console.log("[LinkedIn] candidate_id:", fromUrl);
     console.log("[LinkedIn] persisted state:", loadOnboardingState());
     if (fromUrl) {
       const s = loadOnboardingState();
-      saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl });
+      saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl, candidateToken: candidateToken || s.candidateToken || null });
       return fromUrl;
     }
     return loadOnboardingState().candidateId ?? null;

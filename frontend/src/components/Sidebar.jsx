@@ -10,6 +10,7 @@ import {
   Star,
   LogOut,
   Bell,
+  Settings,
 } from "lucide-react";
 
 export default function Sidebar({
@@ -20,6 +21,7 @@ export default function Sidebar({
   opportunitiesCount,
   recentActivity,
   onLogout,
+  onSettings,
 }) {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef(null);
@@ -147,6 +149,18 @@ export default function Sidebar({
       <div className="px-3 py-3 border-t border-black/[0.06]" ref={menuRef}>
         {menuOpen && (
           <div className="mb-1 rounded-lg border border-black/[0.07] bg-white shadow-sm overflow-hidden">
+            <button
+              data-testid="settings-btn"
+              onClick={() => {
+                setMenuOpen(false);
+                onSettings?.();
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-[#1F1F1F] hover:bg-black/[0.04] transition-colors"
+            >
+              <Settings className="w-[14px] h-[14px] text-[#7A7A78]" strokeWidth={1.5} />
+              Settings
+            </button>
+            <div className="h-px bg-black/[0.06]" />
             <button
               data-testid="logout-btn"
               onClick={onLogout}

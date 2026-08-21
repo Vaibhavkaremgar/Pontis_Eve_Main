@@ -17,6 +17,7 @@ export default function LinkedInAuth() {
   //   new candidate      → /?linkedin_profile=... (fallback if router sends here)
   React.useEffect(() => {
     const candidateId = searchParams.get("candidate_id");
+    const candidateToken = searchParams.get("candidate_token");
     const linkedInProfile = searchParams.get("linkedin_profile");
 
     if (candidateId) {
@@ -31,6 +32,7 @@ export default function LinkedInAuth() {
         saveOnboardingState({
           linkedInAuthenticated: true,
           candidateId,
+          candidateToken,
           linkedInProfile: profile,
         });
         navigate("/onboarding", { replace: true });
@@ -40,6 +42,7 @@ export default function LinkedInAuth() {
         ...loadOnboardingState(),
         linkedInAuthenticated: true,
         candidateId,
+        candidateToken,
       });
       navigate("/dashboard", { replace: true });
       return;
@@ -54,6 +57,7 @@ export default function LinkedInAuth() {
           linkedInAuthenticated: true,
           linkedInProfile: profile,
           candidateId: null,
+          candidateToken: null,
         });
       } catch (_) {}
       navigate("/onboarding", { replace: true });

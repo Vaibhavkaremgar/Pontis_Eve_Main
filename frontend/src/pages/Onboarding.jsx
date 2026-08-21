@@ -517,6 +517,7 @@ export default function Onboarding() {
   // Process the OAuth param synchronously so storage is ready before any effect runs.
   const linkedInProfileParam = searchParams.get("linkedin_profile");
   const candidateIdParam = searchParams.get("candidate_id");
+  const candidateTokenParam = searchParams.get("candidate_token");
   const resumeVoiceParam = searchParams.get("resume_voice");
   const isOAuthCallback = !!linkedInProfileParam;
 
@@ -531,6 +532,7 @@ export default function Onboarding() {
           linkedInAuthenticated: true,
           linkedInProfile: profile,
           candidateId: candidateIdParam || current.candidateId || null,
+          candidateToken: candidateTokenParam || current.candidateToken || null,
         };
         saveOnboardingState(next);
         console.log("[LinkedIn] current URL:", window.location.href);
@@ -649,6 +651,7 @@ export default function Onboarding() {
       // Preserve auth fields — never let the persist effect wipe them
       linkedInAuthenticated: current.linkedInAuthenticated,
       linkedInProfile: current.linkedInProfile,
+      candidateToken: current.candidateToken,
       isOpenToMatches: current.isOpenToMatches,
       step,
       countryCode: phone.country.code,
@@ -661,6 +664,7 @@ export default function Onboarding() {
         : persisted.certsMeta,
       parsedProfile,
       candidateId,
+      candidateToken: current.candidateToken ?? null,
       transcription,
       muted,
       voiceElapsedMs,
@@ -701,17 +705,21 @@ export default function Onboarding() {
       const res = await axios.post(url, fd, {      
         headers: { "Content-Type": "multipart/form-data" },
       });
-      const { candidate_id, ...profile } = res.data;
+      const { candidate_id, candidate_token, ...profile } = res.data;
       console.log("Resume parsing candidate_id:", candidate_id);
       // Immediately persist the new candidate_id to storage before any state update
       // so Dashboard always reads the correct ID even if it mounts before the effect runs
       if (candidate_id) {
         const current = loadOnboardingState();
-        saveOnboardingState({ ...current, candidateId: candidate_id });
+        saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token || current.candidateToken || null });
       }
       setParsedProfile(profile);
       if (candidate_id) {
         setCandidateId(candidate_id);
+        if (candidate_token) {
+          const current = loadOnboardingState();
+          saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token });
+        }
         // Upload any pending certs now that we have a candidate_id
         if (certsFiles.length > 0) {
           certsFiles.forEach((certFile) => {

@@ -11,6 +11,7 @@ const DEFAULT_STATE = {
   certsMeta: [], // [{ name, size }]
   parsedProfile: null, // full backend response
   candidateId: null, // UUID from the Dashboard candidate record
+  candidateToken: null, // signed backend-issued candidate session token
   newlyOnboarded: false,
   transcription: false,
   muted: false,
@@ -44,6 +45,7 @@ export function saveOnboardingState(state) {
       certsMeta: state.certsMeta,
       parsedProfile: state.parsedProfile,
       candidateId: state.candidateId ?? null,
+      candidateToken: state.candidateToken ?? null,
       newlyOnboarded: state.newlyOnboarded ?? false,
       transcription: state.transcription,
       muted: state.muted,

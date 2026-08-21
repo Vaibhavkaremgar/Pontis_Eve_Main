@@ -5,12 +5,17 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
+from jose import JWTError, jwt
 import os
 import json
 import logging
 import hashlib
+import shutil
 import re
+import secrets
+import smtplib
 from pathlib import Path
+from email.message import EmailMessage
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
 import uuid
@@ -42,6 +47,9 @@ ALLOWED_PROFILE_PHOTO_CONTENT_TYPES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+CANDIDATE_SESSION_SECRET = os.environ.get("CANDIDATE_SESSION_SECRET") or os.environ.get("EVE_INTERNAL_TOKEN") or "dev-candidate-session-secret"
+CANDIDATE_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
+SUPPORT_EMAIL_TO = "info@pontis.one"
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -67,6 +75,16 @@ class ChatResponse(BaseModel):
     reply: str
     session_id: str
     profile_updates: Optional[Dict[str, Any]] = None
+
+
+class CandidateAuthPayload(BaseModel):
+    candidate_id: str
+
+
+class CandidateHelpRequest(BaseModel):
+    candidate_id: str
+    subject: str
+    message: str
 
 
 # ---------- Helpers ----------
@@ -226,6 +244,82 @@ def _parse_raw_data(raw_data: Any) -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _candidate_storage_dir(candidate_id: str) -> Path:
+    return (DOCS_DIR / candidate_id).resolve()
+
+
+def _issue_candidate_session_token(candidate_id: str) -> str:
+    now = int(datetime.now(timezone.utc).timestamp())
+    payload = {
+        "sub": candidate_id,
+        "iat": now,
+        "exp": now + CANDIDATE_SESSION_TTL_SECONDS,
+        "scope": "candidate",
+    }
+    return jwt.encode(payload, CANDIDATE_SESSION_SECRET, algorithm="HS256")
+
+
+def _verify_candidate_session_token(token: str, candidate_id: str) -> None:
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing candidate session.")
+    try:
+        payload = jwt.decode(token, CANDIDATE_SESSION_SECRET, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid candidate session.")
+    if payload.get("scope") != "candidate" or payload.get("sub") != candidate_id:
+        raise HTTPException(status_code=403, detail="Forbidden.")
+
+
+def _get_bearer_token(authorization: Optional[str]) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        return ""
+    return authorization[7:].strip()
+
+
+def _build_support_email(subject: str, message: str, candidate_id: str, candidate_name: str = "", candidate_email: str = "") -> EmailMessage:
+    email = EmailMessage()
+    email["To"] = SUPPORT_EMAIL_TO
+    email["From"] = os.environ.get("SUPPORT_EMAIL_FROM", SUPPORT_EMAIL_TO)
+    email["Subject"] = subject.strip()
+    email["Reply-To"] = candidate_email.strip() or email["From"]
+    body_lines = [
+        f"Candidate ID: {candidate_id}",
+    ]
+    if candidate_name.strip():
+        body_lines.append(f"Candidate Name: {candidate_name.strip()}")
+    if candidate_email.strip():
+        body_lines.append(f"Candidate Email: {candidate_email.strip()}")
+    body_lines.extend(["", message.strip()])
+    email.set_content("\n".join(body_lines))
+    return email
+
+
+async def _send_support_email(message: EmailMessage) -> None:
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    username = os.environ.get("SMTP_USERNAME", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "").strip()
+    if not host:
+        raise HTTPException(status_code=503, detail="Support email is not configured.")
+
+    use_ssl = os.environ.get("SMTP_USE_SSL", "false").lower() == "true"
+    use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+
+    def _deliver() -> None:
+        if use_ssl:
+            client = smtplib.SMTP_SSL(host, port, timeout=20)
+        else:
+            client = smtplib.SMTP(host, port, timeout=20)
+        with client as smtp:
+            if use_tls and not use_ssl:
+                smtp.starttls()
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(message)
+
+    await asyncio.to_thread(_deliver)
 
 
 def _candidate_photo_dir(candidate_id: str) -> Path:
@@ -1903,6 +1997,7 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
 
     profile = _normalize_for_frontend({**parsed, "id": cid})
     profile["_meta"] = {"used_ocr": used_ocr}
+    profile["candidate_token"] = _issue_candidate_session_token(cid)
     return profile
 
 
@@ -1981,6 +2076,122 @@ async def delete_profile_photo(candidate_id: str):
 
     await _delete_candidate_photo(candidate_id, photo_path)
     return {"photo_url": None, "status": "deleted"}
+
+
+@api_router.delete("/candidate/{candidate_id}/account")
+async def delete_candidate_account(
+    candidate_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
+    candidate = await _get_candidate_row(candidate_id)
+    candidate_dir = _candidate_storage_dir(candidate_id)
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+
+    file_paths: set[str] = set()
+    photo_path = raw_data.get("photo_file_path")
+    if isinstance(photo_path, str) and photo_path.strip():
+        file_paths.add(photo_path.strip())
+
+    delete_tables = [
+        "candidate_chat_sessions",
+        "eve_outbound_events",
+        "recruiter_interest_requests",
+        "candidate_activity_feed",
+        "candidate_job_recommendations",
+        "candidate_voice_intakes",
+        "candidate_voice_sessions",
+        "candidate_certificates",
+        "candidate_preferences",
+        "candidate_feedback",
+        "candidate_lifecycle_events",
+        "email_communications",
+        "inbound_email_replies",
+        "internal_candidate_resumes",
+        "interview_evaluations",
+        "interview_sessions",
+        "interviews",
+        "ats_exports",
+        "automation_jobs",
+        "booking_links",
+        "linkedin_attachments",
+        "linkedin_connections",
+        "linkedin_conversations",
+        "linkedin_jobs",
+        "linkedin_messages",
+        "notification_events",
+        "notification_workflow_tokens",
+        "outreach_events",
+        "ranking_explanations",
+        "recruiter_notes",
+        "recruiter_tasks",
+    ]
+
+    async with SessionLocal() as db:
+        cert_rows = await db.execute(
+            text("SELECT file_path FROM candidate_certificates WHERE candidate_id = :cid"),
+            {"cid": candidate_id},
+        )
+        file_paths.update(str(row[0]).strip() for row in cert_rows.fetchall() if row[0])
+
+        resume_rows = await db.execute(
+            text("SELECT source_path FROM internal_candidate_resumes WHERE candidate_id = :cid"),
+            {"cid": candidate_id},
+        )
+        file_paths.update(str(row[0]).strip() for row in resume_rows.fetchall() if row[0])
+
+        for table in delete_tables:
+            await db.execute(text(f"DELETE FROM {table} WHERE candidate_id = :cid"), {"cid": candidate_id})
+
+        await db.execute(text("DELETE FROM candidates WHERE id = :cid"), {"cid": candidate_id})
+        await db.commit()
+
+    for path_str in sorted(file_paths):
+        try:
+            resolved = Path(path_str).resolve()
+            if candidate_dir in resolved.parents or resolved == candidate_dir:
+                resolved.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("[account-delete] could not delete file %s: %s", path_str, exc)
+
+    try:
+        if candidate_dir.exists():
+            shutil.rmtree(candidate_dir)
+    except Exception as exc:
+        logger.warning("[account-delete] could not remove storage dir %s: %s", candidate_dir, exc)
+
+    return {"status": "deleted", "candidate_id": candidate_id}
+
+
+@api_router.post("/candidate/{candidate_id}/help")
+async def candidate_help(
+    candidate_id: str,
+    body: CandidateHelpRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
+    candidate = await _get_candidate_row(candidate_id)
+
+    subject = body.subject.strip()
+    message = body.message.strip()
+    if len(subject) < 3:
+        raise HTTPException(status_code=400, detail="Subject is required.")
+    if len(message) < 5:
+        raise HTTPException(status_code=400, detail="Message is required.")
+    if len(subject) > 180:
+        raise HTTPException(status_code=400, detail="Subject is too long.")
+    if len(message) > 5000:
+        raise HTTPException(status_code=400, detail="Message is too long.")
+
+    email_message = _build_support_email(
+        subject=subject,
+        message=message,
+        candidate_id=candidate_id,
+        candidate_name=str(candidate.get("name") or ""),
+        candidate_email=str(candidate.get("email") or ""),
+    )
+    await _send_support_email(email_message)
+    return {"status": "sent"}
 
 
 @api_router.get("/candidate/{candidate_id}/chat")
@@ -4154,10 +4365,11 @@ async def linkedin_callback(code: str, state: str):
         json.dumps({"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id})
     )
 
+    candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
     if candidate_id and not needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}&candidate_token={candidate_token}"
     elif candidate_id and needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
+        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&candidate_token={candidate_token}&linkedin_profile={profile_param}&needs_onboarding=true"
     else:
         redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
 
@@ -4244,10 +4456,11 @@ async def google_callback(code: str, state: str):
         json.dumps({"name": name, "email": email, "picture": picture, "google_id": google_id})
     )
 
+    candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
     if candidate_id and not needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}"
+        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}&candidate_token={candidate_token}"
     elif candidate_id and needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&linkedin_profile={profile_param}&needs_onboarding=true"
+        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&candidate_token={candidate_token}&linkedin_profile={profile_param}&needs_onboarding=true"
     else:
         redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
 

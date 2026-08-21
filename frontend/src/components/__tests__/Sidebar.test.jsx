@@ -60,4 +60,26 @@ describe("Sidebar user footer", () => {
     expect(card.textContent).toContain("Jane Doe");
     expect(card.textContent).toContain("jane@example.com");
   });
+
+  it("shows Settings alongside Logout and wires the callback", () => {
+    const onSettings = jest.fn();
+    renderResult = renderSidebar({ onSettings });
+
+    const profileCard = renderResult.container.querySelector('[data-testid="user-profile-card"]');
+    act(() => {
+      profileCard.click();
+    });
+
+    const settingsBtn = renderResult.container.querySelector('[data-testid="settings-btn"]');
+    const logoutBtn = renderResult.container.querySelector('[data-testid="logout-btn"]');
+
+    expect(settingsBtn).toBeTruthy();
+    expect(logoutBtn).toBeTruthy();
+
+    act(() => {
+      settingsBtn.click();
+    });
+
+    expect(onSettings).toHaveBeenCalledTimes(1);
+  });
 });
