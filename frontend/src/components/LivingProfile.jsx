@@ -118,6 +118,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
   const [deleting, setDeleting] = React.useState(false);
+  const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
 
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
 
@@ -126,7 +127,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   };
 
   const handleFile = async (file) => {
-    if (!file || !candidateId) return;
+    if (!file || !resolvedCandidateId) return;
     if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
       alert("Please upload a JPG, JPEG, PNG, or WebP image.");
       return;
@@ -139,7 +140,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await axios.post(`${API}/candidate/${candidateId}/photo`, fd);
+      const res = await axios.post(`${API}/candidate/${resolvedCandidateId}/photo`, fd);
       const url = res.data?.photo_url;
       setPhotoUrl(url);
       onPhotoChange?.(url);
@@ -152,12 +153,12 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   };
 
   const handleDelete = async () => {
-    if (!candidateId || !photoUrl || deleting || uploading) return;
+    if (!resolvedCandidateId || !photoUrl || deleting || uploading) return;
     const confirmDelete = window.confirm("Delete your profile photo?");
     if (!confirmDelete) return;
     setDeleting(true);
     try {
-      await axios.delete(`${API}/candidate/${candidateId}/photo`);
+      await axios.delete(`${API}/candidate/${resolvedCandidateId}/photo`);
       setPhotoUrl(null);
       onPhotoChange?.(null);
     } catch {
@@ -216,6 +217,8 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 }
 
 export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
+  const profileCandidateId = user.candidate_id ?? user.candidateId ?? user.id ?? null;
+
   return (
     <div className="space-y-8" data-testid="living-profile-content">
       {/* Header */}
@@ -260,7 +263,7 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
               </p>
             )}
           </div>
-          <ProfilePhotoUpload user={user} candidateId={user.candidate_id} onPhotoChange={onPhotoChange} />
+          <ProfilePhotoUpload user={user} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} />
         </div>
       </div>
 

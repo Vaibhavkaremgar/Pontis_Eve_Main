@@ -10,7 +10,13 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 jest.mock("axios");
 
 function renderPhotoUpload(props = {}) {
-  const { wrapInForm = false, onSubmit = jest.fn(), ...photoProps } = props;
+  const {
+    wrapInForm = false,
+    onSubmit = jest.fn(),
+    user = { name: "Jane Doe", avatar: null, candidate_id: "cand-123" },
+    candidateId = "cand-123",
+    ...photoProps
+  } = props;
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = ReactDOM.createRoot(container);
@@ -18,8 +24,8 @@ function renderPhotoUpload(props = {}) {
   act(() => {
     const content = (
       <ProfilePhotoUpload
-        user={{ name: "Jane Doe", avatar: null }}
-        candidateId="cand-123"
+        user={user}
+        candidateId={candidateId}
         onPhotoChange={jest.fn()}
         {...photoProps}
       />
@@ -159,6 +165,33 @@ describe("ProfilePhotoUpload", () => {
       expect.any(FormData)
     );
     expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view");
+    view.unmount();
+  });
+
+  it("uses the candidate id from the user object when the prop is missing", async () => {
+    axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-456/photo/view" } });
+    const onPhotoChange = jest.fn();
+    const view = renderPhotoUpload({
+      onPhotoChange,
+      candidateId: null,
+      user: { name: "Jane Doe", avatar: null, candidate_id: "cand-456" },
+    });
+
+    const input = view.container.querySelector('input[type="file"]');
+    const file = new File(["png"], "avatar.png", { type: "image/png" });
+
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await flush();
+
+    expect(axios.post).toHaveBeenCalledWith(
+      "http://localhost:8001/api/candidate/cand-456/photo",
+      expect.any(FormData)
+    );
+    expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-456/photo/view");
     view.unmount();
   });
 });
