@@ -9,6 +9,7 @@ import { saveOnboardingState } from "../../lib/onboardingStorage";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("axios");
+let lastLivingProfileProps = null;
 jest.mock("react-router-dom", () => ({
   MemoryRouter: ({ children }) => <div>{children}</div>,
   BrowserRouter: ({ children }) => <div>{children}</div>,
@@ -23,13 +24,16 @@ jest.mock("../../components/Sidebar", () => () => <div data-testid="sidebar" />)
 jest.mock("../../components/ChatHub", () => ({ chats = [] }) => (
   <div data-testid="chat-hub">{chats[0]?.content || ""}</div>
 ));
-jest.mock("../../components/LivingProfile", () => (props) => (
-  <div data-testid="living-profile">
-    <button data-testid="refresh-profile-btn" onClick={() => props.onPhotoChange("new-photo-url")}>
-      Refresh profile
-    </button>
-  </div>
-));
+jest.mock("../../components/LivingProfile", () => (props) => {
+  lastLivingProfileProps = props;
+  return (
+    <div data-testid="living-profile" data-candidate-id={props.userProfile?.candidate_id || ""}>
+      <button data-testid="refresh-profile-btn" onClick={() => props.onPhotoChange("new-photo-url")}>
+        Refresh profile
+      </button>
+    </div>
+  );
+});
 jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
 jest.mock("react-resizable-panels", () => ({
@@ -149,6 +153,7 @@ describe("Dashboard voice intake routing", () => {
   beforeEach(() => {
     localStorage.clear();
     jest.clearAllMocks();
+    lastLivingProfileProps = null;
     saveOnboardingState({
       candidateId: "cand-123",
       voiceIntakeCompleted: true,
@@ -250,5 +255,21 @@ describe("Dashboard voice intake routing", () => {
 
     expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
     expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+  });
+
+  it("preserves the backend candidate id on the profile object so photo uploads can use it", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        candidate_id: "cand-456",
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="living-profile"]');
+
+    expect(lastLivingProfileProps).toBeTruthy();
+    expect(lastLivingProfileProps.userProfile.candidate_id).toBe("cand-456");
+    expect(lastLivingProfileProps.userProfile.candidateId).toBe("cand-456");
   });
 });

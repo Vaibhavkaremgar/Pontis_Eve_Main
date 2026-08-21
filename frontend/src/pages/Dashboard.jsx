@@ -35,6 +35,8 @@ export function getVoiceIntakeCenterView(voiceIntakeResume) {
 
 function buildFallbackProfile(isOpenToMatches = true) {
   return {
+    candidate_id: null,
+    candidateId: null,
     avatar: null,
     isOpenToMatches,
     strength: "Building",
@@ -127,7 +129,14 @@ function Dashboard() {
       .get(`${API}/candidate/${candidateId}/profile`)
       .then((res) => {
         const data = res.data;
+        const profileCandidateId = data.candidate_id ?? data.candidateId ?? candidateId ?? null;
+        if (profileCandidateId && profileCandidateId !== candidateId) {
+          setCandidateId(profileCandidateId);
+          saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
+        }
         setUserProfile(hydrateProfileStrength({
+          candidate_id: profileCandidateId,
+          candidateId: profileCandidateId,
           avatar: data.photo_url ?? null,
           isOpenToMatches,
           name: data.name ?? "",
@@ -152,6 +161,8 @@ function Dashboard() {
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
         setUserProfile(hydrateProfileStrength({
+          candidate_id: candidateId,
+          candidateId,
           avatar: null,
           isOpenToMatches,
           name: parsed.name ?? "",
@@ -187,10 +198,17 @@ function Dashboard() {
     try {
       const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
       const data = res.data;
+      const profileCandidateId = data.candidate_id ?? data.candidateId ?? candidateId ?? null;
+      if (profileCandidateId && profileCandidateId !== candidateId) {
+        setCandidateId(profileCandidateId);
+        saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
+      }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       setUserProfile((prev) =>
         hydrateProfileStrength({
           ...prev,
+          candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
+          candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
           name: data.name ?? prev.name,
           email: data.email ?? prev.email,
