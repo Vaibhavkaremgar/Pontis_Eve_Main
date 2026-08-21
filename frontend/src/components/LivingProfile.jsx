@@ -130,9 +130,15 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
   const [deleting, setDeleting] = React.useState(false);
+  const resolvedPhotoSrc = React.useMemo(() => resolvePhotoSrc(photoUrl), [photoUrl]);
   const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
 
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
+
+  React.useEffect(() => {
+    if (!resolvedPhotoSrc) return;
+    console.debug("[ProfilePhotoUpload] resolved image src:", resolvedPhotoSrc);
+  }, [resolvedPhotoSrc]);
 
   const clearInput = () => {
     if (inputRef.current) inputRef.current.value = "";
@@ -185,7 +191,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
     <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
       {photoUrl ? (
         <img
-          src={resolvePhotoSrc(photoUrl)}
+          src={resolvedPhotoSrc}
           alt={user.name || "Candidate profile photo"}
           className="w-14 h-14 rounded-full object-cover"
         />

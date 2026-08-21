@@ -62,16 +62,19 @@ async function flush() {
 describe("ProfilePhotoUpload", () => {
   let alerts;
   let confirms;
+  let debugSpy;
 
   beforeEach(() => {
     jest.clearAllMocks();
     alerts = jest.spyOn(window, "alert").mockImplementation(() => {});
     confirms = jest.spyOn(window, "confirm").mockReturnValue(true);
+    debugSpy = jest.spyOn(console, "debug").mockImplementation(() => {});
   });
 
   afterEach(() => {
     alerts.mockRestore();
     confirms.mockRestore();
+    debugSpy.mockRestore();
   });
 
   it("shows the default placeholder when no photo exists", () => {
@@ -81,7 +84,7 @@ describe("ProfilePhotoUpload", () => {
     view.unmount();
   });
 
-  it("resolves relative photo urls against the backend base url", () => {
+  it("resolves relative photo urls against the backend base url on dashboard reload", () => {
     const view = renderPhotoUpload({
       user: {
         name: "Jane Doe",
@@ -93,6 +96,10 @@ describe("ProfilePhotoUpload", () => {
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
     expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view");
+    expect(debugSpy).toHaveBeenCalledWith(
+      "[ProfilePhotoUpload] resolved image src:",
+      "http://localhost:8001/api/candidate/cand-123/photo/view"
+    );
     view.unmount();
   });
 
@@ -149,7 +156,13 @@ describe("ProfilePhotoUpload", () => {
     expect(axios.post).toHaveBeenCalledTimes(1);
     expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view");
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeNull();
-    expect(view.container.querySelector("img")).toBeTruthy();
+    const img = view.container.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view");
+    expect(debugSpy).toHaveBeenCalledWith(
+      "[ProfilePhotoUpload] resolved image src:",
+      "http://localhost:8001/api/candidate/cand-123/photo/view"
+    );
 
     const deleteBtn = view.container.querySelector('button[aria-label="Delete profile photo"]');
     expect(deleteBtn).toBeTruthy();
