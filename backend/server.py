@@ -1836,6 +1836,12 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     existing_raw_data = existing_raw_row[0] if isinstance(existing_raw_row[0], dict) else json.loads(existing_raw_row[0])
                 except Exception:
                     existing_raw_data = {}
+            existing_raw_data["certifications"] = _candidate_certification_sources(
+                {
+                    "raw_data": existing_raw_data,
+                    "parsed_resume_json": parsed,
+                }
+            )
 
             # UPDATE existing candidate — preserve raw_data, write all resume fields
             await db.execute(
@@ -1869,7 +1875,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "work_experience": work_exp_json,
                     "education": edu_json,
                     "exp_years": parsed.get("experience_years"),
-                    "raw_data": json.dumps(existing_raw_data),
+                        "raw_data": json.dumps(existing_raw_data),
                     "resume_file_path": str(dest_path),
                     "resume_text": resume_text,
                     "parsed_resume_json": json.dumps(parsed),
@@ -1885,14 +1891,14 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                         (id, name, email, phone, "current_role", current_company,
                          location, summary, skills, work_experience, education,
                          experience_years, source, created_by_source, updated_by_source,
-                         parsing_status, resume_file_path, resume_text, resume_received_at,
+                         parsing_status, resume_file_path, resume_text, resume_received_at, raw_data,
                          parsed_resume_json, parsed_resume_text,
                          created_at, updated_at)
                     VALUES
                         (:cid, :name, :email, :phone, :current_role, :current_company,
                          :location, :summary, CAST(:skills AS json), CAST(:work_experience AS json), CAST(:education AS json),
                          :exp_years, 'eve', 'eve', 'eve',
-                         'completed', :resume_file_path, :resume_text, now(),
+                         'completed', :resume_file_path, :resume_text, now(), CAST(:raw_data AS jsonb),
                          CAST(:parsed_resume_json AS jsonb), :parsed_resume_text,
                          now(), now())
                 """),
@@ -1911,6 +1917,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "exp_years": parsed.get("experience_years"),
                     "resume_file_path": str(dest_path),
                     "resume_text": resume_text,
+                    "raw_data": json.dumps({"certifications": _candidate_certification_sources({"parsed_resume_json": parsed})}),
                     "parsed_resume_json": json.dumps(parsed),
                     "parsed_resume_text": resume_text,
                 },
@@ -2624,13 +2631,15 @@ FIELD DEFINITIONS — use exactly these keys:
                    Do NOT put a technology name as title. Do NOT put a company name as title.
   name, email, phone, location, bio: plain string fields.
   education      : List of {{"degree": "", "institution": "", "start_date": "", "end_date": ""}}.
+  certifications : List of certification names only.
 
 EXAMPLE — if candidate says "I worked at ABC Technologies as a Python Backend Developer. I built REST APIs with FastAPI and PostgreSQL.":
   <<<PROFILE_UPDATES>>>
   {{"profile_updates": {{
     "current_role": "Python Backend Developer",
     "work_experience": [{{"title": "Python Backend Developer", "company": "ABC Technologies", "description": "Built REST APIs using FastAPI and PostgreSQL."}}],
-    "skills": ["Python", "FastAPI", "PostgreSQL", "REST APIs"]
+    "skills": ["Python", "FastAPI", "PostgreSQL", "REST APIs"],
+    "certifications": ["AWS Certified Solutions Architect - Associate"]
   }}}}
   <<<END_UPDATES>>>
 
@@ -2677,6 +2686,7 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     add("Preferred Roles", profile.get("preferred_roles") or raw_data.get("preferred_roles"), required=True)
     add("Availability", profile.get("availability") or raw_data.get("availability"), required=True)
     add("Notice Period", raw_data.get("notice_period"), required=False)
+    add("Certifications", raw_data.get("certifications"), required=False)
     add("Salary Expectation", raw_data.get("salary_expectation"), required=False)
     add("Work Type Preference", raw_data.get("work_type_preference"), required=False)
     add("Career Goals", raw_data.get("career_goals"), required=False)
@@ -2869,13 +2879,25 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             }
         ]
 
+    certifications = _extract_first_match(
+        text,
+        [
+            r"\bcertifications?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:hold|holding|have|earned|completed|obtained|got)\s+(?P<value>.+?)(?:\s+certifications?\b|\s+certified\b|[.!?;]|$)",
+        ],
+    )
+    if certifications:
+        normalized_certs = _merge_certifications([], _split_update_list(certifications))
+        if normalized_certs:
+            updates["certifications"] = normalized_certs
+
     return updates
 
 
 VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
-    "preferred_roles", "availability", "notice_period",
+    "preferred_roles", "availability", "notice_period", "certifications",
 }
 
 
@@ -2953,6 +2975,17 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
             existing_roles = _normalize_preferred_roles(existing_raw.get("preferred_roles") or [])
             if merged_roles != existing_roles:
                 existing_raw["preferred_roles"] = merged_roles
+                raw_data_changed = True
+        elif field == "certifications":
+            if not isinstance(value, list):
+                continue
+            merged_certs = _merge_certifications(
+                _candidate_certification_sources(existing),
+                value,
+            )
+            existing_certs = _candidate_certification_sources(existing)
+            if merged_certs != existing_certs:
+                existing_raw["certifications"] = merged_certs
                 raw_data_changed = True
         elif field in ("availability", "notice_period"):
             if not isinstance(value, str):
@@ -3471,6 +3504,31 @@ def _normalize_certifications(certifications: Any) -> list[str]:
     return normalized
 
 
+def _candidate_certification_sources(candidate: dict, extra: Any = None) -> list[str]:
+    """Collect certifications from all persisted candidate sources plus optional new values."""
+    sources: list[Any] = []
+
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+    if isinstance(raw_data, dict):
+        sources.extend(raw_data.get("certifications") or [])
+
+    parsed_resume = _parse_raw_data(candidate.get("parsed_resume_json"))
+    if isinstance(parsed_resume, dict):
+        sources.extend(parsed_resume.get("certifications") or [])
+
+    if isinstance(extra, list):
+        sources.extend(extra)
+    elif extra is not None:
+        sources.append(extra)
+
+    return _normalize_certifications(sources)
+
+
+def _merge_certifications(existing: Any, new_items: Any) -> list[str]:
+    """Merge certification lists with normalized de-duplication."""
+    return _normalize_certifications([*(existing or []), *(new_items or [])])
+
+
 def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
     skill_key = _normalize_profile_key(skill_text)
     cert_key = _normalize_profile_key(cert_text)
@@ -3642,9 +3700,11 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
                 existing_pr.append(r)
                 seen_pr.add(r.lower())
         raw_data["preferred_roles"] = existing_pr
-    if voice.get("certifications"):
-        existing_certs = raw_data.get("certifications") or []
-        raw_data["certifications"] = _normalize_certifications([*existing_certs, *voice["certifications"]])
+    if voice.get("certifications") is not None or raw_data.get("certifications") is not None or merged.get("parsed_resume_json"):
+        raw_data["certifications"] = _candidate_certification_sources(
+            merged,
+            voice.get("certifications") or [],
+        )
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
 

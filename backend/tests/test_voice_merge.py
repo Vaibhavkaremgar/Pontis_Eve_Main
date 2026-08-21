@@ -10,7 +10,13 @@ import pytest
 # Allow importing server module directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from server import _merge_list, _merge_skills, _merge_voice_into_profile, _normalize_certifications
+from server import (
+    _merge_certifications,
+    _merge_list,
+    _merge_skills,
+    _merge_voice_into_profile,
+    _normalize_certifications,
+)
 
 
 class TestMergeList:
@@ -143,6 +149,23 @@ class TestMergeVoiceIntoProfile:
             "AWS Solutions Architect Associate",
         ])
         assert result == ["AWS Certified Solutions Architect - Associate"]
+
+    def test_merge_certifications_deduplicates_existing_and_new_values(self):
+        result = _merge_certifications(
+            ["AWS Certified Solutions Architect - Associate"],
+            [" aws certified solutions architect associate ", "AWS Solutions Architect Associate"],
+        )
+        assert result == ["AWS Certified Solutions Architect - Associate"]
+
+    def test_merge_certifications_appends_genuinely_new_items(self):
+        result = _merge_certifications(
+            ["AWS Certified Solutions Architect - Associate"],
+            ["Google Cloud Professional Data Engineer"],
+        )
+        assert result == [
+            "AWS Certified Solutions Architect - Associate",
+            "Google Cloud Professional Data Engineer",
+        ]
 
     def test_work_experience_appended(self):
         profile = self._base_profile()

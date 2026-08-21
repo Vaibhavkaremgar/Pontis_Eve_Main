@@ -650,6 +650,135 @@ class TestVoiceIntakePersistenceRegression:
         assert "Java Backend Developer" in insert_params["preferred_roles"]
         assert insert_params["notice_period"] == "I can join immediately."
 
+    def test_voice_intake_persists_resume_certifications_without_duplicates(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        executed = []
+        state = {
+            "candidate": {
+                "id": "candidate-cert-voice",
+                "summary": "",
+                "current_role": "",
+                "current_company": "",
+                "location": "",
+                "experience_years": None,
+                "skills": [],
+                "work_experience": [],
+                "education": [],
+                "parsed_resume_json": {
+                    "certifications": ["AWS Certified Solutions Architect - Associate"],
+                },
+                "raw_data": {},
+            },
+            "prefs": None,
+        }
+
+        class FakeResult:
+            def __init__(self, rows=None, scalar_value=None):
+                self._rows = rows or []
+                self._scalar_value = scalar_value
+
+            def mappings(self):
+                return self
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+            def scalar(self):
+                return self._scalar_value
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                params = params or {}
+                executed.append((sql, params))
+                if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
+                    return FakeResult([state["candidate"]])
+                if "FROM candidate_preferences" in sql and "SELECT" in sql:
+                    if state["prefs"] is None:
+                        return FakeResult([])
+                    return FakeResult([state["prefs"]])
+                if "UPDATE candidates SET" in sql:
+                    if "summary" in params:
+                        state["candidate"]["summary"] = params["summary"]
+                    if "current_role" in params:
+                        state["candidate"]["current_role"] = params["current_role"]
+                    if "current_company" in params:
+                        state["candidate"]["current_company"] = params["current_company"]
+                    if "location" in params:
+                        state["candidate"]["location"] = params["location"]
+                    if "experience_years" in params:
+                        state["candidate"]["experience_years"] = params["experience_years"]
+                    if "skills" in params:
+                        state["candidate"]["skills"] = json.loads(params["skills"])
+                    if "work_experience" in params:
+                        state["candidate"]["work_experience"] = json.loads(params["work_experience"])
+                    if "education" in params:
+                        state["candidate"]["education"] = json.loads(params["education"])
+                    if "raw_data" in params:
+                        state["candidate"]["raw_data"] = json.loads(params["raw_data"])
+                    return FakeResult()
+                if "INSERT INTO candidate_preferences" in sql:
+                    state["prefs"] = {
+                        "candidate_id": params["cid"],
+                        "preferred_roles": json.loads(params["preferred_roles"]),
+                        "notice_period": params["notice_period"],
+                    }
+                    return FakeResult()
+                if "UPDATE candidate_preferences SET" in sql:
+                    return FakeResult()
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        voice_data = {
+            "certifications": ["aws certified solutions architect associate"],
+            "preferred_roles": ["Cloud Engineer"],
+        }
+        voice_intake_state = {
+            "status": "in_progress",
+            "progress": 1,
+            "current_question": "What certifications do you have?",
+            "completed_turns": [
+                {
+                    "question": "What certifications do you have?",
+                    "answer": "AWS Certified Solutions Architect - Associate",
+                }
+            ],
+        }
+
+        asyncio.run(
+            server._persist_voice_intake_profile_state(
+                "candidate-cert-voice",
+                state["candidate"],
+                voice_data,
+                voice_intake_state,
+            )
+        )
+        asyncio.run(
+            server._persist_voice_intake_profile_state(
+                "candidate-cert-voice",
+                state["candidate"],
+                voice_data,
+                voice_intake_state,
+            )
+        )
+
+        assert state["candidate"]["raw_data"]["certifications"] == [
+            "AWS Certified Solutions Architect - Associate"
+        ]
+
     def test_target_role_persists_to_profile_and_candidate_preferences(self):
         cid = _create_candidate("Target Role Persistence")
         transcript = (
@@ -3128,6 +3257,53 @@ class TestChatVoiceIntakeStateAdvance:
         assert len(second_voice_intake.get("completed_turns") or []) == 4
         assert second_voice_intake["current_question"] == self.NEXT_QUESTION
         assert second_voice_intake["progress"] == 4
+
+    def test_chat_certification_update_dedupes_against_existing_resume_certification(self, monkeypatch):
+        import sys, os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = self._base_state()
+        state["candidate"]["raw_data"]["certifications"] = [
+            "AWS Certified Solutions Architect - Associate"
+        ]
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Thanks for sharing.",
+            profile_updates={
+                "certifications": [" aws certified solutions architect associate "],
+            },
+            llm_analysis={
+                "known_topics": ["background_experience", "target_role", "career_preferences"],
+                "missing_topics": ["availability_location"],
+                "current_question_answered": True,
+                "next_question": self.NEXT_QUESTION,
+                "completed": False,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[
+                server.ChatMessageIn(role="assistant", content="Hi"),
+                server.ChatMessageIn(
+                    role="user",
+                    content="I have AWS Certified Solutions Architect - Associate certification.",
+                ),
+            ],
+            session_id="session-chat-cert",
+            candidate_id="candidate-chat-voice",
+        )
+
+        first = asyncio.run(server.chat(request))
+        second = asyncio.run(server.chat(request))
+
+        assert first.reply == "Thanks for sharing."
+        assert second.reply == "Thanks for sharing."
+        assert state["candidate"]["raw_data"]["certifications"] == [
+            "AWS Certified Solutions Architect - Associate"
+        ]
 
     def test_chat_ordinary_message_does_not_modify_voice_intake(self, monkeypatch):
         import sys, os
