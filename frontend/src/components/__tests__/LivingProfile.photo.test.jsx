@@ -81,6 +81,36 @@ describe("ProfilePhotoUpload", () => {
     view.unmount();
   });
 
+  it("resolves relative photo urls against the backend base url", () => {
+    const view = renderPhotoUpload({
+      user: {
+        name: "Jane Doe",
+        avatar: "/api/candidate/cand-123/photo/view",
+        candidate_id: "cand-123",
+      },
+    });
+
+    const img = view.container.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view");
+    view.unmount();
+  });
+
+  it("keeps absolute photo urls unchanged", () => {
+    const view = renderPhotoUpload({
+      user: {
+        name: "Jane Doe",
+        avatar: "https://cdn.example.com/photos/cand-123.webp",
+        candidate_id: "cand-123",
+      },
+    });
+
+    const img = view.container.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img.getAttribute("src")).toBe("https://cdn.example.com/photos/cand-123.webp");
+    view.unmount();
+  });
+
   it("rejects unsupported image types before uploading", async () => {
     axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view" } });
     const onPhotoChange = jest.fn();

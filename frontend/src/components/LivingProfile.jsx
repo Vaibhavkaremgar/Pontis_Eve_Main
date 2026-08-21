@@ -113,6 +113,18 @@ function EducationRow({ edu }) {
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 
+function resolvePhotoSrc(photoUrl) {
+  if (!photoUrl) return null;
+  if (/^https?:\/\//i.test(photoUrl)) return photoUrl;
+  if (!BACKEND_URL) return photoUrl;
+
+  try {
+    return new URL(photoUrl, BACKEND_URL).toString();
+  } catch {
+    return photoUrl;
+  }
+}
+
 export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const inputRef = React.useRef(null);
   const [uploading, setUploading] = React.useState(false);
@@ -173,7 +185,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
     <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
       {photoUrl ? (
         <img
-          src={photoUrl}
+          src={resolvePhotoSrc(photoUrl)}
           alt={user.name || "Candidate profile photo"}
           className="w-14 h-14 rounded-full object-cover"
         />
