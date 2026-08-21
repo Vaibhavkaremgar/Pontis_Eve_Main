@@ -162,21 +162,13 @@ export default function Sidebar({
           onClick={() => setMenuOpen((v) => !v)}
           className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-black/[0.03] transition-colors"
         >
-          {userProfile.avatar ? (
-            <img
-              src={userProfile.avatar}
-              alt={userProfile.name}
-              className="w-8 h-8 rounded-full object-cover"
-            />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-[#E7E3F0] flex items-center justify-center shrink-0">
-              <span className="text-[12px] font-medium text-[#7B6FB8]">
-                {userProfile.name
-                  ? userProfile.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()
-                  : "?"}
-              </span>
-            </div>
-          )}
+          <div
+            data-testid="user-profile-icon"
+            className="w-8 h-8 rounded-full bg-[#E7E3F0] flex items-center justify-center shrink-0"
+            aria-hidden="true"
+          >
+            <User className="w-[15px] h-[15px] text-[#7B6FB8]" strokeWidth={1.8} />
+          </div>
           <div className="flex-1 min-w-0 text-left">
             <p className="text-[12px] font-medium text-[#1F1F1F] truncate">
               {userProfile.name}

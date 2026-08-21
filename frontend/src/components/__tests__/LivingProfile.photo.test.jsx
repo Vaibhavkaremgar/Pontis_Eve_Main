@@ -137,8 +137,8 @@ describe("ProfilePhotoUpload", () => {
     view.unmount();
   });
 
-  it("uploads, renders, and then deletes a profile photo", async () => {
-    axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view" } });
+  it("uploads a first photo, renders the returned url, and then deletes it", async () => {
+    axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view?rev=first" } });
     axios.delete.mockResolvedValue({ data: { status: "deleted" } });
     const onPhotoChange = jest.fn();
     const view = renderPhotoUpload({ onPhotoChange });
@@ -154,14 +154,14 @@ describe("ProfilePhotoUpload", () => {
     await flush();
 
     expect(axios.post).toHaveBeenCalledTimes(1);
-    expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view");
+    expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view?rev=first");
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeNull();
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view");
+    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=first");
     expect(debugSpy).toHaveBeenCalledWith(
       "[ProfilePhotoUpload] resolved image src:",
-      "http://localhost:8001/api/candidate/cand-123/photo/view"
+      "http://localhost:8001/api/candidate/cand-123/photo/view?rev=first"
     );
 
     const deleteBtn = view.container.querySelector('button[aria-label="Delete profile photo"]');
@@ -176,6 +176,56 @@ describe("ProfilePhotoUpload", () => {
     expect(axios.delete).toHaveBeenCalledWith("http://localhost:8001/api/candidate/cand-123/photo");
     expect(onPhotoChange).toHaveBeenLastCalledWith(null);
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeTruthy();
+    view.unmount();
+  });
+
+  it("replaces an existing photo without requiring deletion first", async () => {
+    axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view?rev=replacement" } });
+    const onPhotoChange = jest.fn();
+    const view = renderPhotoUpload({
+      onPhotoChange,
+      user: {
+        name: "Jane Doe",
+        avatar: "/api/candidate/cand-123/photo/view?rev=old",
+        candidate_id: "cand-123",
+      },
+    });
+
+    const existingImg = view.container.querySelector("img");
+    expect(existingImg).toBeTruthy();
+    expect(existingImg.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=old");
+
+    const input = view.container.querySelector('input[type="file"]');
+    const file = new File(["png"], "replacement.png", { type: "image/png" });
+
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await flush();
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.delete).not.toHaveBeenCalled();
+    expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view?rev=replacement");
+    const img = view.container.querySelector("img");
+    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=replacement");
+    view.unmount();
+  });
+
+  it("keeps the replacement visible after a remount with the refreshed profile data", () => {
+    const replacementUrl = "/api/candidate/cand-123/photo/view?rev=replacement";
+    const view = renderPhotoUpload({
+      user: {
+        name: "Jane Doe",
+        avatar: replacementUrl,
+        candidate_id: "cand-123",
+      },
+    });
+
+    const img = view.container.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img.getAttribute("src")).toBe(`http://localhost:8001${replacementUrl}`);
     view.unmount();
   });
 

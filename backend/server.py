@@ -232,8 +232,11 @@ def _candidate_photo_dir(candidate_id: str) -> Path:
     return (DOCS_DIR / candidate_id / "photo").resolve()
 
 
-def _photo_view_url(candidate_id: str) -> str:
-    return f"/api/candidate/{candidate_id}/photo/view"
+def _photo_view_url(candidate_id: str, cache_key: Optional[str] = None) -> str:
+    url = f"/api/candidate/{candidate_id}/photo/view"
+    if cache_key:
+        return f"{url}?rev={cache_key}"
+    return url
 
 
 def _resolve_candidate_photo_path(candidate_id: str, file_path: Any) -> Optional[Path]:
@@ -288,7 +291,7 @@ def _candidate_photo_url(candidate: dict, raw_data: dict) -> Optional[str]:
 
     stored_path = raw_data.get("photo_file_path")
     if _resolve_candidate_photo_path(candidate_id, stored_path):
-        return _photo_view_url(candidate_id)
+        return _photo_view_url(candidate_id, raw_data.get("photo_version"))
 
     return None
 
@@ -1908,10 +1911,11 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
     existing = await _get_candidate_row(candidate_id)
     file_bytes = await file.read()
     ext = _validate_candidate_photo_upload(file.content_type or "", file_bytes)
+    photo_version = uuid.uuid4().hex
 
     dest_dir = _candidate_photo_dir(candidate_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = dest_dir / f"{uuid.uuid4()}{ext}"
+    dest_path = dest_dir / f"{photo_version}{ext}"
 
     raw_data = _parse_raw_data(existing.get("raw_data"))
     old_path = raw_data.get("photo_file_path")
@@ -1919,8 +1923,9 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
 
     try:
         dest_path.write_bytes(file_bytes)
-        raw_data["photo_url"] = _photo_view_url(candidate_id)
+        raw_data["photo_url"] = _photo_view_url(candidate_id, photo_version)
         raw_data["photo_file_path"] = str(dest_path)
+        raw_data["photo_version"] = photo_version
         async with SessionLocal() as db:
             await db.execute(
                 text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
@@ -1950,7 +1955,11 @@ async def view_profile_photo(candidate_id: str):
     suffix = Path(file_path).suffix.lower()
     media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                   "webp": "image/webp", "gif": "image/gif"}.get(suffix.lstrip("."), "image/jpeg")
-    return FileResponse(file_path, media_type=media_type)
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, max-age=0, must-revalidate"},
+    )
 
 
 @api_router.delete("/candidate/{candidate_id}/photo")
@@ -1961,6 +1970,7 @@ async def delete_profile_photo(candidate_id: str):
 
     raw_data.pop("photo_url", None)
     raw_data.pop("photo_file_path", None)
+    raw_data.pop("photo_version", None)
 
     async with SessionLocal() as db:
         await db.execute(
