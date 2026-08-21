@@ -10,24 +10,34 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 jest.mock("axios");
 
 function renderPhotoUpload(props = {}) {
+  const { wrapInForm = false, onSubmit = jest.fn(), ...photoProps } = props;
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = ReactDOM.createRoot(container);
 
   act(() => {
-    root.render(
+    const content = (
       <ProfilePhotoUpload
         user={{ name: "Jane Doe", avatar: null }}
         candidateId="cand-123"
         onPhotoChange={jest.fn()}
-        {...props}
+        {...photoProps}
       />
+    );
+
+    root.render(
+      wrapInForm ? (
+        <form onSubmit={onSubmit}>{content}</form>
+      ) : (
+        content
+      )
     );
   });
 
   return {
     container,
     root,
+    onSubmit,
     unmount() {
       act(() => {
         root.unmount();
@@ -117,6 +127,38 @@ describe("ProfilePhotoUpload", () => {
     expect(axios.delete).toHaveBeenCalledWith("http://localhost:8001/api/candidate/cand-123/photo");
     expect(onPhotoChange).toHaveBeenLastCalledWith(null);
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeTruthy();
+    view.unmount();
+  });
+
+  it("keeps the upload trigger from submitting a parent form and uploads a selected photo", async () => {
+    axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view" } });
+    const onPhotoChange = jest.fn();
+    const view = renderPhotoUpload({ onPhotoChange, wrapInForm: true });
+
+    const uploadButton = view.container.querySelector('button[aria-label="Upload profile photo"]');
+    const input = view.container.querySelector('input[type="file"]');
+    const file = new File(["webp"], "avatar.webp", { type: "image/webp" });
+
+    expect(uploadButton.getAttribute("type")).toBe("button");
+
+    await act(async () => {
+      uploadButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(view.onSubmit).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [file], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await flush();
+
+    expect(axios.post).toHaveBeenCalledWith(
+      "http://localhost:8001/api/candidate/cand-123/photo",
+      expect.any(FormData)
+    );
+    expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view");
     view.unmount();
   });
 });

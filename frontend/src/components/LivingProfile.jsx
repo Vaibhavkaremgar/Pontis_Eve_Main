@@ -185,6 +185,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
         </div>
       )}
       <button
+        type="button"
         onClick={() => inputRef.current?.click()}
         disabled={uploading || deleting}
         aria-label="Upload profile photo"
