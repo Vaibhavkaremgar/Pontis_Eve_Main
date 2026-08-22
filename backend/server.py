@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -22,6 +22,21 @@ from openai import AsyncOpenAI
 import pypdf
 import io
 import asyncio
+import html
+import textwrap
+
+try:  # pragma: no cover - optional dependency
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import KeepTogether, ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    REPORTLAB_AVAILABLE = True
+except Exception:  # pragma: no cover - fallback path is exercised when reportlab is absent
+    colors = None
+    letter = (612.0, 792.0)
+    ParagraphStyle = getSampleStyleSheet = inch = KeepTogether = ListFlowable = ListItem = Paragraph = SimpleDocTemplate = Spacer = Table = TableStyle = None
+    REPORTLAB_AVAILABLE = False
 
 try:
     import resend
@@ -211,6 +226,512 @@ def _normalize_for_frontend(c: dict) -> dict:
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
     return profile
+
+
+def _pdf_safe_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(_pdf_safe_text(item) for item in value if _pdf_safe_text(item))
+    if isinstance(value, dict):
+        parts = []
+        for key in ("title", "degree", "company", "institution", "name", "value", "description"):
+            cleaned = _pdf_safe_text(value.get(key))
+            if cleaned:
+                parts.append(cleaned)
+        return " - ".join(parts) if parts else json.dumps(value, ensure_ascii=True, default=str)
+    return str(value).strip()
+
+
+def _pdf_filename(candidate_name: str, candidate_id: str) -> str:
+    base = _pdf_safe_text(candidate_name) or f"candidate_{candidate_id}"
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-")
+    if not base:
+        base = f"candidate_{candidate_id}"
+    if base.lower().endswith(".pdf"):
+        return base
+    if not base.lower().endswith("_profile"):
+        base += "_profile"
+    return f"{base}.pdf"
+
+
+def _pdf_story_from_profile(profile: dict) -> list:
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "CandidateProfileTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=22,
+        leading=26,
+        textColor=colors.HexColor("#1F1F1F"),
+        spaceAfter=6,
+    )
+    subtitle_style = ParagraphStyle(
+        "CandidateProfileSubtitle",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10.5,
+        leading=14,
+        textColor=colors.HexColor("#4A4A48"),
+        spaceAfter=12,
+    )
+    section_style = ParagraphStyle(
+        "CandidateProfileSection",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=13,
+        leading=16,
+        textColor=colors.HexColor("#1F1F1F"),
+        spaceBefore=14,
+        spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "CandidateProfileBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#2B2B2B"),
+    )
+    small_style = ParagraphStyle(
+        "CandidateProfileSmall",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#6A6A68"),
+    )
+    bullet_style = ParagraphStyle(
+        "CandidateProfileBullet",
+        parent=body_style,
+        leftIndent=12,
+        firstLineIndent=0,
+        bulletIndent=0,
+        spaceAfter=2,
+    )
+    meta_label_style = ParagraphStyle(
+        "CandidateProfileMetaLabel",
+        parent=small_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#1F1F1F"),
+    )
+    meta_value_style = ParagraphStyle(
+        "CandidateProfileMetaValue",
+        parent=small_style,
+        textColor=colors.HexColor("#4A4A48"),
+    )
+
+    def p(text: Any, style=body_style) -> Paragraph:
+        clean = _pdf_safe_text(text)
+        if not clean:
+            clean = " "
+        return Paragraph(html.escape(clean).replace("\n", "<br/>"), style)
+
+    def bullet_items(items: list[Any]) -> list:
+        cleaned_items = [_pdf_safe_text(item) for item in items]
+        cleaned_items = [item for item in cleaned_items if item]
+        if not cleaned_items:
+            return []
+        return [
+            ListFlowable(
+                [ListItem(p(item, bullet_style), leftIndent=6) for item in cleaned_items],
+                bulletType="bullet",
+                leftIndent=12,
+                bulletFontName="Helvetica",
+                bulletFontSize=8,
+                bulletOffsetY=2,
+            )
+        ]
+
+    story: list = [
+        p(profile.get("name") or "Candidate Profile", title_style),
+    ]
+
+    headline_parts = [
+        profile.get("headline"),
+        profile.get("current_company"),
+    ]
+    headline = " at ".join([part for part in headline_parts if _pdf_safe_text(part)])
+    meta_bits = [headline] if headline else []
+    meta_bits.extend(
+        part for part in [
+            profile.get("location"),
+            f"Experience: {profile.get('experience_years')}" if profile.get("experience_years") not in (None, "") else "",
+            profile.get("email"),
+            profile.get("phone"),
+        ]
+        if _pdf_safe_text(part)
+    )
+    if meta_bits:
+        story.append(p(" | ".join(_pdf_safe_text(bit) for bit in meta_bits), subtitle_style))
+
+    meta_rows = []
+    meta_fields = [
+        ("Candidate ID", profile.get("candidate_id")),
+        ("Location", profile.get("location")),
+        ("Email", profile.get("email")),
+        ("Phone", profile.get("phone")),
+        ("Experience", f"{profile.get('experience_years')} years" if profile.get("experience_years") not in (None, "") else ""),
+        ("Availability", profile.get("availability")),
+        ("Preferred roles", ", ".join(_pdf_safe_text(role) for role in (profile.get("preferred_roles") or []) if _pdf_safe_text(role))),
+    ]
+    for label, value in meta_fields:
+        if _pdf_safe_text(value):
+            meta_rows.append([p(label, meta_label_style), p(value, meta_value_style)])
+
+    if meta_rows:
+        meta_table = Table(meta_rows, colWidths=[1.35 * inch, 5.95 * inch], hAlign="LEFT")
+        meta_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFAF8")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E7E3DD")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#ECE8E2")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.extend([meta_table, Spacer(1, 0.12 * inch)])
+
+    def add_section(title: str, body: list) -> None:
+        if not body:
+            return
+        story.append(p(title, section_style))
+        story.extend(body)
+        story.append(Spacer(1, 0.08 * inch))
+
+    summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
+    if summary:
+        add_section("Summary", [p(summary)])
+
+    skills = profile.get("keySkills") or profile.get("skills") or []
+    if skills:
+        add_section("Skills", bullet_items(skills))
+
+    certifications = profile.get("certifications") or []
+    if certifications:
+        add_section("Certifications", bullet_items(certifications))
+
+    experience = profile.get("experience") or profile.get("work_experience") or []
+    if experience:
+        exp_blocks = []
+        for item in experience:
+            if not isinstance(item, dict):
+                continue
+            title_bits = [
+                _pdf_safe_text(item.get("title")),
+                _pdf_safe_text(item.get("company")),
+            ]
+            title_text = " at ".join([bit for bit in title_bits if bit])
+            if not title_text:
+                continue
+            block = [p(title_text, ParagraphStyle(
+                "CandidateProfileExperienceTitle",
+                parent=body_style,
+                fontName="Helvetica-Bold",
+                spaceAfter=2,
+            ))]
+            dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
+            if dates:
+                block.append(p(dates, small_style))
+            description = _pdf_safe_text(item.get("description") or item.get("summary"))
+            if description:
+                block.append(p(description))
+            exp_blocks.append(KeepTogether(block))
+        add_section("Experience", exp_blocks)
+
+    education = profile.get("education") or []
+    if education:
+        edu_blocks = []
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+            title_bits = [
+                _pdf_safe_text(item.get("degree")),
+                _pdf_safe_text(item.get("institution")),
+            ]
+            title_text = " at ".join([bit for bit in title_bits if bit])
+            if not title_text:
+                continue
+            block = [p(title_text, ParagraphStyle(
+                "CandidateProfileEducationTitle",
+                parent=body_style,
+                fontName="Helvetica-Bold",
+                spaceAfter=2,
+            ))]
+            dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
+            if dates:
+                block.append(p(dates, small_style))
+            edu_blocks.append(KeepTogether(block))
+        add_section("Education", edu_blocks)
+
+    additional_info = _pdf_safe_text(profile.get("additional_information") or profile.get("additionalInformation"))
+    if additional_info:
+        add_section("Additional Information", [p(additional_info)])
+
+    return story
+
+
+def _build_candidate_profile_pdf(profile: dict) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        return _build_candidate_profile_pdf_fallback(profile)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=0.72 * inch,
+        rightMargin=0.72 * inch,
+        topMargin=0.72 * inch,
+        bottomMargin=0.72 * inch,
+        title=f"{_pdf_safe_text(profile.get('name')) or 'Candidate'} Profile",
+        author="Eve",
+    )
+
+    def add_page_number(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(colors.HexColor("#9A9A98"))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 0.42 * inch, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    doc.build(_pdf_story_from_profile(profile), onFirstPage=add_page_number, onLaterPages=add_page_number)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
+    blocks: list[dict] = []
+
+    def add(text: Any, *, size: int = 10, bold: bool = False, indent: int = 0, after: float = 0.0) -> None:
+        clean = _pdf_safe_text(text)
+        if clean:
+            blocks.append({
+                "text": clean,
+                "size": size,
+                "bold": bold,
+                "indent": indent,
+                "after": after,
+            })
+
+    add(profile.get("name") or "Candidate Profile", size=20, bold=True, after=6)
+
+    headline_parts = [_pdf_safe_text(profile.get("headline")), _pdf_safe_text(profile.get("current_company"))]
+    headline = " at ".join([part for part in headline_parts if part])
+    meta_bits = [headline] if headline else []
+    meta_bits.extend(
+        _pdf_safe_text(part)
+        for part in [
+            profile.get("location"),
+            f"Experience: {profile.get('experience_years')}" if profile.get("experience_years") not in (None, "") else "",
+            profile.get("email"),
+            profile.get("phone"),
+        ]
+        if _pdf_safe_text(part)
+    )
+    if meta_bits:
+        add(" | ".join(meta_bits), size=10, after=6)
+
+    meta_fields = [
+        ("Candidate ID", profile.get("candidate_id")),
+        ("Location", profile.get("location")),
+        ("Email", profile.get("email")),
+        ("Phone", profile.get("phone")),
+        ("Experience", f"{profile.get('experience_years')} years" if profile.get("experience_years") not in (None, "") else ""),
+        ("Availability", profile.get("availability")),
+        ("Preferred roles", ", ".join(_pdf_safe_text(role) for role in (profile.get("preferred_roles") or []) if _pdf_safe_text(role))),
+    ]
+    for label, value in meta_fields:
+        if _pdf_safe_text(value):
+            add(f"{label}: {_pdf_safe_text(value)}", size=9, after=2)
+
+    summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
+    if summary:
+        add("Summary", size=13, bold=True, after=2)
+        add(summary, size=10, after=4)
+
+    skills = profile.get("keySkills") or profile.get("skills") or []
+    if skills:
+        add("Skills", size=13, bold=True, after=2)
+        for skill in skills:
+            add(f"- {_pdf_safe_text(skill)}", size=10, indent=12, after=1)
+        blocks.append({"blank": True, "after": 4})
+
+    certifications = profile.get("certifications") or []
+    if certifications:
+        add("Certifications", size=13, bold=True, after=2)
+        for cert in certifications:
+            add(f"- {_pdf_safe_text(cert)}", size=10, indent=12, after=1)
+        blocks.append({"blank": True, "after": 4})
+
+    experience = profile.get("experience") or profile.get("work_experience") or []
+    if experience:
+        add("Experience", size=13, bold=True, after=2)
+        for item in experience:
+            if not isinstance(item, dict):
+                continue
+            title_bits = [_pdf_safe_text(item.get("title")), _pdf_safe_text(item.get("company"))]
+            title_text = " at ".join([bit for bit in title_bits if bit])
+            if not title_text:
+                continue
+            add(title_text, size=10, bold=True, after=1)
+            dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
+            if dates:
+                add(dates, size=9, after=1)
+            description = _pdf_safe_text(item.get("description") or item.get("summary"))
+            if description:
+                add(description, size=10, indent=12, after=2)
+        blocks.append({"blank": True, "after": 4})
+
+    education = profile.get("education") or []
+    if education:
+        add("Education", size=13, bold=True, after=2)
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+            title_bits = [_pdf_safe_text(item.get("degree")), _pdf_safe_text(item.get("institution"))]
+            title_text = " at ".join([bit for bit in title_bits if bit])
+            if not title_text:
+                continue
+            add(title_text, size=10, bold=True, after=1)
+            dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
+            if dates:
+                add(dates, size=9, after=2)
+        blocks.append({"blank": True, "after": 4})
+
+    additional_info = _pdf_safe_text(profile.get("additional_information") or profile.get("additionalInformation"))
+    if additional_info:
+        add("Additional Information", size=13, bold=True, after=2)
+        add(additional_info, size=10, after=4)
+
+    return blocks
+
+
+def _build_candidate_profile_pdf_fallback(profile: dict) -> bytes:
+    page_width, page_height = letter
+    left_margin = 54
+    right_margin = 54
+    top_margin = 54
+    bottom_margin = 54
+    usable_width = page_width - left_margin - right_margin
+
+    def escape_pdf_text(value: str) -> str:
+        cleaned = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        return cleaned.encode("latin-1", "replace").decode("latin-1")
+
+    def font_name(is_bold: bool) -> str:
+        return "Helvetica-Bold" if is_bold else "Helvetica"
+
+    def wrap_text(text: str, size: int, indent: int) -> list[str]:
+        available = max(120.0, usable_width - indent)
+        max_chars = max(18, int(available / max(size * 0.52, 1)))
+        paragraphs = text.splitlines() or [text]
+        wrapped: list[str] = []
+        for paragraph in paragraphs:
+            if not paragraph.strip():
+                wrapped.append("")
+                continue
+            wrapped.extend(
+                textwrap.wrap(
+                    paragraph,
+                    width=max_chars,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                ) or [paragraph]
+            )
+        return wrapped
+
+    blocks = _candidate_profile_pdf_blocks(profile)
+    pages: list[list[str]] = []
+    commands: list[str] = []
+    current_y = page_height - top_margin
+
+    def flush_page() -> None:
+        nonlocal commands, current_y
+        if commands:
+            pages.append(commands)
+        commands = []
+        current_y = page_height - top_margin
+
+    for block in blocks:
+        if block.get("blank"):
+            current_y -= float(block.get("after") or 12)
+            continue
+
+        text = _pdf_safe_text(block.get("text"))
+        size = int(block.get("size") or 10)
+        indent = int(block.get("indent") or 0)
+        bold = bool(block.get("bold"))
+        after = float(block.get("after") or 0)
+        line_height = max(size * 1.35, 12)
+        for line in wrap_text(text, size, indent):
+            if current_y < bottom_margin + line_height:
+                flush_page()
+            commands.append(
+                f"BT /{font_name(bold)} {size} Tf {left_margin + indent} {current_y:.2f} Td ({escape_pdf_text(line)}) Tj ET"
+            )
+            current_y -= line_height
+        current_y -= after
+
+    if commands or not pages:
+        pages.append(commands)
+
+    objects: list[tuple[int, str]] = []
+    total_pages = len(pages)
+    page_ids = [5 + index for index in range(total_pages)]
+    content_ids = [5 + total_pages + index for index in range(total_pages)]
+
+    objects.append((1, "<< /Type /Catalog /Pages 2 0 R >>"))
+    objects.append((2, f"<< /Type /Pages /Kids [{' '.join(f'{page_id} 0 R' for page_id in page_ids)}] /Count {total_pages} >>"))
+    objects.append((3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"))
+    objects.append((4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"))
+
+    for page_id, content_id, page_commands in zip(page_ids, content_ids, pages):
+        content = "\n".join(page_commands)
+        content_bytes = content.encode("latin-1", "replace")
+        stream = f"<< /Length {len(content_bytes)} >>\nstream\n{content}\nendstream"
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width} {page_height}] "
+            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_id} 0 R >>"
+        )
+        objects.append((page_id, page_obj))
+        objects.append((content_id, stream))
+
+    objects.sort(key=lambda item: item[0])
+
+    header = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+    parts = [header]
+    offsets = {0: 0}
+    position = len(header)
+    for obj_id, body in objects:
+        chunk = f"{obj_id} 0 obj\n{body}\nendobj\n".encode("latin-1", "replace")
+        offsets[obj_id] = position
+        parts.append(chunk)
+        position += len(chunk)
+
+    max_id = max(offsets)
+    xref_offset = position
+    xref_lines = [f"xref\n0 {max_id + 1}\n", "0000000000 65535 f \n"]
+    for obj_id in range(1, max_id + 1):
+        xref_lines.append(f"{offsets.get(obj_id, 0):010d} 00000 n \n")
+    trailer = (
+        f"trailer\n<< /Size {max_id + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n"
+    )
+    parts.append("".join(xref_lines).encode("latin-1"))
+    parts.append(trailer.encode("latin-1"))
+    return b"".join(parts)
+
+
+async def _get_candidate_profile_payload(candidate_id: str) -> dict:
+    row = await _get_candidate_row(candidate_id)
+    enriched = dict(row)
+    enriched["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    return _normalize_for_frontend(enriched)
 
 
 async def _load_candidate_certificates(candidate_id: str) -> list[dict]:
@@ -2209,10 +2730,20 @@ async def get_candidate_chat(candidate_id: str):
 
 @api_router.get("/candidate/{candidate_id}/profile")
 async def get_candidate_profile(candidate_id: str):
-    row = await _get_candidate_row(candidate_id)
-    enriched = dict(row)
-    enriched["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
-    return _normalize_for_frontend(enriched)
+    return await _get_candidate_profile_payload(candidate_id)
+
+
+@api_router.get("/candidate/{candidate_id}/profile/download")
+async def download_candidate_profile(candidate_id: str):
+    profile = await _get_candidate_profile_payload(candidate_id)
+    candidate_name = _pdf_safe_text(profile.get("name")) or f"candidate_{candidate_id}"
+    filename = _pdf_filename(candidate_name, candidate_id)
+    pdf_bytes = _build_candidate_profile_pdf(profile)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @api_router.get("/candidate/{candidate_id}/documents")
@@ -5259,4 +5790,5 @@ app.add_middleware(
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )

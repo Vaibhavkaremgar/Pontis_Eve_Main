@@ -1147,95 +1147,37 @@ const TAB_TITLES = {
   opportunities: "Notifications",
 };
 
-async function downloadProfilePdf(contentRef, candidateName) {
-  const { default: jsPDF } = await import("jspdf");
-  const { default: html2canvas } = await import("html2canvas");
+function _profileDownloadFilename(candidateName) {
+  const safeName = (candidateName || "").trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9._-]/g, "");
+  return `${safeName || "candidate_profile"}_profile.pdf`;
+}
 
-  const el = contentRef.current;
-  if (!el) return;
+function _extractFilenameFromContentDisposition(value) {
+  if (!value || typeof value !== "string") return null;
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  const plainMatch = value.match(/filename="?([^"]+)"?/i);
+  return plainMatch?.[1] || null;
+}
 
-  // Build a PDF-only clone with excluded sections removed and headings renamed
-  const clone = el.cloneNode(true);
-  clone.style.cssText = "position:fixed;left:-9999px;top:0;overflow:visible;max-height:none;height:auto;width:" + el.offsetWidth + "px;background:#FDFDFC;";
-  document.body.appendChild(clone);
-
-  const firstName = candidateName ? candidateName.split(" ")[0] : null;
-  // Remove avatar/initials badge (the shrink-0 sibling in the header card flex row)
-  const headerCard = clone.querySelector("[data-testid='profile-header-card']");
-  if (headerCard) {
-    const flexRow = headerCard.querySelector(".flex.items-start.justify-between");
-    if (flexRow) {
-      const avatar = flexRow.querySelector("img.rounded-full, div.rounded-full.shrink-0");
-      avatar?.remove();
-    }
-  }
-
-  clone.querySelectorAll("*").forEach((node) => {
-    if (node.nodeType !== 1) return;
-    const text = node.textContent.trim();
-    if (node.getAttribute("role") === "switch") {
-      node.closest(".inline-flex")?.remove();
-      return;
-    }
-    if (node.tagName === "P" && text.startsWith("Available:")) { node.remove(); return; }
-    if (node.tagName === "H3" && text === "Preferred roles") { node.closest("div")?.remove(); return; }
-    if (node.tagName === "H3" && text === "Additional information") { node.closest("div")?.remove(); return; }
-    if (node.tagName === "H3" && text === "Verified skills") { node.textContent = "Skills"; return; }
-    if (node.tagName === "H3" && firstName && text === `Where ${firstName} has worked`) { node.textContent = "Experience"; }
-  });
-
+async function downloadProfilePdf(candidateId, candidateName) {
   try {
-    const canvas = await html2canvas(clone, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: "#FDFDFC",
-      logging: false,
+    const response = await axios.get(`${API}/candidate/${candidateId}/profile/download`, {
+      responseType: "blob",
     });
-
-    document.body.removeChild(clone);
-    const imgData = canvas.toDataURL("image/png");
-    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-
-    const pageW = pdf.internal.pageSize.getWidth();
-    const pageH = pdf.internal.pageSize.getHeight();
-    const margin = 12;
-    const printW = pageW - margin * 2;
-    const imgW = canvas.width;
-    const imgH = canvas.height;
-    const ratio = printW / imgW;
-    const printH = imgH * ratio;
-
-    let yOffset = 0;
-    let pageCount = 0;
-    const pageContentH = pageH - margin * 2;
-
-    while (yOffset < printH) {
-      if (pageCount > 0) pdf.addPage();
-      // srcY in canvas pixels for this page slice
-      const srcY = (yOffset / ratio);
-      const sliceH = Math.min(pageContentH / ratio, imgH - srcY);
-
-      // Create a slice canvas
-      const sliceCanvas = document.createElement("canvas");
-      sliceCanvas.width = imgW;
-      sliceCanvas.height = Math.ceil(sliceH);
-      const ctx = sliceCanvas.getContext("2d");
-      ctx.drawImage(canvas, 0, srcY, imgW, sliceH, 0, 0, imgW, sliceH);
-
-      const sliceData = sliceCanvas.toDataURL("image/png");
-      pdf.addImage(sliceData, "PNG", margin, margin, printW, sliceH * ratio);
-
-      yOffset += pageContentH;
-      pageCount++;
-    }
-
-    const filename = candidateName
-      ? `${candidateName.replace(/\s+/g, "_")}_profile.pdf`
-      : "candidate_profile.pdf";
-    pdf.save(filename);
-  } catch (err) {
-    if (document.body.contains(clone)) document.body.removeChild(clone);
-    throw err;
+    const blob = new Blob([response.data], { type: "application/pdf" });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download =
+      _extractFilenameFromContentDisposition(response.headers?.["content-disposition"]) ||
+      _profileDownloadFilename(candidateName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -1267,7 +1209,7 @@ export default function LivingProfile({
     if (pdfGenerating) return;
     setPdfGenerating(true);
     try {
-      await downloadProfilePdf(profileContentRef, userProfile.name);
+      await downloadProfilePdf(candidateId || userProfile.candidate_id || userProfile.candidateId || userProfile.id, userProfile.name);
     } finally {
       setPdfGenerating(false);
     }
