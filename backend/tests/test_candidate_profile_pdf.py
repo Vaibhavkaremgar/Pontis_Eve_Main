@@ -152,3 +152,92 @@ def test_candidate_profile_download_paginates_large_profiles(monkeypatch):
     assert "Jordan Smith" in text
     assert "Principal Product Designer 1" in text
     assert "Education" in text
+
+
+def test_candidate_profile_download_excludes_project_features_from_skills(monkeypatch):
+    async def fake_get_candidate_profile_payload(candidate_id: str):
+        return {
+            "candidate_id": candidate_id,
+            "name": "Alex Rivera",
+            "bio": "Operations leader who improved intake and resume workflows.",
+            "keySkills": ["Voice intake", "Resume processing", "Python"],
+            "experience": [
+                {
+                    "title": "Operations Lead",
+                    "company": "Northwind",
+                    "dates": "2023 - Present",
+                    "description": (
+                        "Owned voice intake and resume processing workflows across candidate operations."
+                    ),
+                }
+            ],
+            "certifications": ["Operations Excellence Certificate"],
+            "education": [
+                {
+                    "degree": "B.S. Business Administration",
+                    "institution": "State University",
+                    "dates": "2014 - 2018",
+                }
+            ],
+        }
+
+    async def fake_get_candidate_row(candidate_id: str):
+        return {"id": candidate_id, "raw_data": {}}
+
+    monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+
+    response = asyncio.run(server.download_candidate_profile("cand-789"))
+    text = _extract_pdf_text(response.body)
+    text_lower = text.lower()
+
+    assert "voice intake" in text_lower
+    assert "resume processing" in text_lower
+    assert "python" in text_lower
+
+    skills_section = text_lower.split("skills", 1)[1].split("certifications", 1)[0]
+    assert "voice intake" not in skills_section
+    assert "resume processing" not in skills_section
+    assert "python" in skills_section
+
+
+def test_candidate_profile_download_normalizes_unicode_dashes(monkeypatch):
+    async def fake_get_candidate_profile_payload(candidate_id: str):
+        return {
+            "candidate_id": candidate_id,
+            "name": "Maya Chen",
+            "bio": "Built third–party and AI—powered automation for end‑to‑end operations.",
+            "keySkills": ["Product Strategy"],
+            "experience": [
+                {
+                    "title": "Platform Lead",
+                    "company": "Bright Labs",
+                    "dates": "2021 – Present",
+                    "description": (
+                        "Led third–party integrations, AI—powered workflows, and end‑to‑end delivery."
+                    ),
+                }
+            ],
+            "education": [
+                {
+                    "degree": "B.S. Computer Science",
+                    "institution": "City College",
+                    "dates": "2011 – 2015",
+                }
+            ],
+        }
+
+    async def fake_get_candidate_row(candidate_id: str):
+        return {"id": candidate_id, "raw_data": {}}
+
+    monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+
+    response = asyncio.run(server.download_candidate_profile("cand-321"))
+    text = _extract_pdf_text(response.body).lower()
+
+    assert "third-party" in text
+    assert "ai-powered" in text
+    assert "end-to-end" in text
+    assert "bright labs" in text
+    assert "■" not in text

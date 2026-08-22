@@ -229,12 +229,23 @@ def _normalize_for_frontend(c: dict) -> dict:
 
 
 def _pdf_safe_text(value: Any) -> str:
+    dash_translation = str.maketrans({
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2212": "-",  # minus sign
+        "\uFE58": "-",  # small em dash
+        "\uFE63": "-",  # small hyphen-minus
+        "\uFF0D": "-",  # fullwidth hyphen-minus
+    })
     if value is None:
         return ""
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        return value.strip()
+        return value.strip().translate(dash_translation)
     if isinstance(value, list):
         return ", ".join(_pdf_safe_text(item) for item in value if _pdf_safe_text(item))
     if isinstance(value, dict):
@@ -312,6 +323,16 @@ def _candidate_profile_social_links(profile: dict) -> list[tuple[str, str]]:
                     )
 
     return links
+
+
+def _candidate_profile_pdf_skills(profile: dict) -> list[Any]:
+    excluded_skill_labels = {"voice intake", "resume processing"}
+    raw_skills = profile.get("keySkills") or profile.get("skills") or []
+    return [
+        skill
+        for skill in raw_skills
+        if _pdf_safe_text(skill).strip().lower() not in excluded_skill_labels
+    ]
 
 
 def _candidate_profile_header(profile: dict) -> list[Paragraph]:
@@ -440,7 +461,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
     if summary:
         add_section("Summary", [p(summary)])
 
-    skills = profile.get("keySkills") or profile.get("skills") or []
+    skills = _candidate_profile_pdf_skills(profile)
     if skills:
         add_section("Skills", bullet_items(skills))
 
@@ -562,7 +583,7 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
         add("Summary", size=13, bold=True, after=2)
         add(summary, size=10, after=4)
 
-    skills = profile.get("keySkills") or profile.get("skills") or []
+    skills = _candidate_profile_pdf_skills(profile)
     if skills:
         add("Skills", size=13, bold=True, after=2)
         for skill in skills:
