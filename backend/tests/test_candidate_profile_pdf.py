@@ -1,13 +1,23 @@
 import asyncio
+import io
 import os
+import re
 import sys
+
+from pypdf import PdfReader
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import server  # noqa: E402
 
 
-def test_candidate_profile_download_returns_pdf_headers_and_filename(monkeypatch):
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def test_candidate_profile_download_renders_clean_pdf_without_candidate_id_or_extra_fields(monkeypatch):
     async def fake_get_candidate_profile_payload(candidate_id: str):
         return {
             "candidate_id": candidate_id,
@@ -38,12 +48,107 @@ def test_candidate_profile_download_returns_pdf_headers_and_filename(monkeypatch
                 }
             ],
             "certifications": ["NN/g UX Certification"],
+            "additional_information": "Should not appear in the PDF.",
+        }
+
+    async def fake_get_candidate_row(candidate_id: str):
+        return {
+            "id": candidate_id,
+            "raw_data": {
+                "linkedin_url": "https://www.linkedin.com/in/janedoe",
+                "social_links": [
+                    {"label": "Portfolio", "url": "https://janedoe.design"},
+                    {"name": "GitHub", "href": "https://github.com/janedoe"},
+                ],
+            },
         }
 
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
     response = asyncio.run(server.download_candidate_profile("cand-123"))
+    text = _extract_pdf_text(response.body)
 
     assert response.headers["content-type"] == "application/pdf"
     assert response.headers["content-disposition"].endswith('filename="Jane_Doe_profile.pdf"')
     assert response.body.startswith(b"%PDF")
+
+    assert "Jane Doe" in text
+    assert "New York, NY" in text
+    assert "jane@example.com" in text
+    assert "+1 555 010 2000" in text
+    assert "https://www.linkedin.com/in/janedoe" in text
+    assert "https://janedoe.design" in text
+    assert "https://github.com/janedoe" in text
+
+    assert "targeting" not in text.lower()
+    assert "candidate id" not in text.lower()
+    assert "cand-123" not in text
+    assert "Availability" not in text
+    assert "Preferred roles" not in text
+    assert "Additional Information" not in text
+    assert "Should not appear in the PDF." not in text
+
+    assert "Summary" in text
+    assert "Skills" in text
+    assert "Certifications" in text
+    assert "Experience" in text
+    assert "Education" in text
+
+
+def test_candidate_profile_download_paginates_large_profiles(monkeypatch):
+    long_description = " ".join(
+        [
+            "Led large scale product design work across onboarding, search, and collaboration.",
+            "Partnered closely with engineering, research, and product teams to ship accessible flows.",
+        ]
+        * 8
+    )
+
+    async def fake_get_candidate_profile_payload(candidate_id: str):
+        return {
+            "candidate_id": candidate_id,
+            "name": "Jordan Smith",
+            "location": "Remote",
+            "email": "jordan@example.com",
+            "phone": "+1 555 010 3000",
+            "bio": "Product leader with a strong execution track record.",
+            "keySkills": ["Strategy", "Research", "Execution", "Communication"],
+            "certifications": ["Certified Product Leader"],
+            "experience": [
+                {
+                    "title": f"Principal Product Designer {index + 1}",
+                    "company": "Northstar Labs",
+                    "dates": f"201{index} - 202{index}",
+                    "description": long_description,
+                }
+                for index in range(8)
+            ],
+            "education": [
+                {
+                    "degree": "M.Des. Human Computer Interaction",
+                    "institution": "Carnegie Mellon University",
+                    "dates": "2010 - 2012",
+                }
+            ],
+        }
+
+    async def fake_get_candidate_row(candidate_id: str):
+        return {"id": candidate_id, "raw_data": {}}
+
+    monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+
+    response = asyncio.run(server.download_candidate_profile("cand-456"))
+    reader = PdfReader(io.BytesIO(response.body))
+    text = _extract_pdf_text(response.body)
+
+    assert len(reader.pages) >= 2
+    assert "cand-456" not in text
+    assert "Candidate ID" not in text
+    assert "Additional Information" not in text
+    assert "Availability" not in text
+    assert "Preferred roles" not in text
+    assert "Jordan Smith" in text
+    assert "Principal Product Designer 1" in text
+    assert "Education" in text

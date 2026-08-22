@@ -259,7 +259,62 @@ def _pdf_filename(candidate_name: str, candidate_id: str) -> str:
     return f"{base}.pdf"
 
 
-def _pdf_story_from_profile(profile: dict) -> list:
+def _candidate_profile_social_links(profile: dict) -> list[tuple[str, str]]:
+    raw_data = _parse_raw_data(profile.get("raw_data"))
+    sources = [profile]
+    if raw_data:
+        sources.append(raw_data)
+
+    label_map = [
+        ("linkedin_url", "LinkedIn"),
+        ("linkedin", "LinkedIn"),
+        ("github_url", "GitHub"),
+        ("github", "GitHub"),
+        ("portfolio_url", "Portfolio"),
+        ("portfolio", "Portfolio"),
+        ("website_url", "Website"),
+        ("website", "Website"),
+        ("personal_website", "Website"),
+        ("twitter_url", "X"),
+        ("x_url", "X"),
+        ("instagram_url", "Instagram"),
+        ("facebook_url", "Facebook"),
+    ]
+
+    links: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add_link(label: str, url: Any) -> None:
+        cleaned = _pdf_safe_text(url)
+        if not cleaned:
+            return
+        normalized = cleaned.lower()
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        links.append((label, cleaned))
+
+    for source in sources:
+        for field, label in label_map:
+            value = source.get(field)
+            if isinstance(value, str):
+                add_link(label, value)
+
+        social_links = source.get("social_links") or source.get("socialLinks") or source.get("links")
+        if isinstance(social_links, list):
+            for item in social_links:
+                if isinstance(item, str):
+                    add_link("Link", item)
+                elif isinstance(item, dict):
+                    add_link(
+                        _pdf_safe_text(item.get("label") or item.get("name") or item.get("type")) or "Link",
+                        item.get("url") or item.get("href") or item.get("link") or item.get("value"),
+                    )
+
+    return links
+
+
+def _candidate_profile_header(profile: dict) -> list[Paragraph]:
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "CandidateProfileTitle",
@@ -277,8 +332,43 @@ def _pdf_story_from_profile(profile: dict) -> list:
         fontSize=10.5,
         leading=14,
         textColor=colors.HexColor("#4A4A48"),
-        spaceAfter=12,
+        spaceAfter=6,
     )
+
+    def p(text: Any, style=subtitle_style) -> Paragraph:
+        clean = _pdf_safe_text(text)
+        if not clean:
+            clean = " "
+        return Paragraph(html.escape(clean).replace("\n", "<br/>"), style)
+
+    story: list[Paragraph] = [p(profile.get("name") or "Candidate Profile", title_style)]
+
+    contact_bits = [profile.get("location"), profile.get("email"), profile.get("phone")]
+    contact_line = " | ".join(_pdf_safe_text(bit) for bit in contact_bits if _pdf_safe_text(bit))
+    if contact_line:
+        story.append(p(contact_line))
+
+    social_links = _candidate_profile_social_links(profile)
+    if social_links:
+        story.append(
+            p(
+                " | ".join(f"{label}: {url}" for label, url in social_links),
+                ParagraphStyle(
+                    "CandidateProfileSocial",
+                    parent=subtitle_style,
+                    textColor=colors.HexColor("#5A5A57"),
+                    spaceAfter=10,
+                ),
+            )
+        )
+    elif story:
+        story[-1].style.spaceAfter = 10
+
+    return story
+
+
+def _pdf_story_from_profile(profile: dict) -> list:
+    styles = getSampleStyleSheet()
     section_style = ParagraphStyle(
         "CandidateProfileSection",
         parent=styles["Heading2"],
@@ -286,8 +376,8 @@ def _pdf_story_from_profile(profile: dict) -> list:
         fontSize=13,
         leading=16,
         textColor=colors.HexColor("#1F1F1F"),
-        spaceBefore=14,
-        spaceAfter=6,
+        spaceBefore=16,
+        spaceAfter=8,
     )
     body_style = ParagraphStyle(
         "CandidateProfileBody",
@@ -313,17 +403,6 @@ def _pdf_story_from_profile(profile: dict) -> list:
         bulletIndent=0,
         spaceAfter=2,
     )
-    meta_label_style = ParagraphStyle(
-        "CandidateProfileMetaLabel",
-        parent=small_style,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1F1F1F"),
-    )
-    meta_value_style = ParagraphStyle(
-        "CandidateProfileMetaValue",
-        parent=small_style,
-        textColor=colors.HexColor("#4A4A48"),
-    )
 
     def p(text: Any, style=body_style) -> Paragraph:
         clean = _pdf_safe_text(text)
@@ -347,62 +426,15 @@ def _pdf_story_from_profile(profile: dict) -> list:
             )
         ]
 
-    story: list = [
-        p(profile.get("name") or "Candidate Profile", title_style),
-    ]
-
-    headline_parts = [
-        profile.get("headline"),
-        profile.get("current_company"),
-    ]
-    headline = " at ".join([part for part in headline_parts if _pdf_safe_text(part)])
-    meta_bits = [headline] if headline else []
-    meta_bits.extend(
-        part for part in [
-            profile.get("location"),
-            f"Experience: {profile.get('experience_years')}" if profile.get("experience_years") not in (None, "") else "",
-            profile.get("email"),
-            profile.get("phone"),
-        ]
-        if _pdf_safe_text(part)
-    )
-    if meta_bits:
-        story.append(p(" | ".join(_pdf_safe_text(bit) for bit in meta_bits), subtitle_style))
-
-    meta_rows = []
-    meta_fields = [
-        ("Candidate ID", profile.get("candidate_id")),
-        ("Location", profile.get("location")),
-        ("Email", profile.get("email")),
-        ("Phone", profile.get("phone")),
-        ("Experience", f"{profile.get('experience_years')} years" if profile.get("experience_years") not in (None, "") else ""),
-        ("Availability", profile.get("availability")),
-        ("Preferred roles", ", ".join(_pdf_safe_text(role) for role in (profile.get("preferred_roles") or []) if _pdf_safe_text(role))),
-    ]
-    for label, value in meta_fields:
-        if _pdf_safe_text(value):
-            meta_rows.append([p(label, meta_label_style), p(value, meta_value_style)])
-
-    if meta_rows:
-        meta_table = Table(meta_rows, colWidths=[1.35 * inch, 5.95 * inch], hAlign="LEFT")
-        meta_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFAF8")),
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E7E3DD")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#ECE8E2")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        story.extend([meta_table, Spacer(1, 0.12 * inch)])
+    story: list = []
+    story.extend(_candidate_profile_header(profile))
 
     def add_section(title: str, body: list) -> None:
         if not body:
             return
         story.append(p(title, section_style))
         story.extend(body)
-        story.append(Spacer(1, 0.08 * inch))
+        story.append(Spacer(1, 0.14 * inch))
 
     summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
     if summary:
@@ -469,10 +501,6 @@ def _pdf_story_from_profile(profile: dict) -> list:
             edu_blocks.append(KeepTogether(block))
         add_section("Education", edu_blocks)
 
-    additional_info = _pdf_safe_text(profile.get("additional_information") or profile.get("additionalInformation"))
-    if additional_info:
-        add_section("Additional Information", [p(additional_info)])
-
     return story
 
 
@@ -520,34 +548,14 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
 
     add(profile.get("name") or "Candidate Profile", size=20, bold=True, after=6)
 
-    headline_parts = [_pdf_safe_text(profile.get("headline")), _pdf_safe_text(profile.get("current_company"))]
-    headline = " at ".join([part for part in headline_parts if part])
-    meta_bits = [headline] if headline else []
-    meta_bits.extend(
-        _pdf_safe_text(part)
-        for part in [
-            profile.get("location"),
-            f"Experience: {profile.get('experience_years')}" if profile.get("experience_years") not in (None, "") else "",
-            profile.get("email"),
-            profile.get("phone"),
-        ]
-        if _pdf_safe_text(part)
-    )
-    if meta_bits:
-        add(" | ".join(meta_bits), size=10, after=6)
+    contact_bits = [profile.get("location"), profile.get("email"), profile.get("phone")]
+    contact_line = " | ".join(_pdf_safe_text(bit) for bit in contact_bits if _pdf_safe_text(bit))
+    if contact_line:
+        add(contact_line, size=10, after=4)
 
-    meta_fields = [
-        ("Candidate ID", profile.get("candidate_id")),
-        ("Location", profile.get("location")),
-        ("Email", profile.get("email")),
-        ("Phone", profile.get("phone")),
-        ("Experience", f"{profile.get('experience_years')} years" if profile.get("experience_years") not in (None, "") else ""),
-        ("Availability", profile.get("availability")),
-        ("Preferred roles", ", ".join(_pdf_safe_text(role) for role in (profile.get("preferred_roles") or []) if _pdf_safe_text(role))),
-    ]
-    for label, value in meta_fields:
-        if _pdf_safe_text(value):
-            add(f"{label}: {_pdf_safe_text(value)}", size=9, after=2)
+    social_links = _candidate_profile_social_links(profile)
+    if social_links:
+        add(" | ".join(f"{label}: {url}" for label, url in social_links), size=9, after=6)
 
     summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
     if summary:
@@ -602,11 +610,6 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
             if dates:
                 add(dates, size=9, after=2)
         blocks.append({"blank": True, "after": 4})
-
-    additional_info = _pdf_safe_text(profile.get("additional_information") or profile.get("additionalInformation"))
-    if additional_info:
-        add("Additional Information", size=13, bold=True, after=2)
-        add(additional_info, size=10, after=4)
 
     return blocks
 
@@ -2736,6 +2739,8 @@ async def get_candidate_profile(candidate_id: str):
 @api_router.get("/candidate/{candidate_id}/profile/download")
 async def download_candidate_profile(candidate_id: str):
     profile = await _get_candidate_profile_payload(candidate_id)
+    candidate_row = await _get_candidate_row(candidate_id)
+    profile["raw_data"] = _parse_raw_data(candidate_row.get("raw_data"))
     candidate_name = _pdf_safe_text(profile.get("name")) or f"candidate_{candidate_id}"
     filename = _pdf_filename(candidate_name, candidate_id)
     pdf_bytes = _build_candidate_profile_pdf(profile)
