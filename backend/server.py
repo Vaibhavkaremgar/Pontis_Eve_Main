@@ -125,6 +125,113 @@ def _extract_pdf_text(file_bytes: bytes) -> tuple[str, bool]:
         return text, False
 
 
+_EXPERIENCE_OPEN_ENDED_MARKERS = {"present", "current", "ongoing", "now"}
+
+
+def _normalize_experience_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _is_open_ended_experience_value(value: Any) -> bool:
+    normalized = _normalize_experience_text(value).lower()
+    if not normalized:
+        return False
+    if normalized in _EXPERIENCE_OPEN_ENDED_MARKERS:
+        return True
+    return bool(re.search(r"\b(?:present|current|ongoing|now)\b", normalized, re.I))
+
+
+def _parse_experience_date(value: Any, role: str = "end") -> Optional[int]:
+    text = _normalize_experience_text(value)
+    if not text or _is_open_ended_experience_value(text):
+        return None
+
+    if m := re.match(r"^(\d{4})$", text):
+        year = int(m.group(1))
+        month = 12 if role == "end" else 1
+        day = 31 if role == "end" else 1
+        return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
+        except ValueError:
+            continue
+
+    if m := re.match(r"^(\d{4})[./](\d{1,2})[./](\d{1,2})$", text):
+        year, month, day = map(int, m.groups())
+        return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+
+    return None
+
+
+def _experience_sort_values(item: Any) -> tuple[bool, Optional[int], Optional[int]]:
+    if not isinstance(item, dict):
+        return False, None, None
+
+    raw_start = item.get("start_date") or item.get("startDate")
+    raw_end = item.get("end_date") or item.get("endDate")
+    has_explicit_end_field = "end_date" in item or "endDate" in item
+    start = _parse_experience_date(raw_start, "start")
+    end = _parse_experience_date(raw_end, "end")
+
+    dates_text = _normalize_experience_text(item.get("dates") or item.get("duration") or "")
+    open_ended = _is_open_ended_experience_value(raw_end)
+    if not open_ended and has_explicit_end_field and not _normalize_experience_text(raw_end):
+        open_ended = True
+
+    if dates_text:
+        separator = re.search(r"\s+[\u2013\u2014-]\s+", dates_text)
+        if separator:
+            left, right = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", dates_text, maxsplit=1)]
+            if start is None:
+                start = _parse_experience_date(left, "start")
+            if right:
+                if _is_open_ended_experience_value(right):
+                    open_ended = True
+                    end = None
+                elif end is None:
+                    end = _parse_experience_date(right, "end")
+        else:
+            if start is None:
+                start = _parse_experience_date(dates_text, "start")
+            if end is None and not open_ended:
+                end = _parse_experience_date(dates_text, "end")
+            if _is_open_ended_experience_value(dates_text):
+                open_ended = True
+
+    return open_ended, start, end
+
+
+def _sort_experience_for_display(experience: Any) -> list[dict]:
+    if not isinstance(experience, list):
+        return []
+
+    indexed: list[tuple[bool, Optional[int], Optional[int], int, dict]] = []
+    for index, item in enumerate(experience):
+        if not isinstance(item, dict):
+            continue
+        open_ended, start, end = _experience_sort_values(item)
+        indexed.append((open_ended, start, end, index, item))
+
+    def sort_key(entry: tuple[bool, Optional[int], Optional[int], int, dict]) -> tuple[int, int, int, int]:
+        open_ended, start, end, index, _item = entry
+        primary = start if open_ended else (end if end is not None else start)
+        secondary = start if start is not None else end
+        return (
+            0 if open_ended else 1,
+            -(primary or 0),
+            -(secondary or 0),
+            index,
+        )
+
+    indexed.sort(key=sort_key)
+    return [item for *_rest, item in indexed]
+
+
 PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resume text and return ONLY valid JSON with these exact keys:
 {
   "name": "",
@@ -160,7 +267,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
 
 def _normalize_for_frontend(c: dict) -> dict:
     """Map DB candidate row → Eve frontend profile shape."""
-    work_exp = c.get("work_experience") or []
+    work_exp = _sort_experience_for_display(c.get("work_experience") or [])
     experience = []
     for i, w in enumerate(work_exp):
         dates = " — ".join(filter(None, [w.get("start_date"), w.get("end_date") or "Present"]))
@@ -469,7 +576,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
     if certifications:
         add_section("Certifications", bullet_items(certifications))
 
-    experience = profile.get("experience") or profile.get("work_experience") or []
+    experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
     if experience:
         exp_blocks = []
         for item in experience:
@@ -597,7 +704,7 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
             add(f"- {_pdf_safe_text(cert)}", size=10, indent=12, after=1)
         blocks.append({"blank": True, "after": 4})
 
-    experience = profile.get("experience") or profile.get("work_experience") or []
+    experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
     if experience:
         add("Experience", size=13, bold=True, after=2)
         for item in experience:

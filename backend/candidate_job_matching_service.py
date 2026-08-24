@@ -1,6 +1,8 @@
+import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -20,6 +22,7 @@ W_TARGET_ROLE = 0.35
 W_SKILLS = 0.30
 W_EXPERIENCE = 0.15
 W_SEMANTIC = 0.20
+EXPERIENCE_EPSILON_YEARS = 1e-6
 
 
 def _normalize(term: str) -> str:
@@ -125,6 +128,173 @@ def _experience_score(candidate_roles: List[str], job_title: str, job_text: str)
     return min(best, 1.0)
 
 
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _is_open_ended_experience_value(value: Any) -> bool:
+    normalized = _normalize_text(value).lower()
+    return bool(normalized and re.search(r"\b(?:present|current|ongoing|now)\b", normalized))
+
+
+def _parse_experience_date(value: Any) -> datetime | None:
+    text = _normalize_text(value)
+    if not text or _is_open_ended_experience_value(text):
+        return None
+
+    if m := re.match(r"^(\d{4})$", text):
+        return datetime(int(m.group(1)), 1, 1, tzinfo=timezone.utc)
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    if m := re.match(r"^(\d{4})[./](\d{1,2})[./](\d{1,2})$", text):
+        year, month, day = map(int, m.groups())
+        return datetime(year, month, day, tzinfo=timezone.utc)
+
+    return None
+
+
+def _parse_experience_window(item: Any) -> tuple[datetime | None, datetime | None]:
+    if not isinstance(item, dict):
+        return None, None
+
+    start = _parse_experience_date(item.get("start_date") or item.get("startDate"))
+    end = _parse_experience_date(item.get("end_date") or item.get("endDate"))
+
+    dates_text = _normalize_text(item.get("dates") or item.get("duration") or "")
+    if dates_text:
+        parts = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", dates_text, maxsplit=1)]
+        if len(parts) == 2:
+            left, right = parts
+            if start is None:
+                start = _parse_experience_date(left)
+            if _is_open_ended_experience_value(right):
+                end = None
+            elif end is None:
+                end = _parse_experience_date(right)
+        else:
+            if start is None:
+                start = _parse_experience_date(dates_text)
+
+    return start, end
+
+
+def _candidate_total_experience_years(candidate: Dict[str, Any]) -> float:
+    work_exp = candidate.get("work_experience") or []
+    if isinstance(work_exp, str):
+        try:
+            work_exp = json.loads(work_exp)
+        except Exception:
+            work_exp = []
+
+    intervals: list[tuple[datetime, datetime]] = []
+    now = datetime.now(timezone.utc)
+
+    for item in work_exp if isinstance(work_exp, list) else []:
+        start, end = _parse_experience_window(item)
+        if start is None:
+            continue
+        effective_end = end or now
+        if effective_end < start:
+            continue
+        intervals.append((start, effective_end))
+
+    if not intervals:
+        fallback = candidate.get("experience_years") or candidate.get("total_experience_years")
+        try:
+            return max(0.0, float(fallback))
+        except (TypeError, ValueError):
+            return 0.0
+
+    intervals.sort(key=lambda item: item[0])
+    merged_days = 0.0
+    current_start, current_end = intervals[0]
+
+    for start, end in intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            merged_days += (current_end - current_start).total_seconds() / 86400.0
+            current_start, current_end = start, end
+
+    merged_days += (current_end - current_start).total_seconds() / 86400.0
+    return max(0.0, merged_days / 365.25)
+
+
+def _job_text(job_title: str, job_description: str, job_requirements: Any = "", job_skills: Any = None) -> str:
+    parts = [job_title or "", job_description or "", _normalize_text(job_requirements)]
+    if isinstance(job_skills, list):
+        skill_parts: list[str] = []
+        for skill in job_skills:
+            if isinstance(skill, dict):
+                skill_parts.append(_normalize_text(skill.get("name") or skill.get("title") or skill.get("skill")))
+            else:
+                skill_parts.append(_normalize_text(skill))
+        parts.append(", ".join(part for part in skill_parts if part))
+    elif job_skills:
+        parts.append(_normalize_text(job_skills))
+    return " ".join(part for part in parts if part)
+
+
+def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
+    normalized = _normalize_text(job_text).lower()
+    if not normalized:
+        return None, None
+
+    min_years: float | None = None
+    max_years: float | None = None
+
+    for pattern in (
+        r"(?P<min>\d+(?:\.\d+)?)\s*[-–—]\s*(?P<max>\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)",
+        r"(?P<min>\d+(?:\.\d+)?)\s+(?:to)\s+(?P<max>\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)",
+    ):
+        for match in re.finditer(pattern, normalized):
+            low = float(match.group("min"))
+            high = float(match.group("max"))
+            min_years = low if min_years is None else max(min_years, low)
+            max_years = high if max_years is None else min(max_years, high)
+
+    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)", normalized):
+        years = float(match.group("years"))
+        min_years = years if min_years is None else max(min_years, years)
+
+    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", normalized):
+        years = float(match.group("years"))
+        min_years = years if min_years is None else max(min_years, years)
+        max_years = years if max_years is None else max_years
+
+    if min_years is not None and max_years is not None and max_years < min_years:
+        max_years = None
+
+    return min_years, max_years
+
+
+def _count_skill_matches(candidate_skills: List[str], job_text: str) -> int:
+    if not candidate_skills:
+        return 0
+    text_tokens = _phrase_set(job_text)
+    return sum(1 for skill in candidate_skills if skill and _term_in_text(_normalize(skill), job_text, text_tokens))
+
+
+def _job_is_eligible(signals: Dict[str, Any], candidate_years: float, job_title: str, job_description: str, job_requirements: Any = "", job_skills: Any = None) -> bool:
+    job_text = _job_text(job_title, job_description, job_requirements, job_skills)
+    min_years, max_years = _job_experience_bounds(job_text)
+    if min_years is not None and candidate_years + EXPERIENCE_EPSILON_YEARS < min_years:
+        return False
+    if max_years is not None and candidate_years - EXPERIENCE_EPSILON_YEARS > max_years:
+        return False
+
+    skill_hits = _count_skill_matches(signals["skills"], job_text)
+    role_score = _target_role_score(signals["target_roles"], job_title, job_text)
+    return skill_hits > 0 or role_score > 0.0
+
+
 def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Extract matching signals from the candidate profile."""
     import json
@@ -182,13 +352,15 @@ def _hybrid_score(
     signals: Dict[str, Any],
     job_title: str,
     job_description: str,
+    job_requirements: Any,
+    job_skills: Any,
     semantic_score: float,
 ) -> Tuple[float, Dict[str, float]]:
     """
     Compute a weighted hybrid score for one job.
     Returns (final_score, component_scores).
     """
-    job_text = f"{job_title} {job_description}"
+    job_text = _job_text(job_title, job_description, job_requirements, job_skills)
 
     tr_score = _target_role_score(signals["target_roles"], job_title, job_text)
     sk_score = _skills_score(signals["skills"], job_text)
@@ -236,6 +408,7 @@ async def refresh_candidate_job_matches(
 
     semantic_map = {jid: score for jid, score in job_scores}
     candidate_job_ids = [jid for jid, _ in job_scores]
+    candidate_years = _candidate_total_experience_years(candidate)
 
     # 2. Fetch job details for all candidates
     async with SessionLocal() as db:
@@ -243,7 +416,7 @@ async def refresh_candidate_job_matches(
         params = {f"jid_{i}": jid for i, jid in enumerate(candidate_job_ids)}
         rows = await db.execute(
             text(f"""
-                SELECT id, title, description
+                SELECT id, title, description, requirements, skills
                 FROM job_descriptions
                 WHERE id::text IN ({placeholders})
                   AND (
@@ -254,7 +427,12 @@ async def refresh_candidate_job_matches(
             """),
             params,
         )
-        job_details = {str(r[0]): {"title": r[1] or "", "description": r[2] or ""}
+        job_details = {str(r[0]): {
+            "title": r[1] or "",
+            "description": r[2] or "",
+            "requirements": r[3] or "",
+            "skills": r[4] or [],
+        }
                        for r in rows.fetchall()}
 
     if not job_details:
@@ -266,15 +444,32 @@ async def refresh_candidate_job_matches(
 
     # 4. Hybrid re-ranking
     scored: List[Tuple[str, float, Dict]] = []
+    eligible_job_ids: list[str] = []
     for job_id, job_data in job_details.items():
+        if not _job_is_eligible(
+            signals,
+            candidate_years,
+            job_data["title"],
+            job_data["description"],
+            job_data["requirements"],
+            job_data["skills"],
+        ):
+            logger.info(
+                "[job-match] job=%r filtered out by experience/skills-role eligibility",
+                job_data["title"],
+            )
+            continue
         sem = semantic_map.get(job_id, 0.0)
         final, components = _hybrid_score(
             signals,
             job_data["title"],
             job_data["description"],
+            job_data["requirements"],
+            job_data["skills"],
             sem,
         )
         scored.append((job_id, final, components))
+        eligible_job_ids.append(job_id)
         logger.info(
             "[job-match] job=%r target_role_score=%.4f skills_score=%.4f "
             "experience_score=%.4f semantic_score=%.4f final_score=%.4f",
@@ -341,6 +536,20 @@ async def refresh_candidate_job_matches(
                     },
                 )
         await db.commit()
+
+    stale_job_ids = [job_id for job_id in existing.keys() if job_id not in set(eligible_job_ids)]
+    if stale_job_ids:
+        async with SessionLocal() as db:
+            await db.execute(
+                text("""
+                    UPDATE candidate_job_recommendations
+                    SET hidden_at = COALESCE(hidden_at, now())
+                    WHERE candidate_id = :cid
+                      AND job_id::text = ANY(CAST(:job_ids AS text[]))
+                """),
+                {"cid": candidate_id, "job_ids": stale_job_ids},
+            )
+            await db.commit()
 
     logger.info(
         "[matching] Upserted %d job recommendations for candidate %s",
