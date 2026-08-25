@@ -151,7 +151,7 @@ def _normalize_text(value: Any) -> str:
 def _split_experience_range(text: str) -> list[str] | None:
     if not text:
         return None
-    parts = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", text, maxsplit=1)]
+    parts = [part.strip() for part in re.split(r"\s+(?:[\u2013\u2014-]|â€”)\s+", text, maxsplit=1)]
     if len(parts) == 2:
         return parts
     return None

@@ -127,7 +127,8 @@ function parseExperienceDate(value, role = "end") {
 function splitExperienceDateRange(value) {
   const text = normalizeText(value);
   if (!text) return null;
-  return text.split(/\s+[\u2013\u2014-]\s+/, 2).map(normalizeText);
+  const parts = text.split(/\s+(?:[\u2013\u2014-]|â€”)\s+/, 2).map(normalizeText);
+  return parts.length === 2 ? parts : null;
 }
 
 function extractExperienceSortValues(exp) {

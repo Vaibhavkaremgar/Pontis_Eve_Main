@@ -130,19 +130,19 @@ def test_candidate_total_experience_years_handles_historical_and_present_month_r
             {
                 "company": "Deepija Telecom",
                 "title": "Engineer",
-                "dates": "Nov 2023 - Oct 2024",
+                "dates": "01-11-2023 â€” 09-10-2024",
             },
             {
                 "company": "Viral Bug",
                 "title": "Engineer",
-                "dates": "Aug 2025 - Present",
+                "dates": "Aug 2025 â€” Present",
             },
         ],
     }
 
     years = matcher._candidate_total_experience_years(candidate)
 
-    assert years == pytest.approx(2.06, rel=0.02)
+    assert years == pytest.approx(2.00, rel=0.02)
 
 
 def test_candidate_total_experience_years_sums_non_overlapping_jobs(monkeypatch):

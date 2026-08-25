@@ -135,11 +135,11 @@ describe("calculateExperienceYears", () => {
 
   it("counts historical and present employment periods from month-name ranges", () => {
     const years = calculateExperienceYears([
-      { company: "Deepija Telecom", title: "Engineer", dates: "Nov 2023 - Oct 2024" },
+      { company: "Deepija Telecom", title: "Engineer", dates: "01-11-2023 â€” 09-10-2024" },
       { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
     ]);
 
-    expect(years).toBeCloseTo(2.07, 2);
+    expect(years).toBeCloseTo(2.00, 2);
   });
 
   it("sums multiple non-overlapping jobs", () => {
@@ -183,12 +183,12 @@ describe("calculateExperienceYears", () => {
     const normalized = normalizeProfileForDisplay({
       experience_years: 0.6,
       experience: [
-        { company: "Deepija Telecom", title: "Engineer", dates: "Nov 2023 - Oct 2024" },
+        { company: "Deepija Telecom", title: "Engineer", dates: "01-11-2023 â€” 09-10-2024" },
         { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
       ],
     });
 
-    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
+    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.00, 2);
     expect(normalized.experience_years).toBe(0.6);
   });
 });
