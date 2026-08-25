@@ -511,7 +511,7 @@ function StepBridge({ profile, voiceIntakeCompleted }) {
 
 export default function Onboarding() {
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
+  const navigate = useNavigate();  
 
   // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
   // Process the OAuth param synchronously so storage is ready before any effect runs.

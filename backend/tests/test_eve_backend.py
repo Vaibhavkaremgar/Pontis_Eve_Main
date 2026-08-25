@@ -807,3 +807,57 @@ def test_unread_notification_count_includes_activity_feed():
     assert "notifications" in src
     assert "is_read" in src
     assert "notifCount" in src or "notifPromise" in src
+
+
+def test_dismiss_job_persists_hidden_reason(monkeypatch):
+    import sys
+    import os
+    import asyncio
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    import server
+
+    executed = []
+
+    class FakeResult:
+      def __init__(self, rows=None):
+          self._rows = rows or []
+
+      def mappings(self):
+          return self
+
+      def fetchone(self):
+          return self._rows[0] if self._rows else None
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            executed.append((sql, params or {}))
+            if "SELECT * FROM candidates" in sql:
+                return FakeResult([{ "id": "cand-1" }])
+            if "SELECT id FROM candidate_job_recommendations" in sql:
+                return FakeResult([{ "id": "rec-1" }])
+            return FakeResult()
+
+        async def commit(self):
+            return None
+
+    async def fake_get_candidate_row(candidate_id):
+        return {"id": candidate_id}
+
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+
+    result = asyncio.run(server.dismiss_job("cand-1", "rec-1", server.JobDismissRequest(reason="Salary is too low")))
+
+    assert result["status"] == "dismissed"
+    update_sql, update_params = next(
+        (sql, params) for sql, params in executed if "UPDATE candidate_job_recommendations" in sql
+    )
+    assert "hidden_reason" in update_sql
+    assert update_params["reason"] == "Salary is too low"

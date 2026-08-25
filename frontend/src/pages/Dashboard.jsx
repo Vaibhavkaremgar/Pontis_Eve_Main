@@ -471,7 +471,7 @@ function Dashboard() {
     }
   };
 
-  const handleDismissJob = async (jobId) => {
+  const handleDismissJob = async (jobId, reason = null) => {
     const job = availableJobs.find((j) => j.id === jobId);
     if (!job || !candidateId) return;
     setAvailableJobs((prev) => prev.filter((j) => j.id !== jobId));
@@ -480,7 +480,7 @@ function Dashboard() {
     }
     toast("Removed from feed", { description: "You won't see this again." });
     try {
-      await axios.post(`${API}/candidate/${candidateId}/jobs/${jobId}/dismiss`);
+      await axios.post(`${API}/candidate/${candidateId}/jobs/${jobId}/dismiss`, reason ? { reason } : {});
     } catch {
       fetchJobs();
     }
@@ -641,10 +641,11 @@ function Dashboard() {
                   </button>
                 </div>
               ) : (
-                <SwipeJobDeck
+              <SwipeJobDeck
                   jobs={availableJobs}
                   candidateId={candidateId}
                   onJobsChange={fetchJobs}
+                  onDismissJob={handleDismissJob}
                 />
               )
             ) : (

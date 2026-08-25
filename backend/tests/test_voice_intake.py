@@ -3551,3 +3551,147 @@ class TestChatVoiceIntakeStateAdvance:
         turns = voice_intake.get("completed_turns") or []
         assert len(turns) == 6
         assert turns[-1]["question"] == final_question
+
+
+class TestEmploymentGapHandling:
+    def test_detects_meaningful_gap_and_skips_overlap(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {
+                    "id": "exp-1",
+                    "title": "Backend Engineer",
+                    "company": "Alpha",
+                    "start_date": "2023-01-01",
+                    "end_date": "2024-07-31",
+                },
+                {
+                    "id": "exp-2",
+                    "title": "Senior Engineer",
+                    "company": "Beta",
+                    "start_date": "2025-01-01",
+                    "end_date": "",
+                },
+            ],
+        }
+
+        gap = _detect_employment_gap(profile)
+        assert gap is not None
+        assert "July 2024" in gap["question"]
+        assert "January 2025" in gap["question"]
+
+        overlapping_profile = {
+            "experience": [
+                {
+                    "id": "exp-1",
+                    "title": "Backend Engineer",
+                    "company": "Alpha",
+                    "start_date": "2023-01-01",
+                    "end_date": "2024-07-31",
+                },
+                {
+                    "id": "exp-2",
+                    "title": "Senior Engineer",
+                    "company": "Beta",
+                    "start_date": "2024-07-01",
+                    "end_date": "",
+                },
+            ],
+        }
+        assert _detect_employment_gap(overlapping_profile) is None
+
+    def test_answered_gap_is_not_requested_again(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {
+                    "id": "exp-1",
+                    "title": "Backend Engineer",
+                    "company": "Alpha",
+                    "start_date": "2023-01-01",
+                    "end_date": "2024-07-31",
+                },
+                {
+                    "id": "exp-2",
+                    "title": "Senior Engineer",
+                    "company": "Beta",
+                    "start_date": "2025-01-01",
+                    "end_date": "",
+                },
+            ],
+        }
+        gap = _detect_employment_gap(profile)
+        assert gap is not None
+
+        answered_profile = {
+            **profile,
+            "raw_data": {
+                "voice_intake": {
+                    "employment_gaps": [
+                        {
+                            "gap_key": gap["gap_key"],
+                            "question": gap["question"],
+                            "answer": "I took a planned break to care for family.",
+                        }
+                    ]
+                }
+            },
+        }
+
+        assert _detect_employment_gap(answered_profile) is None
+
+    def test_gap_answer_is_preserved_in_voice_intake_resume(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {
+                    "id": "exp-1",
+                    "title": "Backend Engineer",
+                    "company": "Alpha",
+                    "start_date": "2023-01-01",
+                    "end_date": "2024-07-31",
+                },
+                {
+                    "id": "exp-2",
+                    "title": "Senior Engineer",
+                    "company": "Beta",
+                    "start_date": "2025-01-01",
+                    "end_date": "",
+                },
+            ],
+        }
+        gap = _detect_employment_gap(profile)
+        assert gap is not None
+
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 0,
+            "employment_gaps": [
+                {
+                    "gap_key": gap["gap_key"],
+                    "question": gap["question"],
+                    "gap_days": gap["gap_days"],
+                    "previous_label": gap["previous_label"],
+                    "current_label": gap["current_label"],
+                    "previous_end_label": gap["previous_end_label"],
+                    "current_start_label": gap["current_start_label"],
+                }
+            ],
+        }
+        notes = [
+            {"role": "assistant", "text": gap["question"], "final": True},
+            {"role": "user", "text": "I took a planned break to care for family.", "final": True},
+        ]
+
+        resume = _build_voice_intake_resume_from_notes(notes, "", existing_resume, candidate_profile=profile)
+        assert resume.get("employment_gaps")
+        assert resume["employment_gaps"][0]["answer"] == "I took a planned break to care for family."

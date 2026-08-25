@@ -2,7 +2,7 @@ import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
-import { JobDetailModal } from "./SwipeJobCard";
+import { JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { normalizeProfileForDisplay } from "../lib/profileNormalization";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -26,7 +26,7 @@ function ProfileStrengthBar({ label, percent }) {
       className="flex items-center gap-2.5"
     >
       <span className="text-[11.5px] text-[#9A9A98] font-normal">
-        Profile strength:{" "}
+        Profile Meter:{" "}
         <span className="text-[#1F1F1F] font-medium">{label} {percent}%</span>
       </span>
       <div className="w-[90px] h-1.5 rounded-full bg-[#E7E3F0] overflow-hidden">
@@ -113,6 +113,7 @@ function EducationRow({ edu }) {
 
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
+const DEFAULT_VISIBLE_EXPERIENCES = 3;
 
 function resolvePhotoSrc(photoUrl) {
   if (!photoUrl) return null;
@@ -238,6 +239,11 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
   const profile = normalizeProfileForDisplay(user);
   const profileCandidateId = profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
+  const [showAllExperiences, setShowAllExperiences] = React.useState(false);
+  const experienceCount = profile.experience?.length ?? 0;
+  const visibleExperiences = showAllExperiences
+    ? profile.experience
+    : profile.experience?.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
 
   return (
     <div className="space-y-8" data-testid="living-profile-content">
@@ -303,15 +309,21 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
           <SectionLabel>
             {profile.name ? `Where ${profile.name.split(" ")[0]} has worked` : "Experience"}
           </SectionLabel>
-          {profile.experience?.length > 0 && (
-            <button className="text-[11.5px] text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2 font-normal">
-              See all experiences
+          {experienceCount > DEFAULT_VISIBLE_EXPERIENCES && (
+            <button
+              type="button"
+              onClick={() => setShowAllExperiences((current) => !current)}
+              aria-expanded={showAllExperiences}
+              data-testid="experience-toggle"
+              className="text-[11.5px] text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2 font-normal"
+            >
+              {showAllExperiences ? "Show less" : "See all experiences"}
             </button>
           )}
         </div>
-        {profile.experience?.length > 0 ? (
+        {experienceCount > 0 ? (
           <div className="space-y-1">
-            {profile.experience.map((exp) => (
+            {visibleExperiences.map((exp) => (
               <ExperienceRow key={exp.id} exp={exp} />
             ))}
           </div>
@@ -391,7 +403,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
 
 function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed }) {
   const [detailJob, setDetailJob] = React.useState(null);
+  const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
+  const [dismissing, setDismissing] = React.useState(false);
 
   const openDetail = React.useCallback(async (job) => {
     setDetailJob(job);
@@ -412,13 +426,33 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
 
   const handleNotInterested = React.useCallback(async () => {
     if (!detailJob) return;
-    const id = detailJob.id;
     setDetailJob(null);
-    onDismiss(id);
+    setPendingDismissJob(detailJob);
   }, [detailJob, onDismiss]);
+
+  const handleConfirmDismiss = React.useCallback(async (reason) => {
+    if (!pendingDismissJob || dismissing) return;
+    const id = pendingDismissJob.id;
+    setDismissing(true);
+    try {
+      await onDismiss(id, reason);
+      setPendingDismissJob(null);
+    } catch {
+      // parent handles refresh / fallback
+    } finally {
+      setDismissing(false);
+    }
+  }, [pendingDismissJob, dismissing, onDismiss]);
 
   return (
     <div className="relative">
+      <NotInterestedReasonModal
+        open={Boolean(pendingDismissJob)}
+        job={pendingDismissJob}
+        busy={dismissing}
+        onClose={() => setPendingDismissJob(null)}
+        onConfirm={handleConfirmDismiss}
+      />
       {detailJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
@@ -499,8 +533,12 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
                   {stripHtml(job.description)}
                 </p>
                 <div className="flex items-center gap-2 mt-3">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onDismiss(job.id); }}
+                <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDetailJob(null);
+                      setPendingDismissJob(job);
+                    }}
                     data-testid={`job-dismiss-${job.id}`}
                     className="flex-1 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full py-1.5 transition-colors"
                   >

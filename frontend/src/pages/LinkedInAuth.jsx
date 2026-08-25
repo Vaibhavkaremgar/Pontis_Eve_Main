@@ -33,7 +33,7 @@ export default function LinkedInAuth() {
           linkedInAuthenticated: true,
           candidateId,
           candidateToken,
-          linkedInProfile: profile,
+          linkedInProfile: profile, 
         });
         navigate("/onboarding", { replace: true });
         return;

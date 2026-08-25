@@ -232,6 +232,156 @@ def _sort_experience_for_display(experience: Any) -> list[dict]:
     return [item for *_rest, item in indexed]
 
 
+def _format_month_year_from_ts(value: Optional[int]) -> str:
+    if value is None:
+        return ""
+    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%B %Y")
+
+
+def _employment_gap_key(previous: dict, current: dict, previous_end: Optional[int], current_start: Optional[int]) -> str:
+    parts = [
+        _normalize_profile_key(previous.get("company") or previous.get("company_name") or ""),
+        _normalize_profile_key(previous.get("title") or previous.get("role") or ""),
+        str(previous_end or ""),
+        _normalize_profile_key(current.get("company") or current.get("company_name") or ""),
+        _normalize_profile_key(current.get("title") or current.get("role") or ""),
+        str(current_start or ""),
+    ]
+    return "|".join(parts)
+
+
+def _describe_experience_item(exp: dict) -> str:
+    title = _normalize_profile_text(exp.get("title") or exp.get("role") or "")
+    company = _normalize_profile_text(exp.get("company") or exp.get("company_name") or "")
+    if title and company:
+        return f"{title} at {company}"
+    return title or company or "your previous role"
+
+
+def _detect_employment_gap(profile: dict) -> Optional[dict]:
+    experience = profile.get("experience") or profile.get("work_experience") or []
+    if not isinstance(experience, list) or len(experience) < 2:
+        return None
+
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for item in _sort_experience_for_display(experience):
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_profile_key(_work_exp_key(item))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    periods: list[dict] = []
+    for index, item in enumerate(unique):
+        open_ended, start, end = _experience_sort_values(item)
+        if start is None:
+            continue
+        periods.append({
+            "item": item,
+            "index": index,
+            "open_ended": open_ended,
+            "start": start,
+            "end": end,
+        })
+
+    if len(periods) < 2:
+        return None
+
+    periods.sort(key=lambda p: (p["start"] or 0, p["end"] or p["start"] or 0))
+
+    raw_data = profile.get("raw_data") or {}
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except Exception:
+            raw_data = {}
+    voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+    explained = {
+        _normalize_profile_key(entry.get("gap_key"))
+        for entry in (voice_intake.get("employment_gaps") or [])
+        if isinstance(entry, dict) and _clean_str(entry.get("answer"))
+    }
+
+    candidates: list[dict] = []
+    for prev, curr in zip(periods, periods[1:]):
+        prev_end = prev["end"]
+        curr_start = curr["start"]
+        if prev["open_ended"] or prev_end is None or curr_start is None:
+            continue
+        if curr_start <= prev_end:
+            continue
+
+        gap_days = max(0, int((curr_start - prev_end) / 86400) - 1)
+        if gap_days < 30:
+            continue
+
+        previous_item = prev["item"]
+        current_item = curr["item"]
+        gap_key = _employment_gap_key(previous_item, current_item, prev_end, curr_start)
+        if _normalize_profile_key(gap_key) in explained:
+            continue
+
+        candidates.append({
+            "gap_key": gap_key,
+            "gap_days": gap_days,
+            "previous": previous_item,
+            "current": current_item,
+            "previous_end": prev_end,
+            "current_start": curr_start,
+        })
+
+    if not candidates:
+        return None
+
+    gap = candidates[-1]
+    previous_item = gap["previous"]
+    current_item = gap["current"]
+    previous_end_label = _format_month_year_from_ts(gap["previous_end"])
+    current_start_label = _format_month_year_from_ts(gap["current_start"])
+    return {
+        "gap_key": gap["gap_key"],
+        "gap_days": gap["gap_days"],
+        "previous_label": _describe_experience_item(previous_item),
+        "current_label": _describe_experience_item(current_item),
+        "previous_end_label": previous_end_label,
+        "current_start_label": current_start_label,
+        "question": (
+            f"I noticed a gap between { _describe_experience_item(previous_item) }"
+            f" ending in {previous_end_label} and { _describe_experience_item(current_item) }"
+            f" starting in {current_start_label}. What should I note for that period?"
+        ),
+    }
+
+
+def _employment_gap_answered(profile: dict) -> Optional[dict]:
+    gap = _detect_employment_gap(profile)
+    if gap:
+        return None
+    raw_data = profile.get("raw_data") or {}
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except Exception:
+            raw_data = {}
+    voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+    records = voice_intake.get("employment_gaps") or []
+    for entry in reversed(records):
+        if not isinstance(entry, dict):
+            continue
+        answer = _clean_str(entry.get("answer"))
+        if not answer:
+            continue
+        return {
+            "gap_key": _clean_str(entry.get("gap_key")),
+            "question": _clean_str(entry.get("question")),
+            "answer": answer,
+        }
+    return None
+
+
 PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resume text and return ONLY valid JSON with these exact keys:
 {
   "name": "",
@@ -1588,10 +1738,25 @@ def _is_intake_question(text: str) -> bool:
     if not cleaned:
         return False
 
+    if _is_employment_gap_question(cleaned):
+        return True
     lowered = cleaned.lower()
     if any(re.search(pattern, lowered) for pattern in _INTAKE_STATEMENT_PATTERNS):
         return True
     return any(re.search(pattern, lowered) for pattern in _INTAKE_QUESTION_PATTERNS)
+
+
+def _is_employment_gap_question(text: str) -> bool:
+    lowered = _clean_str(text).lower()
+    if "gap" not in lowered:
+        return False
+    return (
+        "what should i note" in lowered
+        or "what happened" in lowered
+        or "can you explain" in lowered
+        or "tell me about" in lowered
+        or "share" in lowered
+    )
 
 
 def _questions_are_rephrasing(q1: str, q2: str) -> bool:
@@ -2166,13 +2331,97 @@ def _build_voice_intake_resume_from_notes(
     if promoted_current and promoted_current != current_question:
         current_question = promoted_current
         next_question = ""
-    if llm_analysis and current_question and next_question and _questions_are_rephrasing(current_question, next_question):
+    if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
         next_question = ""
     if not is_completed and completed_turns and not current_question and not next_question and not pending_question:
         # If the state machine has no active question left, normalize any stale
         # persisted in_progress snapshot into the completed form.
         is_completed = True
         missing_topics = []
+
+    completed_turn_answers = {
+        _normalize_profile_key(turn.get("question")): _clean_str(turn.get("answer"))
+        for turn in completed_turns
+        if _clean_str(turn.get("question")) and _clean_str(turn.get("answer"))
+    }
+    employment_gap = _detect_employment_gap(candidate_profile or {}) if candidate_profile else None
+    employment_gaps = [dict(g) for g in ((existing_resume or {}).get("employment_gaps") or []) if isinstance(g, dict)]
+    for gap in employment_gaps:
+        question_key = _normalize_profile_key(gap.get("question"))
+        answered_text = completed_turn_answers.get(question_key)
+        if answered_text and not _clean_str(gap.get("answer")):
+            gap["answer"] = answered_text
+    def _answer_after_gap_question(question_text: str) -> str:
+        question_key = _normalize_profile_key(question_text)
+        for index, note in enumerate(normalized_incoming_notes):
+            if _normalize_profile_key(note.get("text")) != question_key:
+                continue
+            if note.get("role") != "assistant":
+                continue
+            for follower in normalized_incoming_notes[index + 1 :]:
+                if follower.get("role") != "user":
+                    continue
+                answer = _clean_str(follower.get("text"))
+                if answer:
+                    return answer
+        return ""
+
+    if employment_gap:
+        existing_gap = next(
+            (
+                gap for gap in employment_gaps
+                if _normalize_profile_key(gap.get("gap_key")) == _normalize_profile_key(employment_gap["gap_key"])
+            ),
+            None,
+        )
+        if existing_gap and _clean_str(existing_gap.get("answer")):
+            employment_gap = None
+        else:
+            matched_gap_question = existing_gap.get("question") if existing_gap else employment_gap["question"]
+            gap_answer = _clean_str(existing_gap.get("answer")) if existing_gap else ""
+            if not gap_answer and matched_gap_question:
+                gap_answer = _answer_after_gap_question(matched_gap_question)
+                if gap_answer and existing_gap:
+                    existing_gap["answer"] = gap_answer
+
+            if gap_answer:
+                employment_gap = None
+                if _normalize_profile_key(current_question or "") == _normalize_profile_key(matched_gap_question):
+                    current_question = None
+                if _normalize_profile_key(next_question or "") == _normalize_profile_key(matched_gap_question):
+                    next_question = ""
+            elif not current_question and not next_question:
+                is_completed = False
+                next_question = employment_gap["question"]
+                missing_topics = _merge_voice_intake_topic_list(missing_topics, ["employment_gap"])
+                if existing_gap:
+                    existing_gap["question"] = employment_gap["question"]
+                    existing_gap["gap_days"] = employment_gap["gap_days"]
+                    existing_gap["previous_label"] = employment_gap["previous_label"]
+                    existing_gap["current_label"] = employment_gap["current_label"]
+                    existing_gap["previous_end_label"] = employment_gap["previous_end_label"]
+                    existing_gap["current_start_label"] = employment_gap["current_start_label"]
+                else:
+                    employment_gaps.append({
+                        "gap_key": employment_gap["gap_key"],
+                        "question": employment_gap["question"],
+                        "gap_days": employment_gap["gap_days"],
+                        "previous_label": employment_gap["previous_label"],
+                        "current_label": employment_gap["current_label"],
+                        "previous_end_label": employment_gap["previous_end_label"],
+                        "current_start_label": employment_gap["current_start_label"],
+                    })
+            elif existing_gap:
+                existing_gap["question"] = employment_gap["question"]
+                existing_gap["gap_days"] = employment_gap["gap_days"]
+                existing_gap["previous_label"] = employment_gap["previous_label"]
+                existing_gap["current_label"] = employment_gap["current_label"]
+                existing_gap["previous_end_label"] = employment_gap["previous_end_label"]
+                existing_gap["current_start_label"] = employment_gap["current_start_label"]
+                answered_text = completed_turn_answers.get(_normalize_profile_key(existing_gap.get("question")))
+                if answered_text:
+                    existing_gap["answer"] = answered_text
+                    employment_gap = None
 
     status = "completed" if is_completed else "in_progress"
     if is_completed:
@@ -2188,6 +2437,8 @@ def _build_voice_intake_resume_from_notes(
         "known_topics": known_topics,
         "missing_topics": missing_topics,
     }
+    if employment_gaps:
+        resume["employment_gaps"] = employment_gaps
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
@@ -3357,6 +3608,15 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     add("Location Preferences", raw_data.get("location_preferences"), required=False)
     add("Target Industries", raw_data.get("target_industries"), required=False)
 
+    gap = _detect_employment_gap(profile)
+    if gap:
+        lines.append(f"- Employment gap to clarify: {gap['question']}")
+        missing.append("Employment gap explanation")
+    else:
+        explained_gap = _employment_gap_answered(profile)
+        if explained_gap:
+            lines.append(f"- Employment gap explained: {explained_gap['answer']}")
+
     return "\n".join(lines) if lines else "No profile data yet.", missing
 
 
@@ -3815,6 +4075,22 @@ def _format_voice_intake_resume_context(resume: dict) -> str:
                 formatted.append(f"Q: {q} | A: {a}")
         if formatted:
             lines.append("- Completed turns: " + " || ".join(formatted))
+    if resume.get("employment_gaps"):
+        answered = []
+        pending = []
+        for gap in resume.get("employment_gaps") or []:
+            if not isinstance(gap, dict):
+                continue
+            question = _clean_str(gap.get("question"))
+            answer = _clean_str(gap.get("answer"))
+            if answer:
+                answered.append(f"{question} -> {answer}")
+            elif question:
+                pending.append(question)
+        if answered:
+            lines.append("- Employment gaps explained: " + " || ".join(answered[-2:]))
+        if pending:
+            lines.append("- Employment gap follow-up pending: " + " || ".join(pending[-2:]))
     return "\n".join(lines)
 
 
@@ -4015,6 +4291,11 @@ CREATE_VOICE_INTAKES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_cvi_candidate ON candidate_voice_intakes(candidate_id)
 """
 
+ALTER_CANDIDATE_JOB_RECS_ADD_REASON = """
+ALTER TABLE candidate_job_recommendations
+ADD COLUMN IF NOT EXISTS hidden_reason TEXT
+"""
+
 
 async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
@@ -4027,6 +4308,7 @@ async def _ensure_schema():
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
+        await db.execute(text(ALTER_CANDIDATE_JOB_RECS_ADD_REASON))
         await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
         await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
         await db.commit()
@@ -4744,6 +5026,10 @@ class OpportunityResponseIn(BaseModel):
     response: Literal["interested", "not_interested"]
 
 
+class JobDismissRequest(BaseModel):
+    reason: Optional[str] = None
+
+
 @api_router.post("/candidate/{candidate_id}/opportunities/{rec_id}/respond")
 async def respond_to_opportunity(candidate_id: str, rec_id: str, body: OpportunityResponseIn):
     """
@@ -5009,9 +5295,10 @@ async def view_job(candidate_id: str, rec_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/dismiss")
-async def dismiss_job(candidate_id: str, rec_id: str):
+async def dismiss_job(candidate_id: str, rec_id: str, body: Optional[JobDismissRequest] = None):
     """Hide a recommendation (Not for me)."""
     await _get_candidate_row(candidate_id)
+    hidden_reason = _clean_str(body.reason) if body else ""
     async with SessionLocal() as db:
         row = await db.execute(
             text("SELECT id FROM candidate_job_recommendations WHERE id = :rid AND candidate_id = :cid LIMIT 1"),
@@ -5020,8 +5307,13 @@ async def dismiss_job(candidate_id: str, rec_id: str):
         if not row.fetchone():
             raise HTTPException(status_code=404, detail="Recommendation not found.")
         await db.execute(
-            text("UPDATE candidate_job_recommendations SET hidden_at = now() WHERE id = :rid AND candidate_id = :cid"),
-            {"rid": rec_id, "cid": candidate_id},
+            text("""
+                UPDATE candidate_job_recommendations
+                SET hidden_at = now(),
+                    hidden_reason = COALESCE(:reason, hidden_reason)
+                WHERE id = :rid AND candidate_id = :cid
+            """),
+            {"rid": rec_id, "cid": candidate_id, "reason": hidden_reason or None},
         )
         await db.commit()
     return {"status": "dismissed"}

@@ -87,4 +87,38 @@ describe("normalizeProfileForDisplay experience ordering", () => {
       "Previous Co",
     ]);
   });
+
+  it("deduplicates the same role and company using normalized values while keeping the most complete entry", () => {
+    const profile = {
+      experience: [
+        {
+          id: "exp-1",
+          title: "Senior Engineer ",
+          company: " Acme Corp",
+          dates: "2024 - Present",
+          description: "Built core services.",
+        },
+        {
+          id: "exp-2",
+          title: " senior engineer",
+          company: "acme corp ",
+          dates: "2024 - Present",
+          description: "",
+          location: "Remote",
+          summary: "Led platform work.",
+        },
+      ],
+    };
+
+    const normalized = normalizeProfileForDisplay(profile);
+
+    expect(normalized.experience).toHaveLength(1);
+    expect(normalized.experience[0]).toMatchObject({
+      title: "senior engineer",
+      company: "acme corp",
+      description: "Built core services.",
+      location: "Remote",
+      summary: "Led platform work.",
+    });
+  });
 });

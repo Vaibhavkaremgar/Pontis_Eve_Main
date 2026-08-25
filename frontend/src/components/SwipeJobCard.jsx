@@ -2,12 +2,25 @@ import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
 import { motion, useMotionValue, useTransform, animate } from "framer-motion";
-import { MapPin, X, Heart, ExternalLink, ChevronLeft } from "lucide-react";
+import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react";
 import { toast } from "sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const SWIPE_THRESHOLD = 100;
+
+export const NOT_INTERESTED_REASONS = [
+  "Salary is too low",
+  "Location is not suitable",
+  "Remote/onsite preference",
+  "Experience requirement mismatch",
+  "Skills/technology mismatch",
+  "Role/title not suitable",
+  "Company not preferred",
+  "Industry/domain not preferred",
+  "Not looking for a job now",
+  "Other",
+];
 
 function sanitizeHtml(str) {
   if (!str || typeof str !== "string") return "";
@@ -75,6 +88,90 @@ function SkillPill({ label }) {
   );
 }
 
+export function NotInterestedReasonModal({ open, job, busy = false, onClose, onConfirm }) {
+  const [selectedReason, setSelectedReason] = React.useState(NOT_INTERESTED_REASONS[0]);
+
+  React.useEffect(() => {
+    if (open) {
+      setSelectedReason(NOT_INTERESTED_REASONS[0]);
+    }
+  }, [open, job?.id]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/35 flex items-center justify-center px-4">
+      <div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] border border-black/[0.06] shadow-2xl overflow-hidden">
+        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-4 border-b border-black/[0.05]">
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-medium text-[#1F1F1F]">Why are you passing on this role?</h3>
+            <p className="text-[12px] text-[#9A9A98] mt-1 truncate">
+              {job?.title || "Role"}{job?.company ? ` · ${job.company}` : ""}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" strokeWidth={1.75} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 max-h-[52vh] overflow-y-auto eve-scroll">
+          <div className="grid gap-2">
+            {NOT_INTERESTED_REASONS.map((reason) => {
+              const checked = selectedReason === reason;
+              return (
+                <button
+                  key={reason}
+                  type="button"
+                  onClick={() => setSelectedReason(reason)}
+                  className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
+                    checked
+                      ? "border-[#1F1F1F] bg-black/[0.03]"
+                      : "border-black/[0.06] bg-white hover:bg-black/[0.02]"
+                  }`}
+                >
+                  <span className="text-[13px] text-[#1F1F1F] font-normal leading-tight">{reason}</span>
+                  <span
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                      checked ? "border-[#1F1F1F] bg-[#1F1F1F] text-white" : "border-black/[0.14] bg-white"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {checked && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="px-5 py-4 border-t border-black/[0.05] flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="flex-1 py-2.5 rounded-xl bg-black/[0.04] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.08] transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm?.(selectedReason)}
+            disabled={busy}
+            className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50"
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Job Detail Modal ────────────────────────────────────────────────────────
 
 export function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
@@ -104,107 +201,122 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
     return String(r);
   };
   const matchReason = getMatchReason();
+  const handleBackdropInteract = (e) => {
+    if (e.target === e.currentTarget) {
+      onClose?.();
+    }
+  };
 
   return (
-    <div className="absolute inset-0 z-20 bg-[#FBFBF9] flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 px-6 pt-5 pb-4 border-b border-black/[0.05]">
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
-          aria-label="Back"
-        >
-          <ChevronLeft className="w-4 h-4" strokeWidth={1.75} />
-        </button>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-[15px] font-medium text-[#1F1F1F] truncate">{job.title}</h2>
-          <p className="text-[12px] text-[#9A9A98] font-normal truncate">{job.company}</p>
-        </div>
-        {matchPct != null && <MatchBadge score={job.match_score} />}
-      </div>
-
-      {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto eve-scroll px-6 py-5 space-y-5">
-        {/* Overview */}
-        <div className="space-y-1.5">
-          {job.location && (
-            <p className="flex items-center gap-1.5 text-[12.5px] text-[#4A4A48] font-normal">
-              <MapPin className="w-3.5 h-3.5 text-[#9A9A98] shrink-0" strokeWidth={1.5} />
-              {job.location}
-            </p>
-          )}
-          {job.salary && (
-            <p className="text-[12.5px] font-medium text-[#1F1F1F]">{job.salary}</p>
-          )}
-          {job.experience_required && (
-            <p className="text-[12.5px] text-[#4A4A48] font-normal">{job.experience_required}</p>
-          )}
+    <div
+      className="absolute inset-0 z-20 bg-[#FBFBF9] p-3 sm:p-6"
+      data-testid="job-detail-backdrop"
+      onMouseDown={handleBackdropInteract}
+      onTouchStart={handleBackdropInteract}
+    >
+      <div
+        className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-black/[0.05] bg-[#FBFBF9] shadow-2xl"
+        data-testid="job-detail-panel"
+      >
+        {/* Header */}
+        <div className="shrink-0 flex items-center gap-3 px-6 pt-5 pb-4 border-b border-black/[0.05]">
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
+            aria-label="Back"
+          >
+            <ChevronLeft className="w-4 h-4" strokeWidth={1.75} />
+          </button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-[15px] font-medium text-[#1F1F1F] truncate">{job.title}</h2>
+            <p className="text-[12px] text-[#9A9A98] font-normal truncate">{job.company}</p>
+          </div>
+          {matchPct != null && <MatchBadge score={job.match_score} />}
         </div>
 
-        <div className="border-t border-black/[0.05]" />
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto eve-scroll px-6 py-5 space-y-5">
+          {/* Overview */}
+          <div className="space-y-1.5">
+            {job.location && (
+              <p className="flex items-center gap-1.5 text-[12.5px] text-[#4A4A48] font-normal">
+                <MapPin className="w-3.5 h-3.5 text-[#9A9A98] shrink-0" strokeWidth={1.5} />
+                {job.location}
+              </p>
+            )}
+            {job.salary && (
+              <p className="text-[12.5px] font-medium text-[#1F1F1F]">{job.salary}</p>
+            )}
+            {job.experience_required && (
+              <p className="text-[12.5px] text-[#4A4A48] font-normal">{job.experience_required}</p>
+            )}
+          </div>
 
-        {/* Skills */}
-        {skills.length > 0 && (
-          <div>
-            <p className="text-[12px] font-medium text-[#1F1F1F] mb-2">Skills</p>
-            <div className="flex flex-wrap gap-1.5">
-              {skills.map((sk) => (
-                <span key={sk} className="bg-black/[0.04] text-[#4A4A48] text-[12px] px-2.5 py-1 rounded-full font-normal">
-                  {sk}
-                </span>
-              ))}
+          <div className="border-t border-black/[0.05]" />
+
+          {/* Skills */}
+          {skills.length > 0 && (
+            <div>
+              <p className="text-[12px] font-medium text-[#1F1F1F] mb-2">Skills</p>
+              <div className="flex flex-wrap gap-1.5">
+                {skills.map((sk) => (
+                  <span key={sk} className="bg-black/[0.04] text-[#4A4A48] text-[12px] px-2.5 py-1 rounded-full font-normal">
+                    {sk}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Description */}
-        {job.description && (
-          <div>
-            <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
-            <div
-              className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
-            />
-          </div>
-        )}
+          {/* Description */}
+          {job.description && (
+            <div>
+              <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
+              <div
+                className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
+              />
+            </div>
+          )}
 
-        {/* Requirements */}
-        {job.requirements && (
-          <div>
-            <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
-            <div
-              className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.requirements) }}
-            />
-          </div>
-        )}
+          {/* Requirements */}
+          {job.requirements && (
+            <div>
+              <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
+              <div
+                className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.requirements) }}
+              />
+            </div>
+          )}
 
-        {/* Why you match */}
-        {matchReason && (
-          <div className="bg-[#F4F4F2] rounded-xl px-4 py-3">
-            <p className="text-[11.5px] font-medium text-[#1F1F1F] mb-1">Why you match</p>
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed font-normal">{matchReason}</p>
-          </div>
-        )}
-      </div>
+          {/* Why you match */}
+          {matchReason && (
+            <div className="bg-[#F4F4F2] rounded-xl px-4 py-3">
+              <p className="text-[11.5px] font-medium text-[#1F1F1F] mb-1">Why you match</p>
+              <p className="text-[12.5px] text-[#4A4A48] leading-relaxed font-normal">{matchReason}</p>
+            </div>
+          )}
+        </div>
 
-      {/* Footer */}
-      <div className="shrink-0 px-6 py-4 border-t border-black/[0.05] flex gap-3">
-        <button
-          onClick={onNotInterested}
-          className="flex-1 py-2.5 rounded-xl bg-black/[0.04] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.08] transition-colors"
-        >
-          Not Interested
-        </button>
-        <button
-          onClick={onApply}
-          disabled={!job.job_url}
-          className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
-          title={job.job_url ? "Apply on the company's website" : "Application link not available"}
-        >
-          <ExternalLink className="w-3.5 h-3.5" strokeWidth={2} />
-          Apply Now
-        </button>
+        {/* Footer */}
+        <div className="shrink-0 px-6 py-4 border-t border-black/[0.05] flex gap-3">
+          <button
+            onClick={onNotInterested}
+            className="flex-1 py-2.5 rounded-xl bg-black/[0.04] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.08] transition-colors"
+          >
+            Not Interested
+          </button>
+          <button
+            onClick={onApply}
+            disabled={!job.job_url}
+            className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+            title={job.job_url ? "Apply on the company's website" : "Application link not available"}
+          >
+            <ExternalLink className="w-3.5 h-3.5" strokeWidth={2} />
+            Apply Now
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -328,10 +440,12 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
 
 // ─── Deck ────────────────────────────────────────────────────────────────────
 
-export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
+export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismissJob }) {
   const [index, setIndex] = React.useState(0);
   const [detailJob, setDetailJob] = React.useState(null);
+  const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
+  const [dismissing, setDismissing] = React.useState(false);
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
 
@@ -342,19 +456,19 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
 
   const advance = React.useCallback(() => setIndex((i) => i + 1), []);
 
-  // LEFT SWIPE → dismiss
+  // LEFT SWIPE → dismiss immediately
   const handleSwipeLeft = React.useCallback(async () => {
     if (!current) return;
     const id = current.id;
     setActioned((s) => new Set(s).add(id));
     advance();
     try {
-      await axios.post(`${API}/candidate/${candidateId}/jobs/${id}/dismiss`);
+      await onDismissJob?.(id);
       onJobsChange?.();
     } catch {
       // silent — local state already updated
     }
-  }, [current, candidateId, onJobsChange, advance]);
+  }, [current, candidateId, onJobsChange, advance, onDismissJob]);
 
   // RIGHT SWIPE → track (persist to backend before removing card)
   const handleSwipeRight = React.useCallback(async () => {
@@ -381,20 +495,28 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
     window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
   }, [detailJob, applying]);
 
-  // NOT INTERESTED from detail modal → dismiss
-  const handleNotInterestedFromDetail = React.useCallback(async () => {
-    if (!detailJob) return;
-    const id = detailJob.id;
+  const handleRequestDismiss = React.useCallback((job) => {
+    if (!job) return;
     setDetailJob(null);
-    setActioned((s) => new Set(s).add(id));
-    advance();
+    setPendingDismissJob(job);
+  }, []);
+
+  const handleConfirmDismiss = React.useCallback(async (reason) => {
+    if (!pendingDismissJob || dismissing) return;
+    const id = pendingDismissJob.id;
+    setDismissing(true);
     try {
-      await axios.post(`${API}/candidate/${candidateId}/jobs/${id}/dismiss`);
+      await onDismissJob?.(id, reason);
+      setActioned((s) => new Set(s).add(id));
+      setPendingDismissJob(null);
+      advance();
       onJobsChange?.();
     } catch {
-      // silent
+      toast.error("Couldn't save this choice. Please try again.");
+    } finally {
+      setDismissing(false);
     }
-  }, [detailJob, candidateId, onJobsChange, advance]);
+  }, [pendingDismissJob, dismissing, onDismissJob, advance, onJobsChange]);
 
   if (!jobs) {
     return (
@@ -419,13 +541,20 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 relative">
+      <NotInterestedReasonModal
+        open={Boolean(pendingDismissJob)}
+        job={pendingDismissJob}
+        busy={dismissing}
+        onClose={() => setPendingDismissJob(null)}
+        onConfirm={handleConfirmDismiss}
+      />
       {/* Detail modal overlay */}
       {detailJob && (
         <JobDetailModal
           job={detailJob}
           onClose={() => setDetailJob(null)}
           onApply={handleApply}
-          onNotInterested={handleNotInterestedFromDetail}
+          onNotInterested={() => handleRequestDismiss(detailJob)}
           applying={applying}
         />
       )}
@@ -453,7 +582,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange }) {
       {/* Action buttons */}
       <div className="shrink-0 px-6 pb-6 flex gap-3">
         <button
-          onClick={handleSwipeLeft}
+          onClick={() => handleRequestDismiss(current)}
           className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-black/[0.08] bg-white text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.03] transition-colors"
         >
           <X className="w-4 h-4" strokeWidth={2} />

@@ -144,6 +144,138 @@ function sortExperienceForDisplay(experience) {
     .map(({ exp }) => exp);
 }
 
+function experienceKey(exp) {
+  if (!exp || typeof exp !== "object") return "";
+  return `${normalizeKey(exp.company)}|${normalizeKey(exp.title)}`;
+}
+
+function experienceCompletenessScore(exp) {
+  if (!exp || typeof exp !== "object") return 0;
+
+  const fields = [
+    exp.id,
+    exp.title,
+    exp.company,
+    exp.dates,
+    exp.duration,
+    exp.start_date,
+    exp.startDate,
+    exp.end_date,
+    exp.endDate,
+    exp.description,
+    exp.summary,
+    exp.location,
+  ];
+
+  return fields.reduce((score, value) => score + (normalizeText(value) ? 1 : 0), 0);
+}
+
+function mergeExperienceFields(target, source) {
+  const merged = { ...target };
+  const fillableFields = [
+    "title",
+    "company",
+    "dates",
+    "duration",
+    "start_date",
+    "startDate",
+    "end_date",
+    "endDate",
+    "description",
+    "summary",
+    "location",
+  ];
+
+  fillableFields.forEach((field) => {
+    if (!normalizeText(merged[field]) && normalizeText(source?.[field])) {
+      merged[field] = normalizeText(source[field]);
+    }
+  });
+
+  return merged;
+}
+
+function normalizeExperienceRecord(exp) {
+  if (!exp || typeof exp !== "object") return exp;
+
+  const normalized = { ...exp };
+  [
+    "title",
+    "company",
+    "dates",
+    "duration",
+    "start_date",
+    "startDate",
+    "end_date",
+    "endDate",
+    "description",
+    "summary",
+    "location",
+  ].forEach((field) => {
+    if (typeof normalized[field] === "string") {
+      normalized[field] = normalizeText(normalized[field]);
+    }
+  });
+  return normalized;
+}
+
+function dedupeExperienceForDisplay(experience) {
+  if (!Array.isArray(experience)) return [];
+  if (experience.length <= 1) return experience;
+
+  const groups = new Map();
+  experience.forEach((exp, index) => {
+    if (!exp || typeof exp !== "object") return;
+    const key = experienceKey(exp) || `__index__${index}`;
+    const sortValues = extractExperienceSortValues(exp);
+    const record = {
+      exp,
+      index,
+      score: experienceCompletenessScore(exp),
+      ...sortValues,
+      primary: sortValues.openEnded ? (sortValues.start ?? 0) : ((sortValues.end ?? sortValues.start) ?? 0),
+      secondary: sortValues.start ?? sortValues.end ?? 0,
+    };
+    const list = groups.get(key) || [];
+    list.push(record);
+    groups.set(key, list);
+  });
+
+  const compareRecords = (a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    if (a.openEnded !== b.openEnded) return a.openEnded ? -1 : 1;
+    if (a.primary !== b.primary) return (b.primary ?? 0) - (a.primary ?? 0);
+    if (a.secondary !== b.secondary) return (b.secondary ?? 0) - (a.secondary ?? 0);
+    return a.index - b.index;
+  };
+
+  const winners = Array.from(groups.values()).map((records) => {
+    const sorted = [...records].sort(compareRecords);
+    const winner = sorted[0];
+    const merged = sorted.slice(1).reduce(
+      (acc, record) => mergeExperienceFields(acc, record.exp),
+      { ...winner.exp }
+    );
+    return {
+      ...normalizeExperienceRecord(merged),
+      _sortScore: winner.score,
+      _sortOpenEnded: winner.openEnded,
+      _sortPrimary: winner.primary,
+      _sortSecondary: winner.secondary,
+      _sortIndex: winner.index,
+    };
+  });
+
+  return winners
+    .sort((a, b) => {
+      if (a._sortOpenEnded !== b._sortOpenEnded) return a._sortOpenEnded ? -1 : 1;
+      if (a._sortPrimary !== b._sortPrimary) return (b._sortPrimary ?? 0) - (a._sortPrimary ?? 0);
+      if (a._sortSecondary !== b._sortSecondary) return (b._sortSecondary ?? 0) - (a._sortSecondary ?? 0);
+      return (a._sortIndex ?? 0) - (b._sortIndex ?? 0);
+    })
+    .map(({ _sortScore, _sortOpenEnded, _sortPrimary, _sortSecondary, _sortIndex, ...exp }) => exp);
+}
+
 function normalizeCertifications(certifications) {
   if (!Array.isArray(certifications)) return [];
 
@@ -210,7 +342,9 @@ function normalizeSkills(skills, certifications = []) {
 export function normalizeProfileForDisplay(profile = {}) {
   const certifications = normalizeCertifications(profile.certifications ?? []);
   const keySkills = normalizeSkills(profile.keySkills ?? profile.skills ?? [], certifications);
-  const experience = sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? []);
+  const experience = dedupeExperienceForDisplay(
+    sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? [])
+  );
 
   return {
     ...profile,
