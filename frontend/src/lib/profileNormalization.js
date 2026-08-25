@@ -131,6 +131,78 @@ function splitExperienceDateRange(value) {
   return parts.length === 2 ? parts : null;
 }
 
+function formatExperienceDateLabel(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  if (isOpenEndedExperienceValue(text)) return "Present";
+
+  const yearOnly = text.match(/^(\d{4})$/);
+  if (yearOnly) return yearOnly[1];
+
+  const yearMonth = text.match(/^(\d{4})[-/.](\d{1,2})$/);
+  if (yearMonth) {
+    const date = new Date(Date.UTC(Number(yearMonth[1]), Number(yearMonth[2]) - 1, 1));
+    return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+  }
+
+  const monthYear = text.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (monthYear) {
+    const month = EXPERIENCE_MONTHS.get(monthYear[1].toLowerCase());
+    if (month != null) {
+      const date = new Date(Date.UTC(Number(monthYear[2]), month, 1));
+      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+    }
+  }
+
+  const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (iso) {
+    const date = new Date(Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])));
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+    }
+  }
+
+  const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (dayFirst) {
+    const date = new Date(Date.UTC(Number(dayFirst[3]), Number(dayFirst[2]) - 1, Number(dayFirst[1])));
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+    }
+  }
+
+  return text;
+}
+
+function formatExperienceDateRange(exp) {
+  if (!exp || typeof exp !== "object") return "";
+
+  const rawStart = exp.start_date ?? exp.startDate ?? null;
+  const rawEnd = exp.end_date ?? exp.endDate ?? null;
+  const rawDates = normalizeText(exp.dates ?? exp.duration ?? "");
+
+  let start = rawStart;
+  let end = rawEnd;
+
+  if (rawDates) {
+    const range = splitExperienceDateRange(rawDates);
+    if (range && range.length === 2) {
+      if (!normalizeText(start)) start = range[0];
+      if (!normalizeText(end)) end = range[1];
+    } else if (!normalizeText(start)) {
+      start = rawDates;
+    }
+  }
+
+  const startLabel = formatExperienceDateLabel(start);
+  if (!startLabel) return rawDates;
+
+  const endLabel = formatExperienceDateLabel(end);
+  if (!endLabel || endLabel === "Present") {
+    return `${startLabel} — Present`;
+  }
+  return `${startLabel} — ${endLabel}`;
+}
+
 function extractExperienceSortValues(exp) {
   if (!exp || typeof exp !== "object") {
     return { openEnded: false, start: null, end: null };
@@ -338,12 +410,16 @@ function normalizeExperienceRecord(exp) {
       normalized[field] = normalizeText(normalized[field]);
     }
   });
+  const formattedDates = formatExperienceDateRange(normalized);
+  if (formattedDates) {
+    normalized.dates = formattedDates;
+  }
   return normalized;
 }
 
 function dedupeExperienceForDisplay(experience) {
   if (!Array.isArray(experience)) return [];
-  if (experience.length <= 1) return experience;
+  if (experience.length <= 1) return experience.map((exp) => normalizeExperienceRecord(exp));
 
   const groups = new Map();
   experience.forEach((exp, index) => {

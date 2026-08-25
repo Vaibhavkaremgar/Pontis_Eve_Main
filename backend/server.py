@@ -425,9 +425,21 @@ def _normalize_for_frontend(c: dict) -> dict:
             "id": w.get("id", f"exp-{i}"),
             "title": w.get("title", ""),
             "company": w.get("company", ""),
+            "start_date": w.get("start_date") or w.get("startDate") or "",
+            "end_date": w.get("end_date") or w.get("endDate") or "",
             "dates": dates,
             "description": w.get("description", ""),
         })
+
+    for i, w in enumerate(work_exp):
+        if i >= len(experience):
+            break
+        experience[i]["start_date"] = w.get("start_date") or w.get("startDate") or ""
+        experience[i]["end_date"] = w.get("end_date") or w.get("endDate") or ""
+        if not experience[i].get("dates"):
+            start_date = experience[i]["start_date"]
+            end_date = experience[i]["end_date"] or ("Present" if start_date else "")
+            experience[i]["dates"] = " â€” ".join(filter(None, [start_date, end_date]))
 
     edu_raw = c.get("education") or []
     education = []
@@ -3760,32 +3772,54 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     if location:
         updates["location"] = location
 
-    work_company = _extract_first_match(
-        text,
-        [
-            r"\bworked at\s+(?P<value>.+?)(?:\s+as\b|\s+building\b|[.!?;]|$)",
-        ],
-    )
-    work_title = _extract_first_match(
-        text,
-        [
-            r"\bworked at\s+.+?\s+as\s+(?P<value>.+?)(?:[.!?;]|$)",
-        ],
-    )
-    if work_company and work_title:
+    work_experience: list[dict[str, str]] = []
+    work_patterns = [
+        re.compile(
+            r"\b(?:i\s+was\s+working|i\s+worked|worked|working|i\s+have\s+been\s+working)\s+"
+            r"(?:from\s+)?(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)\s+"
+            r"at\s+(?P<company>.+?)\s+as\s+(?:an?\s+)?(?P<title>.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:i\s+was\s+working|i\s+worked|worked|working|i\s+have\s+been\s+working)\s+"
+            r"at\s+(?P<company>.+?)\s+as\s+(?:an?\s+)?(?P<title>.+?)\s+"
+            r"(?:from\s+)?(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bworked\s+at\s+(?P<company>.+?)\s+as\s+(?:an?\s+)?(?P<title>.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in work_patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        company = _normalize_profile_text(match.groupdict().get("company"))
+        title = _normalize_profile_text(match.groupdict().get("title"))
+        if not company or not title:
+            continue
+        entry: dict[str, str] = {"title": title, "company": company}
+        start = _normalize_profile_text(match.groupdict().get("start"))
+        end = _normalize_profile_text(match.groupdict().get("end"))
+        if start:
+            entry["start_date"] = start
+        if end:
+            entry["end_date"] = end
         description = _extract_first_match(
             text,
             [
-                r"\bworked at\s+.+?(?:\.\s*|\s+and\s+|\s+while\s+)(?P<value>.+)$",
+                r"\b(?:i\s+was\s+working|i\s+worked|worked|working|i\s+have\s+been\s+working)\b.*?(?:\.\s*|\s+and\s+|\s+while\s+)(?P<value>.+)$",
             ],
-        ) or ""
-        updates["work_experience"] = [
-            {
-                "title": work_title.strip(),
-                "company": work_company.strip(),
-                "description": description.strip(" .;:"),
-            }
-        ]
+        )
+        if description:
+            entry["description"] = description.strip(" .;:")
+        work_experience = [entry]
+        break
+
+    if work_experience:
+        updates["work_experience"] = work_experience
 
     education = _extract_first_match(
         text,
@@ -4550,10 +4584,26 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
         key = _work_exp_key(item)
         if key in existing_keys:
             idx = existing_keys[key]
-            existing_desc = merged[idx].get("description") or ""
-            new_desc = item.get("description") or ""
-            if new_desc and new_desc.lower() not in existing_desc.lower():
-                merged[idx]["description"] = f"{existing_desc} {new_desc}".strip()
+            target = merged[idx]
+            for field in (
+                "title",
+                "company",
+                "dates",
+                "duration",
+                "start_date",
+                "end_date",
+                "description",
+                "summary",
+                "location",
+            ):
+                existing_value = _normalize_profile_text(target.get(field))
+                new_value = _normalize_profile_text(item.get(field))
+                if field in {"start_date", "end_date", "dates", "duration"} and new_value and new_value != existing_value:
+                    target[field] = new_value
+                elif not existing_value and new_value:
+                    target[field] = new_value
+                elif field == "description" and new_value and new_value.lower() not in existing_value.lower():
+                    target[field] = f"{existing_value} {new_value}".strip()
         else:
             merged.append(dict(item))
             existing_keys[key] = len(merged) - 1
@@ -4590,6 +4640,182 @@ def _is_more_specific_role(existing_role: str, voice_role: str) -> bool:
     return existing_words.issubset(voice_words) and len(voice_words) > len(existing_words)
 
 
+def _summary_clause_exists(existing_clauses: list[str], clause: str) -> bool:
+    clause_key = _normalize_profile_key(clause)
+    if not clause_key:
+        return True
+    for existing in existing_clauses:
+        existing_key = _normalize_profile_key(existing)
+        if not existing_key:
+            continue
+        if clause_key == existing_key or clause_key in existing_key or existing_key in clause_key:
+            return True
+    return False
+
+
+def _append_summary_clause(existing_clauses: list[str], clause: str, seen: set[str]) -> None:
+    cleaned = _normalize_profile_text(clause).rstrip(".")
+    if not cleaned:
+        return
+    key = _normalize_profile_key(cleaned)
+    if not key or key in seen or _summary_clause_exists(existing_clauses, cleaned):
+        return
+    existing_clauses.append(cleaned)
+    seen.add(key)
+
+
+def _format_years_of_experience(value: Any) -> str:
+    try:
+        years = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if years.is_integer():
+        return f"{int(years)} years of experience"
+    return f"{years:g} years of experience"
+
+
+def _build_merged_candidate_summary(existing: dict, voice: dict) -> str:
+    """
+    Build a concise summary from the merged profile so the final summary keeps
+    resume information and appends newly learned Voice Intake details.
+    """
+    voice_has_details = any(
+        _normalize_profile_text(value)
+        for value in (
+            voice.get("role_preference_bio"),
+            voice.get("summary"),
+            voice.get("availability"),
+            voice.get("additional_information"),
+        )
+    ) or any(voice.get(field) for field in ("skills", "preferred_roles", "work_experience", "education"))
+
+    existing_summary = _normalize_profile_text(existing.get("summary"))
+    if not voice_has_details and existing_summary:
+        return existing_summary
+
+    clauses: list[str] = []
+    seen: set[str] = set()
+
+    if existing_summary:
+        _append_summary_clause(clauses, existing_summary, seen)
+
+    profile_bits: list[str] = []
+    existing_summary_key = _normalize_profile_key(existing_summary)
+    current_role = _normalize_profile_text(existing.get("current_role"))
+    current_company = _normalize_profile_text(existing.get("current_company"))
+    location = _normalize_profile_text(existing.get("location"))
+    years_text = _format_years_of_experience(existing.get("experience_years"))
+
+    if current_role:
+        profile_bits.append(current_role)
+    if current_company:
+        profile_bits.append(f"at {current_company}")
+    if location:
+        profile_bits.append(f"in {location}")
+    if years_text:
+        profile_bits.append(f"with {years_text}")
+    if profile_bits:
+        _append_summary_clause(clauses, " ".join(profile_bits), seen)
+
+    existing_skills = {
+        _normalize_profile_key(skill)
+        for skill in (existing.get("skills") or [])
+        if _normalize_profile_text(skill)
+    }
+    profile_skills = [
+        _normalize_profile_text(skill)
+        for skill in (existing.get("skills") or [])[:6]
+        if _normalize_profile_text(skill)
+        and _normalize_profile_key(skill) not in existing_summary_key
+    ]
+    if profile_skills:
+        _append_summary_clause(
+            clauses,
+            f"Key skills include {', '.join(profile_skills)}",
+            seen,
+        )
+
+    work_experience = existing.get("work_experience") or []
+    if work_experience:
+        recent_entries: list[str] = []
+        for item in work_experience[:2]:
+            if not isinstance(item, dict):
+                continue
+            title = _normalize_profile_text(item.get("title"))
+            company = _normalize_profile_text(item.get("company"))
+            desc = _normalize_profile_text(item.get("description"))
+            entry = " at ".join(part for part in [title, company] if part)
+            if desc:
+                entry = f"{entry}: {desc}" if entry else desc
+            if entry:
+                recent_entries.append(entry)
+        if recent_entries:
+            _append_summary_clause(
+                clauses,
+                f"Recent experience includes {'; '.join(recent_entries)}",
+                seen,
+            )
+
+    education = existing.get("education") or []
+    if education:
+        education_entries: list[str] = []
+        for item in education[:2]:
+            if not isinstance(item, dict):
+                continue
+            degree = _normalize_profile_text(item.get("degree"))
+            institution = _normalize_profile_text(item.get("institution"))
+            entry = " at ".join(part for part in [degree, institution] if part)
+            if entry:
+                education_entries.append(entry)
+        if education_entries:
+            _append_summary_clause(
+                clauses,
+                f"Education includes {'; '.join(education_entries)}",
+                seen,
+            )
+
+    voice_summary = _normalize_profile_text(voice.get("role_preference_bio") or voice.get("summary"))
+    if voice_summary:
+        _append_summary_clause(clauses, voice_summary, seen)
+
+    voice_skills = []
+    for skill in voice.get("skills") or []:
+        cleaned = _normalize_profile_text(skill)
+        if not cleaned:
+            continue
+        key = _normalize_profile_key(cleaned)
+        if key in existing_skills or key in existing_summary_key:
+            continue
+        voice_skills.append(cleaned)
+    if voice_skills:
+        _append_summary_clause(
+            clauses,
+            f"New skills discussed include {', '.join(voice_skills)}",
+            seen,
+        )
+
+    preferred_roles = _normalize_preferred_roles(voice.get("preferred_roles"))
+    if preferred_roles:
+        _append_summary_clause(
+            clauses,
+            f"Target roles include {', '.join(preferred_roles)}",
+            seen,
+        )
+
+    availability = _normalize_profile_text(voice.get("availability"))
+    if availability:
+        _append_summary_clause(clauses, f"Availability: {availability}", seen)
+
+    additional_information = _normalize_profile_text(voice.get("additional_information"))
+    if additional_information:
+        _append_summary_clause(clauses, additional_information, seen)
+
+    if not clauses:
+        return ""
+
+    return ". ".join(clauses).strip() + "."
+
+
 def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     """
     Safely merge voice-extracted data into existing candidate profile.
@@ -4604,12 +4830,6 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     for key in ("current_company", "location"):
         if voice.get(key) and not merged.get(key):
             merged[key] = voice[key]
-
-    # summary: fill if missing; update with role_preference_bio if candidate stated preferences
-    if voice.get("role_preference_bio"):
-        merged["summary"] = voice["role_preference_bio"]
-    elif voice.get("summary") and not merged.get("summary"):
-        merged["summary"] = voice["summary"]
 
     # current_role: fill if missing, or update if voice provides a more specific title
     voice_role = (voice.get("current_role") or "").strip()
@@ -4668,6 +4888,7 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         merged.get("education") or [], voice.get("education") or []
     )
 
+    merged["summary"] = _build_merged_candidate_summary(merged, voice)
     merged["raw_data"] = raw_data
     return merged
 

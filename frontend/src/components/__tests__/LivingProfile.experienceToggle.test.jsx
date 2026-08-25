@@ -226,4 +226,24 @@ describe("LivingProfile experience toggle", () => {
     expect(header.textContent).toContain("2.1 yrs exp");
     expect(header.textContent).not.toContain("0.6 yrs exp");
   });
+
+  it("renders updated experience dates from the profile API", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        experience: [
+          {
+            id: "exp-viral",
+            title: "Python Developer",
+            company: "Viral Bug",
+            start_date: "January 2026",
+            end_date: "Present",
+          },
+        ],
+      },
+    });
+
+    const row = view.container.querySelector('[data-testid="experience-row-exp-viral"]');
+    expect(row.textContent).toContain("Viral Bug");
+    expect(row.textContent).toContain("Jan 2026 — Present");
+  });
 });

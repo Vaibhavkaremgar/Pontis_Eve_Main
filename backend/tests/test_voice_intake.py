@@ -3258,6 +3258,95 @@ class TestChatVoiceIntakeStateAdvance:
         assert second_voice_intake["current_question"] == self.NEXT_QUESTION
         assert second_voice_intake["progress"] == 4
 
+    def test_chat_updates_existing_experience_start_date_without_creating_duplicate(self, monkeypatch):
+        import sys, os
+        from types import SimpleNamespace
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = {
+            "candidate": {
+                "id": "candidate-chat-experience",
+                "name": "Candidate",
+                "email": "candidate@example.com",
+                "phone": "",
+                "raw_data": {
+                    "voice_intake": {
+                        "status": "completed",
+                        "progress": 4,
+                        "current_question": "",
+                        "has_open_question": False,
+                        "missing_topics": [],
+                        "known_topics": ["background_experience", "target_role", "career_preferences", "availability_location"],
+                        "completed_turns": [],
+                    }
+                },
+                "skills": ["Python"],
+                "work_experience": [
+                    {
+                        "id": "exp-viral",
+                        "title": "Python Developer",
+                        "company": "Viral Bug",
+                        "description": "Built backend services.",
+                    }
+                ],
+                "education": [],
+                "location": "",
+                "summary": "",
+                "current_role": "Python Developer",
+                "current_company": "Viral Bug",
+                "experience_years": None,
+            },
+            "prefs": None,
+        }
+
+        server = self._setup_chat_mocks(
+            monkeypatch,
+            state,
+            clean_reply="Profile updated.",
+            profile_updates={
+                "work_experience": [
+                    {
+                        "title": "Python Developer",
+                        "company": "Viral Bug",
+                        "start_date": "January 2026",
+                        "end_date": "Present",
+                    }
+                ]
+            },
+            llm_analysis={
+                "known_topics": ["background_experience", "target_role", "career_preferences", "availability_location"],
+                "missing_topics": [],
+                "current_question_answered": True,
+                "next_question": "",
+                "completed": True,
+            },
+        )
+
+        request = server.ChatRequest(
+            messages=[
+                server.ChatMessageIn(role="user", content="I was working from January 2026 to present at Viral Bug as a Python developer."),
+            ],
+            session_id="session-chat-experience",
+            candidate_id="candidate-chat-experience",
+        )
+
+        first = asyncio.run(server.chat(request))
+        second = asyncio.run(server.chat(request))
+
+        assert first.reply == "Profile updated."
+        assert second.reply == "Profile updated."
+        assert len(state["candidate"]["work_experience"]) == 1
+        assert state["candidate"]["work_experience"][0]["start_date"] == "January 2026"
+        assert state["candidate"]["work_experience"][0]["end_date"] == "Present"
+
+        frontend_profile = server._normalize_for_frontend(state["candidate"])
+        assert frontend_profile["experience"][0]["start_date"] == "January 2026"
+        assert frontend_profile["experience"][0]["end_date"] == "Present"
+        assert "January 2026" in frontend_profile["experience"][0]["dates"]
+        assert "Present" in frontend_profile["experience"][0]["dates"]
+
     def test_chat_certification_update_dedupes_against_existing_resume_certification(self, monkeypatch):
         import sys, os
 

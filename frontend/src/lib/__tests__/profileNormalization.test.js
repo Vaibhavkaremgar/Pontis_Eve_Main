@@ -121,6 +121,44 @@ describe("normalizeProfileForDisplay experience ordering", () => {
       summary: "Led platform work.",
     });
   });
+
+  it("formats start and end dates from supported experience date formats", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [
+        {
+          company: "January Co",
+          title: "Engineer",
+          start_date: "January 2026",
+          end_date: "Present",
+        },
+        {
+          company: "Jan Co",
+          title: "Engineer",
+          start_date: "Jan 2026",
+          end_date: "Present",
+        },
+        {
+          company: "Iso Co",
+          title: "Engineer",
+          start_date: "2026-01-01",
+          end_date: "Present",
+        },
+        {
+          company: "Dash Co",
+          title: "Engineer",
+          start_date: "01-01-2026",
+          end_date: "Present",
+        },
+      ],
+    });
+
+    expect(normalized.experience.map((exp) => exp.dates)).toEqual([
+      "Jan 2026 — Present",
+      "Jan 2026 — Present",
+      "Jan 2026 — Present",
+      "Jan 2026 — Present",
+    ]);
+  });
 });
 
 describe("calculateExperienceYears", () => {
@@ -170,6 +208,14 @@ describe("calculateExperienceYears", () => {
     expect(years).toBeCloseTo(1.07, 2);
   });
 
+  it("uses the updated start date when calculating total experience", () => {
+    const years = calculateExperienceYears([
+      { company: "Viral Bug", title: "Python Developer", start_date: "January 2026", end_date: "Present" },
+    ]);
+
+    expect(years).toBeCloseTo(0.65, 1);
+  });
+
   it("handles missing or invalid dates safely", () => {
     const years = calculateExperienceYears([
       { start_date: "not-a-date", end_date: "also-bad" },
@@ -188,7 +234,7 @@ describe("calculateExperienceYears", () => {
       ],
     });
 
-    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.00, 2);
+    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
     expect(normalized.experience_years).toBe(0.6);
   });
 });
