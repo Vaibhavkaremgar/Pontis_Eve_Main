@@ -23,6 +23,20 @@ W_SKILLS = 0.30
 W_EXPERIENCE = 0.15
 W_SEMANTIC = 0.20
 EXPERIENCE_EPSILON_YEARS = 1e-6
+_EXPERIENCE_MONTHS = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
 
 
 def _normalize(term: str) -> str:
@@ -134,18 +148,53 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def _split_experience_range(text: str) -> list[str] | None:
+    if not text:
+        return None
+    parts = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", text, maxsplit=1)]
+    if len(parts) == 2:
+        return parts
+    return None
+
+
 def _is_open_ended_experience_value(value: Any) -> bool:
     normalized = _normalize_text(value).lower()
     return bool(normalized and re.search(r"\b(?:present|current|ongoing|now)\b", normalized))
 
 
-def _parse_experience_date(value: Any) -> datetime | None:
+def _parse_experience_date(value: Any, role: str = "end") -> datetime | None:
     text = _normalize_text(value)
     if not text or _is_open_ended_experience_value(text):
         return None
+    cleaned = text.replace(".", "")
 
-    if m := re.match(r"^(\d{4})$", text):
-        return datetime(int(m.group(1)), 1, 1, tzinfo=timezone.utc)
+    if m := re.match(r"^(\d{4})$", cleaned):
+        year = int(m.group(1))
+        if role == "end":
+            return datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        return datetime(year, 1, 1, tzinfo=timezone.utc)
+
+    if m := re.match(r"^(\d{4})[./](\d{1,2})$", cleaned):
+        year = int(m.group(1))
+        month = int(m.group(2))
+        if not 1 <= month <= 12:
+            return None
+        if role == "end":
+            if month == 12:
+                return datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+            return datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        return datetime(year, month, 1, tzinfo=timezone.utc)
+
+    if m := re.match(r"^([A-Za-z]{3,9})\s+(\d{4})$", cleaned):
+        month = _EXPERIENCE_MONTHS.get(m.group(1).lower())
+        if month is None:
+            return None
+        year = int(m.group(2))
+        if role == "end":
+            if month == 12:
+                return datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+            return datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        return datetime(year, month, 1, tzinfo=timezone.utc)
 
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y"):
         try:
@@ -153,7 +202,7 @@ def _parse_experience_date(value: Any) -> datetime | None:
         except ValueError:
             continue
 
-    if m := re.match(r"^(\d{4})[./](\d{1,2})[./](\d{1,2})$", text):
+    if m := re.match(r"^(\d{4})[./](\d{1,2})[./](\d{1,2})$", cleaned):
         year, month, day = map(int, m.groups())
         return datetime(year, month, day, tzinfo=timezone.utc)
 
@@ -164,23 +213,23 @@ def _parse_experience_window(item: Any) -> tuple[datetime | None, datetime | Non
     if not isinstance(item, dict):
         return None, None
 
-    start = _parse_experience_date(item.get("start_date") or item.get("startDate"))
-    end = _parse_experience_date(item.get("end_date") or item.get("endDate"))
+    start = _parse_experience_date(item.get("start_date") or item.get("startDate"), "start")
+    end = _parse_experience_date(item.get("end_date") or item.get("endDate"), "end")
 
     dates_text = _normalize_text(item.get("dates") or item.get("duration") or "")
     if dates_text:
-        parts = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", dates_text, maxsplit=1)]
-        if len(parts) == 2:
+        parts = _split_experience_range(dates_text)
+        if parts:
             left, right = parts
             if start is None:
-                start = _parse_experience_date(left)
+                start = _parse_experience_date(left, "start")
             if _is_open_ended_experience_value(right):
                 end = None
             elif end is None:
-                end = _parse_experience_date(right)
+                end = _parse_experience_date(right, "end")
         else:
             if start is None:
-                start = _parse_experience_date(dates_text)
+                start = _parse_experience_date(dates_text, "start")
 
     return start, end
 
@@ -206,11 +255,7 @@ def _candidate_total_experience_years(candidate: Dict[str, Any]) -> float:
         intervals.append((start, effective_end))
 
     if not intervals:
-        fallback = candidate.get("experience_years") or candidate.get("total_experience_years")
-        try:
-            return max(0.0, float(fallback))
-        except (TypeError, ValueError):
-            return 0.0
+        return 0.0
 
     intervals.sort(key=lambda item: item[0])
     merged_days = 0.0

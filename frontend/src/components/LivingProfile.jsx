@@ -72,6 +72,13 @@ function SectionLabel({ children }) {
   );
 }
 
+function formatExperienceYears(years) {
+  const value = Number(years);
+  if (!Number.isFinite(value) || value < 0) return "0";
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : rounded.toFixed(1);
+}
+
 /* --- Hover-only rows (no card background by default) --- */
 
 function ExperienceRow({ exp }) {
@@ -276,9 +283,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
                   {profile.location}
                 </span>
               )}
-              {profile.experience_years != null && (
+              {experienceCount > 0 && profile.calculatedExperienceYears != null && (
                 <span className="text-[12px] text-[#4A4A48] font-normal">
-                  {profile.experience_years} yr{profile.experience_years !== 1 ? "s" : ""} exp
+                  {formatExperienceYears(profile.calculatedExperienceYears)} yr{Math.abs(profile.calculatedExperienceYears - 1) < 0.05 ? "" : "s"} exp
                 </span>
               )}
               <OpenToMatchesBadge isOpen={profile.isOpenToMatches} onToggle={onToggleOpenToMatches} />

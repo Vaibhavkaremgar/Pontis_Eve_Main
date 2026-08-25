@@ -16,6 +16,12 @@ class FixedDateTime(datetime):
         return cls(2024, 1, 1, tzinfo=tz or timezone.utc)
 
 
+class FixedDateTime2026(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 8, 25, tzinfo=tz or timezone.utc)
+
+
 class FakeResult:
     def __init__(self, rows=None, scalar_value=None):
         self._rows = rows or []
@@ -114,6 +120,97 @@ def test_candidate_total_experience_years_merges_overlaps_and_counts_present():
     assert years == pytest.approx(4.0, rel=0.01)
 
 
+def test_candidate_total_experience_years_handles_historical_and_present_month_ranges(monkeypatch):
+    monkeypatch.setattr(matcher, "datetime", FixedDateTime2026)
+    monkeypatch.setattr(matcher, "timezone", timezone)
+
+    candidate = {
+        "experience_years": 0.6,
+        "work_experience": [
+            {
+                "company": "Deepija Telecom",
+                "title": "Engineer",
+                "dates": "Nov 2023 - Oct 2024",
+            },
+            {
+                "company": "Viral Bug",
+                "title": "Engineer",
+                "dates": "Aug 2025 - Present",
+            },
+        ],
+    }
+
+    years = matcher._candidate_total_experience_years(candidate)
+
+    assert years == pytest.approx(2.06, rel=0.02)
+
+
+def test_candidate_total_experience_years_sums_non_overlapping_jobs(monkeypatch):
+    monkeypatch.setattr(matcher, "datetime", FixedDateTime)
+    monkeypatch.setattr(matcher, "timezone", timezone)
+
+    candidate = {
+        "work_experience": [
+            {"start_date": "2018-01-01", "end_date": "2019-01-01"},
+            {"start_date": "2020-01-01", "end_date": "2021-01-01"},
+            {"start_date": "2022-01-01", "end_date": "2023-01-01"},
+        ],
+    }
+
+    years = matcher._candidate_total_experience_years(candidate)
+
+    assert years == pytest.approx(3.0, rel=0.01)
+
+
+def test_candidate_total_experience_years_does_not_double_count_overlaps(monkeypatch):
+    monkeypatch.setattr(matcher, "datetime", FixedDateTime)
+    monkeypatch.setattr(matcher, "timezone", timezone)
+
+    candidate = {
+        "work_experience": [
+            {"start_date": "2020-01-01", "end_date": "2021-01-01"},
+            {"start_date": "2020-06-01", "end_date": "2022-01-01"},
+            {"start_date": "2021-12-01", "end_date": "2023-01-01"},
+        ],
+    }
+
+    years = matcher._candidate_total_experience_years(candidate)
+
+    assert years == pytest.approx(3.0, rel=0.01)
+
+
+def test_candidate_total_experience_years_counts_open_ended_employment_to_today(monkeypatch):
+    monkeypatch.setattr(matcher, "datetime", FixedDateTime2026)
+    monkeypatch.setattr(matcher, "timezone", timezone)
+
+    candidate = {
+        "work_experience": [
+            {"start_date": "2025-08-01", "end_date": "Present"},
+        ],
+    }
+
+    years = matcher._candidate_total_experience_years(candidate)
+
+    assert years == pytest.approx(1.07, rel=0.02)
+
+
+def test_candidate_total_experience_years_ignores_invalid_dates_safely(monkeypatch):
+    monkeypatch.setattr(matcher, "datetime", FixedDateTime)
+    monkeypatch.setattr(matcher, "timezone", timezone)
+
+    candidate = {
+        "work_experience": [
+            {"start_date": "not-a-date", "end_date": "also-bad"},
+            {"start_date": "", "end_date": ""},
+            {"dates": "??"},
+        ],
+    }
+
+    years = matcher._candidate_total_experience_years(candidate)
+
+    assert years == 0.0
+
+
 def test_job_eligibility_filters_experience_and_requires_relevance():
     signals = {
         "skills": ["Java", "Spring Boot"],
@@ -146,4 +243,3 @@ def test_job_eligibility_filters_experience_and_requires_relevance():
         "4+ years of experience",
         ["SEO", "Writing"],
     )
-

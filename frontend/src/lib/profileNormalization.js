@@ -19,6 +19,24 @@ const EXPERIENCE_OPEN_ENDED_MARKERS = new Set([
   "now",
 ]);
 
+const EXPERIENCE_MONTHS = new Map([
+  ["jan", 0], ["january", 0],
+  ["feb", 1], ["february", 1],
+  ["mar", 2], ["march", 2],
+  ["apr", 3], ["april", 3],
+  ["may", 4],
+  ["jun", 5], ["june", 5],
+  ["jul", 6], ["july", 6],
+  ["aug", 7], ["august", 7],
+  ["sep", 8], ["sept", 8], ["september", 8],
+  ["oct", 9], ["october", 9],
+  ["nov", 10], ["november", 10],
+  ["dec", 11], ["december", 11],
+]);
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MS_PER_YEAR = 365.25 * MS_PER_DAY;
+
 function normalizeText(value) {
   if (value === null || value === undefined) return "";
   return String(value).replace(/\s+/g, " ").trim();
@@ -48,14 +66,43 @@ function isOpenEndedExperienceValue(value) {
 function parseExperienceDate(value, role = "end") {
   const text = normalizeText(value);
   if (!text || isOpenEndedExperienceValue(text)) return null;
+  const cleaned = text.replace(/\./g, "");
 
-  const yearOnly = text.match(/^(\d{4})$/);
+  const yearOnly = cleaned.match(/^(\d{4})$/);
   if (yearOnly) {
     const year = Number(yearOnly[1]);
-    return Date.UTC(year, role === "end" ? 11 : 0, role === "end" ? 31 : 1);
+    return role === "end"
+      ? Date.UTC(year + 1, 0, 1)
+      : Date.UTC(year, 0, 1);
   }
 
-  const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  const yearMonth = cleaned.match(/^(\d{4})[-/.](\d{1,2})$/);
+  if (yearMonth) {
+    const year = Number(yearMonth[1]);
+    const month = Number(yearMonth[2]) - 1;
+    if (role === "end") {
+      return month === 11
+        ? Date.UTC(year + 1, 0, 1)
+        : Date.UTC(year, month + 1, 1);
+    }
+    return Date.UTC(year, month, 1);
+  }
+
+  const monthYear = cleaned.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (monthYear) {
+    const month = EXPERIENCE_MONTHS.get(monthYear[1].toLowerCase());
+    if (month != null) {
+      const year = Number(monthYear[2]);
+      if (role === "end") {
+        return month === 11
+          ? Date.UTC(year + 1, 0, 1)
+          : Date.UTC(year, month + 1, 1);
+      }
+      return Date.UTC(year, month, 1);
+    }
+  }
+
+  const iso = cleaned.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (iso) {
     const year = Number(iso[1]);
     const month = Number(iso[2]) - 1;
@@ -63,7 +110,7 @@ function parseExperienceDate(value, role = "end") {
     return Date.UTC(year, month, day);
   }
 
-  const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  const dayFirst = cleaned.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
   if (dayFirst) {
     const first = Number(dayFirst[1]);
     const second = Number(dayFirst[2]);
@@ -75,6 +122,12 @@ function parseExperienceDate(value, role = "end") {
   }
 
   return null;
+}
+
+function splitExperienceDateRange(value) {
+  const text = normalizeText(value);
+  if (!text) return null;
+  return text.split(/\s+[\u2013\u2014-]\s+/, 2).map(normalizeText);
 }
 
 function extractExperienceSortValues(exp) {
@@ -95,9 +148,9 @@ function extractExperienceSortValues(exp) {
 
   const datesText = normalizeText(exp.dates ?? exp.duration ?? "");
   if (datesText) {
-    const separatorMatch = datesText.match(/\s+[\u2013\u2014-]\s+/);
-    if (separatorMatch) {
-      const [left, right] = datesText.split(separatorMatch[0], 2).map(normalizeText);
+    const range = splitExperienceDateRange(datesText);
+    if (range && range.length === 2) {
+      const [left, right] = range;
       if (!start) start = parseExperienceDate(left, "start");
       if (right) {
         if (isOpenEndedExperienceValue(right)) {
@@ -193,6 +246,74 @@ function mergeExperienceFields(target, source) {
   });
 
   return merged;
+}
+
+function extractExperienceInterval(exp) {
+  if (!exp || typeof exp !== "object") return null;
+
+  let start = parseExperienceDate(exp.start_date ?? exp.startDate ?? null, "start");
+  let end = parseExperienceDate(exp.end_date ?? exp.endDate ?? null, "end");
+  let openEnded = isOpenEndedExperienceValue(exp.end_date ?? exp.endDate ?? null);
+  const hasExplicitEndField = Object.prototype.hasOwnProperty.call(exp, "end_date") || Object.prototype.hasOwnProperty.call(exp, "endDate");
+  if (!openEnded && hasExplicitEndField && !normalizeText(exp.end_date ?? exp.endDate ?? null)) {
+    openEnded = true;
+  }
+
+  const datesText = normalizeText(exp.dates ?? exp.duration ?? "");
+  if (datesText) {
+    const range = splitExperienceDateRange(datesText);
+    if (range && range.length === 2) {
+      const [left, right] = range;
+      if (!start) start = parseExperienceDate(left, "start");
+      if (right) {
+        if (isOpenEndedExperienceValue(right)) {
+          openEnded = true;
+          end = null;
+        } else if (!end) {
+          end = parseExperienceDate(right, "end");
+        }
+      }
+    } else {
+      if (!start) start = parseExperienceDate(datesText, "start");
+      if (!end && !openEnded) end = parseExperienceDate(datesText, "end");
+      if (isOpenEndedExperienceValue(datesText)) openEnded = true;
+    }
+  }
+
+  if (!start) return null;
+
+  const effectiveEnd = openEnded ? Date.now() : end;
+  if (!effectiveEnd || effectiveEnd < start) return null;
+
+  return [start, effectiveEnd];
+}
+
+export function calculateExperienceYears(experience) {
+  if (!Array.isArray(experience) || experience.length === 0) return 0;
+
+  const intervals = experience
+    .map((exp) => extractExperienceInterval(exp))
+    .filter(Boolean)
+    .sort((a, b) => a[0] - b[0]);
+
+  if (intervals.length === 0) return 0;
+
+  let mergedMilliseconds = 0;
+  let [currentStart, currentEnd] = intervals[0];
+
+  for (let i = 1; i < intervals.length; i += 1) {
+    const [start, end] = intervals[i];
+    if (start <= currentEnd) {
+      currentEnd = Math.max(currentEnd, end);
+    } else {
+      mergedMilliseconds += currentEnd - currentStart;
+      currentStart = start;
+      currentEnd = end;
+    }
+  }
+
+  mergedMilliseconds += currentEnd - currentStart;
+  return Math.max(0, mergedMilliseconds / MS_PER_YEAR);
 }
 
 function normalizeExperienceRecord(exp) {
@@ -345,11 +466,13 @@ export function normalizeProfileForDisplay(profile = {}) {
   const experience = dedupeExperienceForDisplay(
     sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? [])
   );
+  const calculatedExperienceYears = calculateExperienceYears(experience);
 
   return {
     ...profile,
     keySkills,
     certifications,
     experience,
+    calculatedExperienceYears,
   };
 }

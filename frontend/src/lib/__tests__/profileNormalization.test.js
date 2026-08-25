@@ -1,4 +1,4 @@
-import { normalizeProfileForDisplay } from "../profileNormalization";
+import { calculateExperienceYears, normalizeProfileForDisplay } from "../profileNormalization";
 
 describe("normalizeProfileForDisplay experience ordering", () => {
   it("puts the present job before the previous job", () => {
@@ -120,5 +120,75 @@ describe("normalizeProfileForDisplay experience ordering", () => {
       location: "Remote",
       summary: "Led platform work.",
     });
+  });
+});
+
+describe("calculateExperienceYears", () => {
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-08-25T00:00:00Z"));
+  });
+
+  afterAll(() => {
+    jest.useRealTimers();
+  });
+
+  it("counts historical and present employment periods from month-name ranges", () => {
+    const years = calculateExperienceYears([
+      { company: "Deepija Telecom", title: "Engineer", dates: "Nov 2023 - Oct 2024" },
+      { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
+    ]);
+
+    expect(years).toBeCloseTo(2.07, 2);
+  });
+
+  it("sums multiple non-overlapping jobs", () => {
+    const years = calculateExperienceYears([
+      { start_date: "2018-01-01", end_date: "2019-01-01" },
+      { start_date: "2020-01-01", end_date: "2021-01-01" },
+      { start_date: "2022-01-01", end_date: "2023-01-01" },
+    ]);
+
+    expect(years).toBeCloseTo(3.0, 2);
+  });
+
+  it("merges overlapping jobs without double counting", () => {
+    const years = calculateExperienceYears([
+      { start_date: "2020-01-01", end_date: "2021-01-01" },
+      { start_date: "2020-06-01", end_date: "2022-01-01" },
+      { start_date: "2021-12-01", end_date: "2023-01-01" },
+    ]);
+
+    expect(years).toBeCloseTo(3.0, 2);
+  });
+
+  it("counts present employment through today", () => {
+    const years = calculateExperienceYears([
+      { start_date: "2025-08-01", end_date: "Present" },
+    ]);
+
+    expect(years).toBeCloseTo(1.07, 2);
+  });
+
+  it("handles missing or invalid dates safely", () => {
+    const years = calculateExperienceYears([
+      { start_date: "not-a-date", end_date: "also-bad" },
+      { dates: "??" },
+    ]);
+
+    expect(years).toBe(0);
+  });
+
+  it("ignores the stored experience_years value when work history exists", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience_years: 0.6,
+      experience: [
+        { company: "Deepija Telecom", title: "Engineer", dates: "Nov 2023 - Oct 2024" },
+        { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
+      ],
+    });
+
+    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
+    expect(normalized.experience_years).toBe(0.6);
   });
 });

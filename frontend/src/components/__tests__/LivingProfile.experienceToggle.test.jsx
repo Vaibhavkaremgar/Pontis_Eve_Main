@@ -113,10 +113,19 @@ function getExperienceTitles(container) {
 describe("LivingProfile experience toggle", () => {
   let view;
 
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-08-25T00:00:00Z"));
+  });
+
   afterEach(() => {
     view?.unmount?.();
     view = null;
     jest.clearAllMocks();
+  });
+
+  afterAll(() => {
+    jest.useRealTimers();
   });
 
   it("shows the default collapsed experience view", () => {
@@ -190,5 +199,31 @@ describe("LivingProfile experience toggle", () => {
       "Product Manager",
       "Product Analyst",
     ]);
+  });
+
+  it("shows the calculated experience in the profile header instead of the stored value", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        experience_years: 0.6,
+        experience: [
+          {
+            id: "exp-deepija",
+            title: "Engineer",
+            company: "Deepija Telecom",
+            dates: "Nov 2023 - Oct 2024",
+          },
+          {
+            id: "exp-viral",
+            title: "Engineer",
+            company: "Viral Bug",
+            dates: "Aug 2025 - Present",
+          },
+        ],
+      },
+    });
+
+    const header = view.container.querySelector('[data-testid="profile-header-card"]');
+    expect(header.textContent).toContain("2.1 yrs exp");
+    expect(header.textContent).not.toContain("0.6 yrs exp");
   });
 });
