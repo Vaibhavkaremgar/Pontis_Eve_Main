@@ -428,7 +428,7 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
     if (!detailJob) return;
     setDetailJob(null);
     setPendingDismissJob(detailJob);
-  }, [detailJob, onDismiss]);
+  }, [detailJob]);
 
   const handleConfirmDismiss = React.useCallback(async (reason) => {
     if (!pendingDismissJob || dismissing) return;

@@ -468,7 +468,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
     } catch {
       // silent — local state already updated
     }
-  }, [current, candidateId, onJobsChange, advance, onDismissJob]);
+  }, [current, onJobsChange, advance, onDismissJob]);
 
   // RIGHT SWIPE → track (persist to backend before removing card)
   const handleSwipeRight = React.useCallback(async () => {
