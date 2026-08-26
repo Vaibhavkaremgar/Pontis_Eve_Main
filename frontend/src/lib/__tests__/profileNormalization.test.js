@@ -1,4 +1,8 @@
-import { calculateExperienceYears, normalizeProfileForDisplay } from "../profileNormalization";
+import {
+  calculateExperienceYears,
+  mergeProfilesForDisplay,
+  normalizeProfileForDisplay,
+} from "../profileNormalization";
 
 describe("normalizeProfileForDisplay experience ordering", () => {
   it("puts the present job before the previous job", () => {
@@ -236,5 +240,94 @@ describe("calculateExperienceYears", () => {
 
     expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
     expect(normalized.experience_years).toBe(0.6);
+  });
+});
+
+describe("mergeProfilesForDisplay", () => {
+  it("merges resume and voice data without dropping resume content", () => {
+    const merged = mergeProfilesForDisplay(
+      {
+        name: "Suram Test",
+        headline: "Product Manager",
+        keySkills: ["Product", "Strategy"],
+        certifications: ["AWS Certified Solutions Architect - Associate"],
+        experience: [
+          {
+            id: "exp-resume",
+            title: "Product Manager",
+            company: "ResumeCo",
+            dates: "2021 â€” 2023",
+            description: "Owned roadmap.",
+          },
+        ],
+      },
+      {
+        keySkills: ["Strategy", "Leadership"],
+        certifications: ["AWS Certified Solutions Architect Associate"],
+        experience: [
+          {
+            id: "exp-voice",
+            title: "Senior Product Manager",
+            company: "VoiceCo",
+            start_date: "2024-01-01",
+            end_date: "Present",
+            description: "Led platform expansion.",
+          },
+        ],
+      }
+    );
+
+    expect(merged.keySkills).toEqual(["Product", "Strategy", "Leadership"]);
+    expect(merged.certifications).toEqual(["AWS Certified Solutions Architect - Associate"]);
+    expect(merged.experience).toHaveLength(2);
+    expect(merged.experience.map((exp) => exp.company)).toEqual(["VoiceCo", "ResumeCo"]);
+    expect(merged.name).toBe("Suram Test");
+    expect(merged.headline).toBe("Product Manager");
+  });
+
+  it("deduplicates duplicate skills, certifications, and experience entries", () => {
+    const merged = mergeProfilesForDisplay(
+      {
+        keySkills: ["Python", "Docker", "Python"],
+        certifications: ["AWS Certified Solutions Architect - Associate"],
+        experience: [
+          {
+            id: "exp-1",
+            title: "Engineer",
+            company: "Acme",
+            dates: "2024 â€” Present",
+            description: "Built services.",
+          },
+        ],
+      },
+      {
+        keySkills: ["docker", "Kubernetes"],
+        certifications: [
+          "aws certified solutions architect associate",
+          "AWS Certified Solutions Architect - Associate",
+        ],
+        experience: [
+          {
+            id: "exp-2",
+            title: "Engineer ",
+            company: " Acme ",
+            start_date: "2024-01-01",
+            end_date: "Present",
+            description: "",
+            location: "Remote",
+          },
+        ],
+      }
+    );
+
+    expect(merged.keySkills).toEqual(["Python", "Docker", "Kubernetes"]);
+    expect(merged.certifications).toEqual(["AWS Certified Solutions Architect - Associate"]);
+    expect(merged.experience).toHaveLength(1);
+    expect(merged.experience[0]).toMatchObject({
+      title: "Engineer",
+      company: "Acme",
+      location: "Remote",
+      description: "Built services.",
+    });
   });
 });

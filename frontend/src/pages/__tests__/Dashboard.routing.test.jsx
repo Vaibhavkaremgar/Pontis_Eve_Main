@@ -159,6 +159,14 @@ async function waitForSelector(container, selector, attempts = 20) {
   throw new Error(`Timed out waiting for ${selector}`);
 }
 
+async function waitForCondition(predicate, attempts = 20) {
+  for (let i = 0; i < attempts; i += 1) {
+    await flush();
+    if (predicate()) return true;
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("Dashboard voice intake routing", () => {
   let renderResult;
 
@@ -354,5 +362,33 @@ describe("Dashboard voice intake routing", () => {
     expect(lastLivingProfileProps).toBeTruthy();
     expect(lastLivingProfileProps.userProfile.candidate_id).toBe("cand-456");
     expect(lastLivingProfileProps.userProfile.candidateId).toBe("cand-456");
+  });
+
+  it("keeps Voice Intake additions in the dashboard profile after refresh", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        keySkills: ["Product", "Strategy", "Leadership"],
+        certifications: ["AWS Certified Solutions Architect - Associate"],
+        experience: [
+          {
+            id: "exp-voice",
+            title: "Senior Product Manager",
+            company: "VoiceCo",
+            dates: "2024 â€” Present",
+            description: "Led platform expansion.",
+          },
+        ],
+        voice_intake_resume: null,
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+    await waitForCondition(
+      () => Array.isArray(lastLivingProfileProps?.userProfile?.keySkills) &&
+        lastLivingProfileProps.userProfile.keySkills.length > 0
+    );
+    expect(lastLivingProfileProps.userProfile.keySkills).toEqual(["Product", "Strategy", "Leadership"]);
+    expect(lastLivingProfileProps.userProfile.certifications).toEqual(["AWS Certified Solutions Architect - Associate"]);
+    expect(lastLivingProfileProps.userProfile.experience.map((exp) => exp.company)).toEqual(["VoiceCo"]);
   });
 });

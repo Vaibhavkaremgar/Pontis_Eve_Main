@@ -21,7 +21,7 @@ import {
 } from "../lib/onboardingStorage";
 import { buildDashboardEveGreetingFromProfile } from "../lib/dashboardMessaging";
 import { hydrateProfileStrength } from "../lib/profileStrength";
-import { normalizeProfileForDisplay } from "../lib/profileNormalization";
+import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 
@@ -147,7 +147,7 @@ function Dashboard() {
           setCandidateId(profileCandidateId);
           saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
         }
-        setUserProfile(hydrateDisplayProfile({
+        setUserProfile(hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(isOpenToMatches), {
           candidate_id: profileCandidateId,
           candidateId: profileCandidateId,
           avatar: data.photo_url ?? null,
@@ -169,11 +169,11 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? null,
           profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent,
           profile_strength_label: data.profile_strength_label ?? data.strength,
-        }));
+        })));
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
-        setUserProfile(hydrateDisplayProfile({
+        setUserProfile(hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(isOpenToMatches), {
           candidate_id: candidateId,
           candidateId,
           avatar: null,
@@ -195,7 +195,7 @@ function Dashboard() {
           voice_intake_resume: parsed.voice_intake_resume ?? null,
           profile_strength_percent: parsed.profile_strength_percent ?? parsed.strengthPercent,
           profile_strength_label: parsed.profile_strength_label ?? parsed.strength,
-        }));
+        })));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]);
@@ -218,7 +218,7 @@ function Dashboard() {
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       setUserProfile((prev) =>
-        hydrateDisplayProfile({
+        hydrateDisplayProfile(mergeProfilesForDisplay(prev, {
           ...prev,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
@@ -240,7 +240,7 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
           profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent ?? prev.profile_strength_percent,
           profile_strength_label: data.profile_strength_label ?? data.strength ?? prev.strength,
-        })
+        }))
       );
     } catch (err) {
       console.error("refreshProfile failed", err);
@@ -615,16 +615,25 @@ function Dashboard() {
               <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
               <VoiceIntake
                   firstName={userProfile.name?.split(" ")[0] || "there"}
-                  candidateId={candidateId}
-                  candidateProfile={userProfile}
-                  onComplete={(result) => {
-                    const s = loadOnboardingState();
-                    const completed = isVoiceIntakeCompleteStatus(result?.status);
-                    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
-                    setCenterView(completed ? "swipe" : "chat");
-                    refreshProfile();
-                  }}
-                />
+              candidateId={candidateId}
+              candidateProfile={userProfile}
+              onComplete={(result) => {
+                if (result?.profile || result?.profile_updates) {
+                  setUserProfile((prev) =>
+                    hydrateDisplayProfile(
+                      mergeProfilesForDisplay(prev, result.profile || result.profile_updates || {})
+                    )
+                  );
+                }
+                const s = loadOnboardingState();
+                const completed = isVoiceIntakeCompleteStatus(result?.status);
+                saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+                setCenterView(completed ? "swipe" : "chat");
+                setTimeout(() => {
+                  refreshProfile();
+                }, 0);
+              }}
+            />
               </div>
             ) : centerView === "swipe" ? (
               jobsLoading ? (

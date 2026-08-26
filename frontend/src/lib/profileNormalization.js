@@ -537,6 +537,107 @@ function normalizeSkills(skills, certifications = []) {
   return normalized;
 }
 
+function isNonEmptyValue(value) {
+  return normalizeText(value) !== "";
+}
+
+function pickFirstNonEmptyValue(primary, secondary) {
+  return isNonEmptyValue(primary) ? primary : secondary;
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function readRawData(profile) {
+  const raw = profile?.raw_data;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+function collectProfileList(profile, fields, rawFields = fields) {
+  const raw = readRawData(profile);
+  return [
+    ...fields.flatMap((field) => toArray(profile?.[field])),
+    ...rawFields.flatMap((field) => toArray(raw?.[field])),
+  ];
+}
+
+export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
+  const resume = resumeProfile && typeof resumeProfile === "object" ? resumeProfile : {};
+  const voice = voiceProfile && typeof voiceProfile === "object" ? voiceProfile : {};
+  const resumeRaw = readRawData(resume);
+  const voiceRaw = readRawData(voice);
+  const mergedRaw = {
+    ...resumeRaw,
+    ...voiceRaw,
+  };
+
+  const certifications = normalizeCertifications([
+    ...collectProfileList(resume, ["certifications"]),
+    ...collectProfileList(voice, ["certifications"]),
+    ...toArray(mergedRaw.certifications),
+  ]);
+
+  const keySkills = normalizeSkills([
+    ...collectProfileList(resume, ["keySkills", "skills"]),
+    ...collectProfileList(voice, ["keySkills", "skills"]),
+    ...toArray(mergedRaw.skills),
+  ], certifications);
+
+  const experience = dedupeExperienceForDisplay(
+    sortExperienceForDisplay([
+      ...collectProfileList(resume, ["experience", "work_experience"]),
+      ...collectProfileList(voice, ["experience", "work_experience"]),
+    ])
+  );
+
+  const preferredRoles = Array.from(
+    new Map(
+      collectProfileList(resume, ["preferred_roles"])
+        .concat(collectProfileList(voice, ["preferred_roles"]))
+        .map((role) => normalizeText(role))
+        .filter(Boolean)
+        .map((role) => [normalizeKey(role), role])
+    ).values()
+  );
+
+  const merged = {
+    ...resume,
+    raw_data: mergedRaw,
+    keySkills,
+    skills: keySkills,
+    certifications,
+    experience,
+    work_experience: experience,
+    preferred_roles: preferredRoles,
+  };
+
+  merged.candidate_id = pickFirstNonEmptyValue(resume.candidate_id ?? resume.candidateId, voice.candidate_id ?? voice.candidateId);
+  merged.candidateId = pickFirstNonEmptyValue(resume.candidateId ?? resume.candidate_id, voice.candidateId ?? voice.candidate_id);
+  merged.avatar = pickFirstNonEmptyValue(resume.avatar ?? resume.photo_url, voice.avatar ?? voice.photo_url);
+  merged.name = pickFirstNonEmptyValue(resume.name, voice.name);
+  merged.email = pickFirstNonEmptyValue(resume.email, voice.email);
+  merged.phone = pickFirstNonEmptyValue(resume.phone, voice.phone);
+  merged.headline = pickFirstNonEmptyValue(
+    resume.headline ?? resume.current_role,
+    voice.headline ?? voice.current_role
+  );
+  merged.current_role = pickFirstNonEmptyValue(resume.current_role, voice.current_role);
+  merged.current_company = pickFirstNonEmptyValue(resume.current_company, voice.current_company);
+  merged.location = pickFirstNonEmptyValue(resume.location, voice.location);
+  merged.bio = pickFirstNonEmptyValue(resume.bio, voice.bio);
+  merged.summary = pickFirstNonEmptyValue(resume.summary, voice.summary);
+  merged.experience_years = pickFirstNonEmptyValue(resume.experience_years, voice.experience_years);
+  merged.availability = pickFirstNonEmptyValue(resume.availability, voice.availability);
+  merged.additional_information = pickFirstNonEmptyValue(
+    resume.additional_information,
+    voice.additional_information
+  );
+  merged.voice_intake_resume = voice.voice_intake_resume ?? resume.voice_intake_resume ?? mergedRaw.voice_intake ?? null;
+
+  return merged;
+}
+
 export function normalizeProfileForDisplay(profile = {}) {
   const certifications = normalizeCertifications(profile.certifications ?? []);
   const keySkills = normalizeSkills(profile.keySkills ?? profile.skills ?? [], certifications);

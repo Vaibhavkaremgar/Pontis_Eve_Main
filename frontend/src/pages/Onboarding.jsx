@@ -22,6 +22,7 @@ import {
   resumableStep,
   isVoiceIntakeCompleteStatus,
 } from "../lib/onboardingStorage";
+import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -436,18 +437,19 @@ function StepParsing({ onComplete, parsingReady, parsingError }) {
 
 /* ---------- Step 5: Bridge ---------- */
 
-function buildSummary(profile) {
-  if (!profile) return FALLBACK_SUMMARY;
+export function buildSummary(profile) {
+  const merged = profile ? normalizeProfileForDisplay(profile) : null;
+  if (!merged) return FALLBACK_SUMMARY;
   const items = [];
-  if (profile.headline) items.push({ label: "Positioning", value: profile.headline });
-  if (profile.location) items.push({ label: "Location", value: profile.location });
-  if (profile.keySkills?.length)
+  if (merged.headline) items.push({ label: "Positioning", value: merged.headline });
+  if (merged.location) items.push({ label: "Location", value: merged.location });
+  if (merged.keySkills?.length)
     items.push({
       label: "Top skills",
-      value: profile.keySkills.slice(0, 8).join(", "),
+      value: merged.keySkills.slice(0, 8).join(", "),
     });
-  if (profile.experience?.length) {
-    const first = profile.experience[0];
+  if (merged.experience?.length) {
+    const first = merged.experience[0];
     items.push({
       label: "Latest role",
       value: `${first.title || ""}${first.company ? " at " + first.company : ""}${
@@ -455,8 +457,14 @@ function buildSummary(profile) {
       }`,
     });
   }
-  if (profile.education?.length) {
-    const edu = profile.education[0];
+  if (merged.certifications?.length) {
+    items.push({
+      label: "Certifications",
+      value: merged.certifications.slice(0, 8).join(", "),
+    });
+  }
+  if (merged.education?.length) {
+    const edu = merged.education[0];
     items.push({
       label: "Education",
       value: `${edu.degree || ""}${edu.institution ? " · " + edu.institution : ""}`,
@@ -636,14 +644,23 @@ export default function Onboarding() {
     }
     const completed = isVoiceIntakeCompleteStatus(intakeResult?.status);
     setVoiceIntakeCompleted(completed);
+    const mergedProfile = mergeProfilesForDisplay(
+      parsedProfile || {},
+      intakeResult?.profile || intakeResult?.profile_updates || {}
+    );
+    setParsedProfile(mergedProfile);
 
     const s = loadOnboardingState();
-    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+    saveOnboardingState({
+      ...s,
+      parsedProfile: mergedProfile,
+      voiceIntakeCompleted: completed,
+    });
 
     // Leave onboarding immediately so the dashboard can restore the correct center view
     // from the backend voice intake status.
     navigate("/dashboard", { replace: true });
-  }, [navigate]);
+  }, [navigate, parsedProfile]);
 
   // Persist state whenever the shape changes
   React.useEffect(() => {
