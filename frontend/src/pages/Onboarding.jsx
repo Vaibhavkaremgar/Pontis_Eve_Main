@@ -657,8 +657,12 @@ export default function Onboarding() {
       voiceIntakeCompleted: completed,
     });
 
-    // Leave onboarding immediately so the dashboard can restore the correct center view
-    // from the backend voice intake status.
+    if (completed) {
+      setStep(5);
+      return;
+    }
+
+    // Incomplete intake still resumes in Chat with Eve from the dashboard.
     navigate("/dashboard", { replace: true });
   }, [navigate, parsedProfile]);
 
@@ -833,6 +837,7 @@ export default function Onboarding() {
             <VoiceIntake
               firstName={firstName}
               candidateId={candidateId}
+              candidateProfile={parsedProfile}
               onComplete={finishVoiceIntake}
             />
           )}

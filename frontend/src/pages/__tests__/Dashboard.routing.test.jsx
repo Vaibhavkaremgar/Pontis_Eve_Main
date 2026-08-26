@@ -10,6 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("axios");
 let lastLivingProfileProps = null;
+let mockVoiceIntakeOnComplete = null;
 jest.mock("react-router-dom", () => ({
   MemoryRouter: ({ children }) => <div>{children}</div>,
   BrowserRouter: ({ children }) => <div>{children}</div>,
@@ -37,15 +38,7 @@ jest.mock("../../components/LivingProfile", () => (props) => {
 });
 jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => (props) => {
-  const React = require("react");
-  const firedRef = React.useRef(false);
-
-  React.useEffect(() => {
-    if (firedRef.current || !mockVoiceIntakeCompletionResult) return;
-    firedRef.current = true;
-    props.onComplete?.(mockVoiceIntakeCompletionResult);
-  }, [props]);
-
+  mockVoiceIntakeOnComplete = props.onComplete;
   return <div data-testid="voice-intake" />;
 });
 jest.mock("react-resizable-panels", () => ({
@@ -175,6 +168,7 @@ describe("Dashboard voice intake routing", () => {
     jest.clearAllMocks();
     lastLivingProfileProps = null;
     mockVoiceIntakeCompletionResult = null;
+    mockVoiceIntakeOnComplete = null;
     saveOnboardingState({
       candidateId: "cand-123",
       voiceIntakeCompleted: true,
@@ -309,6 +303,11 @@ describe("Dashboard voice intake routing", () => {
       chatToggle.click();
     });
 
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.(mockVoiceIntakeCompletionResult);
+      await Promise.resolve();
+    });
+
     expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
     expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
   });
@@ -342,6 +341,11 @@ describe("Dashboard voice intake routing", () => {
 
     act(() => {
       chatToggle.click();
+    });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.(mockVoiceIntakeCompletionResult);
+      await Promise.resolve();
     });
 
     expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();

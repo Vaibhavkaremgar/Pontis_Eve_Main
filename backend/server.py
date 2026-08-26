@@ -4563,67 +4563,351 @@ def _merge_skills(existing: list, new_items: list, certifications: Any = None) -
     return _normalize_skills([*(existing or []), *(new_items or [])], certifications=certifications)
 
 
-def _work_exp_key(entry: dict) -> str:
-    """Normalised key for deduplicating work experience entries."""
-    title = str(entry.get("title") or "").lower().strip()
-    company = str(entry.get("company") or "").lower().strip()
-    return f"{company}|{title}"
+_EXPERIENCE_TITLE_STOPWORDS = {
+    "and",
+    "for",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _experience_text_tokens(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9+#.]+", _normalize_profile_key(value))
+        if token and token not in _EXPERIENCE_TITLE_STOPWORDS
+    }
+
+
+def _experience_text_key(value: Any) -> str:
+    return re.sub(r"[^\w\s+#.]+", " ", _normalize_profile_key(value))
+
+
+def _experience_text_matches(existing: Any, new: Any) -> bool:
+    existing_text = _normalize_profile_text(existing)
+    new_text = _normalize_profile_text(new)
+    if not existing_text or not new_text:
+        return False
+
+    existing_key = _experience_text_key(existing_text)
+    new_key = _experience_text_key(new_text)
+    if existing_key == new_key:
+        return True
+    if existing_key in new_key or new_key in existing_key:
+        return True
+
+    existing_tokens = _experience_text_tokens(existing_text)
+    new_tokens = _experience_text_tokens(new_text)
+    if not existing_tokens or not new_tokens:
+        return False
+
+    overlap = existing_tokens & new_tokens
+    smallest = min(len(existing_tokens), len(new_tokens))
+    largest = max(len(existing_tokens), len(new_tokens))
+    return len(overlap) >= smallest and len(overlap) >= 2 or (len(overlap) >= 2 and len(overlap) / largest >= 0.66)
+
+
+def _parse_experience_window(item: dict) -> tuple[Optional[int], Optional[int], bool]:
+    start = _parse_experience_date(item.get("start_date") or item.get("startDate"), "start")
+    end = _parse_experience_date(item.get("end_date") or item.get("endDate"), "end")
+    open_ended = _is_open_ended_experience_value(item.get("end_date") or item.get("endDate"))
+
+    dates_text = _normalize_experience_text(item.get("dates") or item.get("duration") or "")
+    if dates_text:
+        separator = re.search(r"\s+[\u2013\u2014-]\s+", dates_text)
+        if separator:
+            left, right = [part.strip() for part in re.split(r"\s+[\u2013\u2014-]\s+", dates_text, maxsplit=1)]
+            if start is None:
+                start = _parse_experience_date(left, "start")
+            if right:
+                if _is_open_ended_experience_value(right):
+                    open_ended = True
+                    end = None
+                elif end is None:
+                    end = _parse_experience_date(right, "end")
+        else:
+            if start is None:
+                start = _parse_experience_date(dates_text, "start")
+            if end is None and not open_ended:
+                end = _parse_experience_date(dates_text, "end")
+            if _is_open_ended_experience_value(dates_text):
+                open_ended = True
+
+    return start, end, open_ended
+
+
+def _experience_entries_compatible(existing: dict, new_item: dict) -> bool:
+    existing_title = _normalize_profile_text(existing.get("title") or existing.get("role") or "")
+    new_title = _normalize_profile_text(new_item.get("title") or new_item.get("role") or "")
+    existing_company = _normalize_profile_text(existing.get("company") or existing.get("company_name") or "")
+    new_company = _normalize_profile_text(new_item.get("company") or new_item.get("company_name") or "")
+
+    if existing_company and new_company and not _experience_text_matches(existing_company, new_company):
+        return False
+    if existing_title and new_title and not _experience_text_matches(existing_title, new_title):
+        return False
+
+    existing_start, existing_end, existing_open_ended = _parse_experience_window(existing)
+    new_start, new_end, new_open_ended = _parse_experience_window(new_item)
+
+    existing_has_dates = existing_start is not None or existing_end is not None or existing_open_ended
+    new_has_dates = new_start is not None or new_end is not None or new_open_ended
+
+    if not existing_has_dates or not new_has_dates:
+        return True
+
+    if existing_start is not None and new_start is not None and existing_start != new_start:
+        return False
+
+    if existing_end is not None and new_end is not None and existing_end != new_end:
+        return False
+
+    if existing_start is not None and existing_end is not None and new_start is not None and new_end is not None:
+        return not (existing_end < new_start or new_end < existing_start)
+
+    return True
+
+
+def _experience_match_score(existing: dict, new_item: dict) -> int:
+    if not _experience_entries_compatible(existing, new_item):
+        return -1
+
+    score = 0
+    existing_title = _normalize_profile_text(existing.get("title") or existing.get("role") or "")
+    new_title = _normalize_profile_text(new_item.get("title") or new_item.get("role") or "")
+    existing_company = _normalize_profile_text(existing.get("company") or existing.get("company_name") or "")
+    new_company = _normalize_profile_text(new_item.get("company") or new_item.get("company_name") or "")
+
+    if existing_company and new_company:
+        if _experience_text_matches(existing_company, new_company):
+            score += 5
+        elif existing_company == new_company:
+            score += 6
+
+    if existing_title and new_title:
+        if _experience_text_matches(existing_title, new_title):
+            score += 5
+        elif existing_title == new_title:
+            score += 6
+
+    existing_start, existing_end, existing_open_ended = _parse_experience_window(existing)
+    new_start, new_end, new_open_ended = _parse_experience_window(new_item)
+    if existing_start is not None and new_start is not None:
+        if existing_start == new_start:
+            score += 3
+        else:
+            score += 1
+    if existing_end is not None and new_end is not None:
+        if existing_end == new_end:
+            score += 2
+        else:
+            score += 1
+    if existing_open_ended and new_open_ended:
+        score += 2
+    if (existing_start is not None or existing_end is not None or existing_open_ended) and (
+        new_start is not None or new_end is not None or new_open_ended
+    ):
+        score += 1
+
+    return score
+
+
+def _synthesized_experience_dates(entry: dict) -> str:
+    start_label = _normalize_profile_text(entry.get("start_date") or entry.get("startDate"))
+    if not start_label:
+        return ""
+    end_label = _normalize_profile_text(entry.get("end_date") or entry.get("endDate"))
+    return " Ã¢â‚¬â€ ".join(filter(None, [start_label, end_label or "Present"]))
+
+
+def _merge_experience_field(target: dict, source: dict, field: str) -> None:
+    existing_value = _normalize_profile_text(target.get(field))
+    new_value = _normalize_profile_text(source.get(field))
+    if not new_value:
+        return
+
+    if field in {"start_date", "startDate"}:
+        if existing_value and _parse_experience_date(existing_value, "start") is not None:
+            return
+        if _parse_experience_date(new_value, "start") is not None:
+            target[field] = new_value
+        return
+
+    if field in {"end_date", "endDate"}:
+        if existing_value:
+            existing_is_present = _is_open_ended_experience_value(existing_value)
+            new_is_present = _is_open_ended_experience_value(new_value)
+            existing_parsed = _parse_experience_date(existing_value, "end")
+            new_parsed = _parse_experience_date(new_value, "end")
+            if existing_is_present and new_parsed is not None:
+                target[field] = new_value
+                return
+            if existing_is_present and not new_is_present:
+                return
+            if existing_parsed is not None:
+                return
+        if _is_open_ended_experience_value(new_value) or _parse_experience_date(new_value, "end") is not None:
+            target[field] = new_value
+        return
+
+    if field in {"dates", "duration"}:
+        if not existing_value:
+            start, end, open_ended = _parse_experience_window(source)
+            if start is not None or end is not None or open_ended or new_value:
+                target[field] = new_value
+        return
+
+    if not existing_value:
+        target[field] = new_value
+        return
+
+    if field in {"title", "company"} and _experience_text_matches(existing_value, new_value):
+        if len(new_value) > len(existing_value) and existing_value.lower() in new_value.lower():
+            target[field] = new_value
+        return
+
+    if field in {"description", "summary"} and new_value.lower() not in existing_value.lower():
+        target[field] = f"{existing_value} {new_value}".strip()
 
 
 def _merge_work_experience(existing: list, new_items: list) -> list:
     """
-    Merge work experience lists.
-    When the same company+title appears in both, merge descriptions rather than
-    creating a duplicate entry. New entries are appended.
+    Merge work experience lists using normalized title/company/date matching.
+    Existing records are enriched in place so repeated voice intake runs are idempotent.
     """
     if not new_items:
         return existing
-    merged = [dict(e) for e in existing]
-    existing_keys = {_work_exp_key(e): i for i, e in enumerate(merged)}
+
+    merged = [dict(e) for e in existing if isinstance(e, dict)]
     for item in new_items:
-        key = _work_exp_key(item)
-        if key in existing_keys:
-            idx = existing_keys[key]
-            target = merged[idx]
-            for field in (
-                "title",
-                "company",
-                "dates",
-                "duration",
-                "start_date",
-                "end_date",
-                "description",
-                "summary",
-                "location",
-            ):
-                existing_value = _normalize_profile_text(target.get(field))
-                new_value = _normalize_profile_text(item.get(field))
-                if field in {"start_date", "end_date", "dates", "duration"} and new_value and new_value != existing_value:
-                    target[field] = new_value
-                elif not existing_value and new_value:
-                    target[field] = new_value
-                elif field == "description" and new_value and new_value.lower() not in existing_value.lower():
-                    target[field] = f"{existing_value} {new_value}".strip()
-        else:
+        if not isinstance(item, dict):
+            continue
+
+        match_index = None
+        for idx, existing_item in enumerate(merged):
+            if _experience_entries_compatible(existing_item, item):
+                match_index = idx
+                break
+
+        if match_index is None:
             merged.append(dict(item))
-            existing_keys[key] = len(merged) - 1
+            continue
+
+        target = merged[match_index]
+        for field in (
+            "title",
+            "company",
+            "dates",
+            "duration",
+            "start_date",
+            "startDate",
+            "end_date",
+            "endDate",
+            "description",
+            "summary",
+            "location",
+        ):
+            _merge_experience_field(target, item, field)
+
+        if not _normalize_profile_text(target.get("dates") or target.get("duration")):
+            start_label = _normalize_profile_text(target.get("start_date") or target.get("startDate"))
+            end_label = _normalize_profile_text(target.get("end_date") or target.get("endDate"))
+            if start_label:
+                target["dates"] = " â€” ".join(filter(None, [start_label, end_label or "Present"]))
+
+    return merged
+
+
+def _merge_work_experience(existing: list, new_items: list) -> list:
+    """Merge work experience lists with stable idempotent date synthesis."""
+    if not new_items:
+        return existing
+
+    merged = [dict(e) for e in existing if isinstance(e, dict)]
+    for item in new_items:
+        if not isinstance(item, dict):
+            continue
+
+        match_index = None
+        best_score = -1
+        for idx, existing_item in enumerate(merged):
+            score = _experience_match_score(existing_item, item)
+            if score > best_score:
+                best_score = score
+                match_index = idx
+        if best_score < 0:
+            match_index = None
+
+        if match_index is None:
+            next_item = dict(item)
+            derived_dates = _synthesized_experience_dates(next_item)
+            if derived_dates:
+                next_item["dates"] = derived_dates
+            merged.append(next_item)
+            continue
+
+        target = merged[match_index]
+        for field in (
+            "title",
+            "company",
+            "dates",
+            "duration",
+            "start_date",
+            "startDate",
+            "end_date",
+            "endDate",
+            "description",
+            "summary",
+            "location",
+        ):
+            _merge_experience_field(target, item, field)
+
+        derived_dates = _synthesized_experience_dates(target)
+        if derived_dates:
+            target["dates"] = derived_dates
+
     return merged
 
 
 def _merge_education(existing: list, new_items: list) -> list:
-    """Merge education lists, deduplicating by degree+institution."""
+    """Merge education lists, deduplicating by normalized degree + institution."""
     if not new_items:
         return existing
-    merged = list(existing)
-    seen = set()
-    for e in existing:
-        key = f"{str(e.get('institution') or '').lower()}|{str(e.get('degree') or '').lower()}"
-        seen.add(key)
+
+    def _education_key(entry: dict) -> str:
+        degree = _normalize_profile_key(entry.get("degree") or entry.get("field_of_study") or "")
+        institution = _normalize_profile_key(entry.get("institution") or entry.get("school") or "")
+        return f"{institution}|{degree}"
+
+    def _merge_education_entry(target: dict, source: dict) -> dict:
+        merged_entry = dict(target)
+        for field in ("degree", "institution", "dates", "duration", "start_date", "end_date", "field_of_study", "location", "description"):
+            existing_value = _normalize_profile_text(merged_entry.get(field))
+            new_value = _normalize_profile_text(source.get(field))
+            if not existing_value and new_value:
+                merged_entry[field] = new_value
+        return merged_entry
+
+    merged = [dict(e) for e in existing if isinstance(e, dict)]
+    index_by_key: dict[str, int] = {}
+    for idx, entry in enumerate(merged):
+        index_by_key[_education_key(entry)] = idx
+
     for item in new_items:
-        key = f"{str(item.get('institution') or '').lower()}|{str(item.get('degree') or '').lower()}"
-        if key not in seen:
-            merged.append(item)
-            seen.add(key)
+        if not isinstance(item, dict):
+            continue
+        key = _education_key(item)
+        if key in index_by_key:
+            idx = index_by_key[key]
+            merged[idx] = _merge_education_entry(merged[idx], item)
+            continue
+        merged.append(dict(item))
+        index_by_key[key] = len(merged) - 1
+
     return merged
 
 

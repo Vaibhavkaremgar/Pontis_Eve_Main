@@ -147,7 +147,7 @@ function Dashboard() {
           setCandidateId(profileCandidateId);
           saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
         }
-        setUserProfile(hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(isOpenToMatches), {
+        const backendProfile = {
           candidate_id: profileCandidateId,
           candidateId: profileCandidateId,
           avatar: data.photo_url ?? null,
@@ -169,7 +169,16 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? null,
           profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent,
           profile_strength_label: data.profile_strength_label ?? data.strength,
-        })));
+        };
+        const cachedProfile = stored.parsedProfile ?? buildFallbackProfile(isOpenToMatches);
+        setUserProfile(
+          hydrateDisplayProfile(
+            mergeProfilesForDisplay(backendProfile, {
+              ...cachedProfile,
+              voice_intake_resume: data.voice_intake_resume ?? cachedProfile.voice_intake_resume ?? null,
+            })
+          )
+        );
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
@@ -218,28 +227,32 @@ function Dashboard() {
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       setUserProfile((prev) =>
-        hydrateDisplayProfile(mergeProfilesForDisplay(prev, {
-          ...prev,
+        hydrateDisplayProfile(mergeProfilesForDisplay({
+          ...data,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
-          name: data.name ?? prev.name,
-          email: data.email ?? prev.email,
-          phone: data.phone ?? prev.phone,
-          headline: data.headline ?? prev.headline,
-          location: data.location ?? prev.location,
-          bio: data.bio ?? prev.bio,
-          experience: data.experience?.length ? data.experience : prev.experience,
-          education: data.education?.length ? data.education : prev.education,
-          keySkills: data.keySkills?.length ? data.keySkills : prev.keySkills,
-          experience_years: data.experience_years != null ? data.experience_years : prev.experience_years,
-          availability: data.availability ?? prev.availability,
-          preferred_roles: data.preferred_roles?.length ? data.preferred_roles : prev.preferred_roles,
-          certifications: data.certifications?.length ? data.certifications : prev.certifications,
-          additional_information: data.additional_information ?? prev.additional_information,
+        }, {
+          ...prev,
+          candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
+          candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
+          name: prev.name,
+          email: prev.email,
+          phone: prev.phone,
+          headline: prev.headline,
+          location: prev.location,
+          bio: prev.bio,
+          experience: prev.experience,
+          education: prev.education,
+          keySkills: prev.keySkills,
+          experience_years: prev.experience_years,
+          availability: prev.availability,
+          preferred_roles: prev.preferred_roles,
+          certifications: prev.certifications,
+          additional_information: prev.additional_information,
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
-          profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent ?? prev.profile_strength_percent,
-          profile_strength_label: data.profile_strength_label ?? data.strength ?? prev.strength,
+          profile_strength_percent: prev.profile_strength_percent,
+          profile_strength_label: prev.strength,
         }))
       );
     } catch (err) {

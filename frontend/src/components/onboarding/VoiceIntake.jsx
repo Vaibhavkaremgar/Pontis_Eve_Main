@@ -16,6 +16,61 @@ const API = `${BACKEND_URL}/api`;
 const PUBLIC_KEY = process.env.REACT_APP_VAPI_PUBLIC_KEY;
 const ASSISTANT_ID = process.env.REACT_APP_EVE_VAPI_ASSISTANT_ID;
 
+export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, candidateProfile }) {
+  const p = candidateProfile || {};
+  const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
+  const skills = Array.isArray(p.keySkills) && p.keySkills.length > 0
+    ? p.keySkills.slice(0, 15).join(", ")
+    : (Array.isArray(p.skills) && p.skills.length > 0 ? p.skills.slice(0, 15).join(", ") : "");
+  const workExp = Array.isArray(p.experience) && p.experience.length > 0
+    ? p.experience.slice(0, 5).map((e) => `${e.title || ""} at ${e.company || ""}${e.dates ? " (" + e.dates + ")" : ""}`).join("; ")
+    : "";
+  const education = Array.isArray(p.education) && p.education.length > 0
+    ? p.education.slice(0, 3).map((e) => `${e.degree || ""} at ${e.institution || ""}`).join("; ")
+    : "";
+  const preferredRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0
+    ? p.preferred_roles.join(", ") : "";
+  const vir = p.voice_intake_resume || {};
+
+  // Build structured intake context for LLM — no hardcoded question numbers
+  const completedTopics = (vir.known_topics || []).join(", ");
+  const missingTopics = (vir.missing_topics || []).join(", ");
+  const completedQA = Array.isArray(vir.completed_turns) && vir.completed_turns.length > 0
+    ? vir.completed_turns.map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | ")
+    : "";
+  const currentQuestion = vir.current_question || vir.next_question || "";
+
+  return {
+    variableValues: {
+      candidate_name: p.name || firstName || "",
+      candidate_id: candidateId || "",
+      candidate_email: p.email || "",
+      candidate_phone: p.phone || "",
+      candidate_location: p.location || "",
+      experience_years: p.experience_years != null ? String(p.experience_years) : "",
+      current_role: p.headline || "",
+      current_company: p.current_company || mostRecentExp?.company || "",
+      skills,
+      work_experience: workExp,
+      education,
+      preferred_roles: preferredRoles,
+      salary_expectation: p.salary_expectation || "",
+      notice_period: p.notice_period || "",
+      availability: p.availability || "",
+      work_type: p.work_type_preference || "",
+      voice_intake_status: vir.status || "",
+      voice_intake_completed_topics: completedTopics,
+      voice_intake_missing_topics: missingTopics,
+      voice_intake_answers: completedQA,
+      voice_intake_current_question: currentQuestion,
+    },
+    metadata: {
+      candidateId: candidateId || "",
+      source: "eve_candidate_voice_intake",
+    },
+  };
+}
+
 /* ---- Visual ring ---- */
 function VoiceRing({ state }) {
   const active = state === VAPI_STATES.LISTENING || state === VAPI_STATES.SPEAKING;
@@ -94,60 +149,10 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     }
   }, []);
 
-    const assistantOverrides = React.useMemo(() => {
-    const p = candidateProfile || {};
-    const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
-    const skills = Array.isArray(p.keySkills) && p.keySkills.length > 0
-      ? p.keySkills.slice(0, 15).join(", ")
-      : (Array.isArray(p.skills) && p.skills.length > 0 ? p.skills.slice(0, 15).join(", ") : "");
-    const workExp = Array.isArray(p.experience) && p.experience.length > 0
-      ? p.experience.slice(0, 5).map((e) => `${e.title || ""} at ${e.company || ""}${e.dates ? " (" + e.dates + ")" : ""}`).join("; ")
-      : "";
-    const education = Array.isArray(p.education) && p.education.length > 0
-      ? p.education.slice(0, 3).map((e) => `${e.degree || ""} at ${e.institution || ""}`).join("; ")
-      : "";
-    const preferredRoles = Array.isArray(p.preferred_roles) && p.preferred_roles.length > 0
-      ? p.preferred_roles.join(", ") : "";
-    const vir = p.voice_intake_resume || {};
-
-    // Build structured intake context for LLM — no hardcoded question numbers
-    const completedTopics = (vir.known_topics || []).join(", ");
-    const missingTopics = (vir.missing_topics || []).join(", ");
-    const completedQA = Array.isArray(vir.completed_turns) && vir.completed_turns.length > 0
-      ? vir.completed_turns.map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | ")
-      : "";
-    const currentQuestion = vir.current_question || vir.next_question || "";
-
-    return {
-      variableValues: {
-        candidate_name: p.name || firstName || "",
-        candidate_id: candidateId || "",
-        candidate_email: p.email || "",
-        candidate_phone: p.phone || "",
-        candidate_location: p.location || "",
-        experience_years: p.experience_years != null ? String(p.experience_years) : "",
-        current_role: p.headline || "",
-        current_company: p.current_company || mostRecentExp?.company || "",
-        skills,
-        work_experience: workExp,
-        education,
-        preferred_roles: preferredRoles,
-        salary_expectation: p.salary_expectation || "",
-        notice_period: p.notice_period || "",
-        availability: p.availability || "",
-        work_type: p.work_type_preference || "",
-        voice_intake_status: vir.status || "",
-        voice_intake_completed_topics: completedTopics,
-        voice_intake_missing_topics: missingTopics,
-        voice_intake_answers: completedQA,
-        voice_intake_current_question: currentQuestion,
-      },
-      metadata: {
-        candidateId: candidateId || "",
-        source: "eve_candidate_voice_intake",
-      },
-    };
-  }, [firstName, candidateId, candidateProfile]);
+  const assistantOverrides = React.useMemo(
+    () => buildVoiceIntakeAssistantOverrides({ firstName, candidateId, candidateProfile }),
+    [firstName, candidateId, candidateProfile]
+  );
 
   const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
     publicKey: PUBLIC_KEY,

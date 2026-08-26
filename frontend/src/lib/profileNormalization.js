@@ -270,9 +270,173 @@ function sortExperienceForDisplay(experience) {
     .map(({ exp }) => exp);
 }
 
-function experienceKey(exp) {
-  if (!exp || typeof exp !== "object") return "";
-  return `${normalizeKey(exp.company)}|${normalizeKey(exp.title)}`;
+const EXPERIENCE_TITLE_STOPWORDS = new Set(["and", "for", "in", "of", "on", "the", "to", "with"]);
+
+function experienceTextTokens(value) {
+  return new Set(
+    (normalizeKey(value).match(/[a-z0-9+#.]+/g) || []).filter(
+      (token) => token && !EXPERIENCE_TITLE_STOPWORDS.has(token)
+    )
+  );
+}
+
+function experienceTextKey(value) {
+  return normalizeKey(value).replace(/[^\w\s+#.]+/g, " ");
+}
+
+function experienceTextMatches(existing, next) {
+  const existingText = normalizeText(existing);
+  const nextText = normalizeText(next);
+  if (!existingText || !nextText) return false;
+
+  const existingKey = experienceTextKey(existingText);
+  const nextKey = experienceTextKey(nextText);
+  if (existingKey === nextKey) return true;
+  if (existingKey.includes(nextKey) || nextKey.includes(existingKey)) return true;
+
+  const existingTokens = experienceTextTokens(existingText);
+  const nextTokens = experienceTextTokens(nextText);
+  if (!existingTokens.size || !nextTokens.size) return false;
+
+  let overlap = 0;
+  existingTokens.forEach((token) => {
+    if (nextTokens.has(token)) overlap += 1;
+  });
+
+  const smallest = Math.min(existingTokens.size, nextTokens.size);
+  const largest = Math.max(existingTokens.size, nextTokens.size);
+  return (overlap >= smallest && overlap >= 2) || (overlap >= 2 && overlap / largest >= 0.66);
+}
+
+function extractExperienceInterval(exp) {
+  if (!exp || typeof exp !== "object") return null;
+
+  const { start, end, openEnded } = parseExperienceWindow(exp);
+  if (start === null) return null;
+
+  const effectiveEnd = openEnded ? Date.now() : end;
+  if (!effectiveEnd || effectiveEnd < start) return null;
+
+  return [start, effectiveEnd];
+}
+
+function parseExperienceWindow(exp) {
+  if (!exp || typeof exp !== "object") {
+    return { start: null, end: null, openEnded: false };
+  }
+
+  let start = parseExperienceDate(exp.start_date ?? exp.startDate ?? null, "start");
+  let end = parseExperienceDate(exp.end_date ?? exp.endDate ?? null, "end");
+  let openEnded = isOpenEndedExperienceValue(exp.end_date ?? exp.endDate ?? null);
+  const datesText = normalizeText(exp.dates ?? exp.duration ?? "");
+
+  if (datesText) {
+    const range = splitExperienceDateRange(datesText);
+    if (range && range.length === 2) {
+      const [left, right] = range;
+      if (!start) start = parseExperienceDate(left, "start");
+      if (right) {
+        if (isOpenEndedExperienceValue(right)) {
+          openEnded = true;
+          end = null;
+        } else if (!end) {
+          end = parseExperienceDate(right, "end");
+        }
+      }
+    } else {
+      if (!start) start = parseExperienceDate(datesText, "start");
+      if (!end && !openEnded) end = parseExperienceDate(datesText, "end");
+      if (isOpenEndedExperienceValue(datesText)) openEnded = true;
+    }
+  }
+
+  return { start, end, openEnded };
+}
+
+function experienceEntriesCompatible(existing, next) {
+  const existingTitle = normalizeText(existing?.title ?? existing?.role ?? "");
+  const nextTitle = normalizeText(next?.title ?? next?.role ?? "");
+  const existingCompany = normalizeText(existing?.company ?? existing?.company_name ?? "");
+  const nextCompany = normalizeText(next?.company ?? next?.company_name ?? "");
+
+  if (existingCompany && nextCompany && !experienceTextMatches(existingCompany, nextCompany)) {
+    return false;
+  }
+  if (existingTitle && nextTitle && !experienceTextMatches(existingTitle, nextTitle)) {
+    return false;
+  }
+
+  const existingWindow = parseExperienceWindow(existing);
+  const nextWindow = parseExperienceWindow(next);
+  const existingHasDates = existingWindow.start !== null || existingWindow.end !== null || existingWindow.openEnded;
+  const nextHasDates = nextWindow.start !== null || nextWindow.end !== null || nextWindow.openEnded;
+
+  if (!existingHasDates || !nextHasDates) {
+    return true;
+  }
+
+  if (existingWindow.start !== null && nextWindow.start !== null && existingWindow.start !== nextWindow.start) {
+    return false;
+  }
+  if (existingWindow.end !== null && nextWindow.end !== null && existingWindow.end !== nextWindow.end) {
+    return false;
+  }
+  if (
+    existingWindow.start !== null &&
+    existingWindow.end !== null &&
+    nextWindow.start !== null &&
+    nextWindow.end !== null
+  ) {
+    return !(existingWindow.end < nextWindow.start || nextWindow.end < existingWindow.start);
+  }
+
+  return true;
+}
+
+function experienceMatchScore(existing, next) {
+  if (!experienceEntriesCompatible(existing, next)) return -1;
+
+  let score = 0;
+  const existingTitle = normalizeText(existing?.title ?? existing?.role ?? "");
+  const nextTitle = normalizeText(next?.title ?? next?.role ?? "");
+  const existingCompany = normalizeText(existing?.company ?? existing?.company_name ?? "");
+  const nextCompany = normalizeText(next?.company ?? next?.company_name ?? "");
+
+  if (existingCompany && nextCompany) {
+    if (experienceTextMatches(existingCompany, nextCompany)) {
+      score += 5;
+    } else if (existingCompany === nextCompany) {
+      score += 6;
+    }
+  }
+
+  if (existingTitle && nextTitle) {
+    if (experienceTextMatches(existingTitle, nextTitle)) {
+      score += 5;
+    } else if (existingTitle === nextTitle) {
+      score += 6;
+    }
+  }
+
+  const existingWindow = parseExperienceWindow(existing);
+  const nextWindow = parseExperienceWindow(next);
+  if (existingWindow.start !== null && nextWindow.start !== null) {
+    score += existingWindow.start === nextWindow.start ? 3 : 1;
+  }
+  if (existingWindow.end !== null && nextWindow.end !== null) {
+    score += existingWindow.end === nextWindow.end ? 2 : 1;
+  }
+  if (existingWindow.openEnded && nextWindow.openEnded) {
+    score += 2;
+  }
+  if (
+    (existingWindow.start !== null || existingWindow.end !== null || existingWindow.openEnded) &&
+    (nextWindow.start !== null || nextWindow.end !== null || nextWindow.openEnded)
+  ) {
+    score += 1;
+  }
+
+  return score;
 }
 
 function experienceCompletenessScore(exp) {
@@ -298,67 +462,87 @@ function experienceCompletenessScore(exp) {
 
 function mergeExperienceFields(target, source) {
   const merged = { ...target };
-  const fillableFields = [
-    "title",
-    "company",
-    "dates",
-    "duration",
-    "start_date",
-    "startDate",
-    "end_date",
-    "endDate",
-    "description",
-    "summary",
-    "location",
-  ];
-
-  fillableFields.forEach((field) => {
+  const copyIfEmpty = (field) => {
     if (!normalizeText(merged[field]) && normalizeText(source?.[field])) {
       merged[field] = normalizeText(source[field]);
+    }
+  };
+
+  copyIfEmpty("location");
+
+  ["title", "company"].forEach((field) => {
+    const existingValue = normalizeText(merged[field]);
+    const nextValue = normalizeText(source?.[field]);
+    if (!existingValue && nextValue) {
+      merged[field] = nextValue;
+      return;
+    }
+    if (
+      existingValue &&
+      nextValue &&
+      experienceTextMatches(existingValue, nextValue) &&
+      nextValue.length > existingValue.length &&
+      nextValue.toLowerCase().includes(existingValue.toLowerCase())
+    ) {
+      merged[field] = nextValue;
+    }
+  });
+
+  ["start_date", "startDate"].forEach((field) => {
+    if (normalizeText(merged[field])) return;
+    if (parseExperienceDate(source?.[field], "start") !== null) {
+      merged[field] = normalizeText(source[field]);
+    }
+  });
+
+  ["end_date", "endDate"].forEach((field) => {
+    const existingValue = normalizeText(merged[field]);
+    const nextValue = normalizeText(source?.[field]);
+    if (!nextValue) return;
+    if (!existingValue) {
+      if (parseExperienceDate(source?.[field], "end") !== null || isOpenEndedExperienceValue(source?.[field])) {
+        merged[field] = nextValue;
+      }
+      return;
+    }
+    const existingIsPresent = isOpenEndedExperienceValue(existingValue);
+    const nextIsPresent = isOpenEndedExperienceValue(nextValue);
+    if (existingIsPresent && parseExperienceDate(source?.[field], "end") !== null) {
+      merged[field] = nextValue;
+    } else if (!existingIsPresent && !nextIsPresent) {
+      return;
+    }
+  });
+
+  ["dates", "duration"].forEach((field) => {
+    if (!normalizeText(merged[field])) {
+      const nextValue = normalizeText(source?.[field]);
+      if (!nextValue) return;
+      const window = parseExperienceWindow(source);
+      if (window.start !== null || window.end !== null || window.openEnded || nextValue) {
+        merged[field] = nextValue;
+      }
+    }
+  });
+
+  ["description", "summary"].forEach((field) => {
+    const existingValue = normalizeText(merged[field]);
+    const nextValue = normalizeText(source?.[field]);
+    if (!existingValue && nextValue) {
+      merged[field] = nextValue;
+    } else if (existingValue && nextValue && !existingValue.toLowerCase().includes(nextValue.toLowerCase())) {
+      merged[field] = `${existingValue} ${nextValue}`.trim();
     }
   });
 
   return merged;
 }
 
-function extractExperienceInterval(exp) {
-  if (!exp || typeof exp !== "object") return null;
-
-  let start = parseExperienceDate(exp.start_date ?? exp.startDate ?? null, "start");
-  let end = parseExperienceDate(exp.end_date ?? exp.endDate ?? null, "end");
-  let openEnded = isOpenEndedExperienceValue(exp.end_date ?? exp.endDate ?? null);
-  const hasExplicitEndField = Object.prototype.hasOwnProperty.call(exp, "end_date") || Object.prototype.hasOwnProperty.call(exp, "endDate");
-  if (!openEnded && hasExplicitEndField && !normalizeText(exp.end_date ?? exp.endDate ?? null)) {
-    openEnded = true;
-  }
-
-  const datesText = normalizeText(exp.dates ?? exp.duration ?? "");
-  if (datesText) {
-    const range = splitExperienceDateRange(datesText);
-    if (range && range.length === 2) {
-      const [left, right] = range;
-      if (!start) start = parseExperienceDate(left, "start");
-      if (right) {
-        if (isOpenEndedExperienceValue(right)) {
-          openEnded = true;
-          end = null;
-        } else if (!end) {
-          end = parseExperienceDate(right, "end");
-        }
-      }
-    } else {
-      if (!start) start = parseExperienceDate(datesText, "start");
-      if (!end && !openEnded) end = parseExperienceDate(datesText, "end");
-      if (isOpenEndedExperienceValue(datesText)) openEnded = true;
-    }
-  }
-
-  if (!start) return null;
-
-  const effectiveEnd = openEnded ? Date.now() : end;
-  if (!effectiveEnd || effectiveEnd < start) return null;
-
-  return [start, effectiveEnd];
+function synthesizeExperienceDates(exp) {
+  if (!exp || typeof exp !== "object") return "";
+  const startLabel = normalizeText(exp.start_date ?? exp.startDate ?? "");
+  if (!startLabel) return "";
+  return formatExperienceDateRange(exp);
 }
 
 export function calculateExperienceYears(experience) {
@@ -421,57 +605,64 @@ function dedupeExperienceForDisplay(experience) {
   if (!Array.isArray(experience)) return [];
   if (experience.length <= 1) return experience.map((exp) => normalizeExperienceRecord(exp));
 
-  const groups = new Map();
-  experience.forEach((exp, index) => {
-    if (!exp || typeof exp !== "object") return;
-    const key = experienceKey(exp) || `__index__${index}`;
-    const sortValues = extractExperienceSortValues(exp);
-    const record = {
-      exp,
-      index,
-      score: experienceCompletenessScore(exp),
-      ...sortValues,
-      primary: sortValues.openEnded ? (sortValues.start ?? 0) : ((sortValues.end ?? sortValues.start) ?? 0),
-      secondary: sortValues.start ?? sortValues.end ?? 0,
-    };
-    const list = groups.get(key) || [];
-    list.push(record);
-    groups.set(key, list);
-  });
+  const records = experience
+    .filter((exp) => exp && typeof exp === "object")
+    .map((exp, index) => {
+      const sortValues = extractExperienceSortValues(exp);
+      return {
+        exp: { ...exp },
+        index,
+        score: experienceCompletenessScore(exp),
+        sortValues,
+        primary: sortValues.openEnded ? (sortValues.start ?? 0) : ((sortValues.end ?? sortValues.start) ?? 0),
+        secondary: sortValues.start ?? sortValues.end ?? 0,
+      };
+    })
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      if (a.sortValues.openEnded !== b.sortValues.openEnded) return a.sortValues.openEnded ? -1 : 1;
+      if (a.primary !== b.primary) return (b.primary ?? 0) - (a.primary ?? 0);
+      if (a.secondary !== b.secondary) return (b.secondary ?? 0) - (a.secondary ?? 0);
+      return a.index - b.index;
+    });
 
-  const compareRecords = (a, b) => {
-    if (a.score !== b.score) return b.score - a.score;
-    if (a.openEnded !== b.openEnded) return a.openEnded ? -1 : 1;
-    if (a.primary !== b.primary) return (b.primary ?? 0) - (a.primary ?? 0);
-    if (a.secondary !== b.secondary) return (b.secondary ?? 0) - (a.secondary ?? 0);
-    return a.index - b.index;
-  };
-
-  const winners = Array.from(groups.values()).map((records) => {
-    const sorted = [...records].sort(compareRecords);
-    const winner = sorted[0];
-    const merged = sorted.slice(1).reduce(
-      (acc, record) => mergeExperienceFields(acc, record.exp),
-      { ...winner.exp }
-    );
-    return {
-      ...normalizeExperienceRecord(merged),
-      _sortScore: winner.score,
-      _sortOpenEnded: winner.openEnded,
-      _sortPrimary: winner.primary,
-      _sortSecondary: winner.secondary,
-      _sortIndex: winner.index,
+  const winners = [];
+  records.forEach((record) => {
+    let matchIndex = -1;
+    let bestScore = -1;
+    winners.forEach((winner, index) => {
+      const score = experienceMatchScore(winner.exp, record.exp);
+      if (score > bestScore) {
+        bestScore = score;
+        matchIndex = index;
+      }
+    });
+    if (matchIndex === -1) {
+      winners.push(record);
+      return;
+    }
+    winners[matchIndex] = {
+      ...winners[matchIndex],
+      exp: mergeExperienceFields(winners[matchIndex].exp, record.exp),
+      score: Math.max(winners[matchIndex].score, record.score),
     };
   });
 
   return winners
     .sort((a, b) => {
-      if (a._sortOpenEnded !== b._sortOpenEnded) return a._sortOpenEnded ? -1 : 1;
-      if (a._sortPrimary !== b._sortPrimary) return (b._sortPrimary ?? 0) - (a._sortPrimary ?? 0);
-      if (a._sortSecondary !== b._sortSecondary) return (b._sortSecondary ?? 0) - (a._sortSecondary ?? 0);
-      return (a._sortIndex ?? 0) - (b._sortIndex ?? 0);
+      if (a.sortValues.openEnded !== b.sortValues.openEnded) return a.sortValues.openEnded ? -1 : 1;
+      if (a.primary !== b.primary) return (b.primary ?? 0) - (a.primary ?? 0);
+      if (a.secondary !== b.secondary) return (b.secondary ?? 0) - (a.secondary ?? 0);
+      return a.index - b.index;
     })
-    .map(({ _sortScore, _sortOpenEnded, _sortPrimary, _sortSecondary, _sortIndex, ...exp }) => exp);
+    .map(({ exp }) => {
+      const normalized = normalizeExperienceRecord(exp);
+      const synthesizedDates = synthesizeExperienceDates(normalized);
+      if (synthesizedDates) {
+        normalized.dates = synthesizedDates;
+      }
+      return normalized;
+    });
 }
 
 function normalizeCertifications(certifications) {
@@ -495,6 +686,38 @@ function normalizeCertifications(certifications) {
   });
 
   return normalized;
+}
+
+function normalizeEducation(education) {
+  if (!Array.isArray(education)) return [];
+
+  const merged = [];
+  const indexByKey = new Map();
+  const educationKey = (entry) => {
+    const degree = normalizeKey(entry?.degree || entry?.field_of_study || "");
+    const institution = normalizeKey(entry?.institution || entry?.school || "");
+    return `${institution}|${degree}`;
+  };
+
+  education.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const key = educationKey(entry);
+    if (indexByKey.has(key)) {
+      const target = merged[indexByKey.get(key)];
+      ["degree", "institution", "dates", "duration", "start_date", "end_date", "field_of_study", "location", "description"].forEach(
+        (field) => {
+          if (!normalizeText(target[field]) && normalizeText(entry[field])) {
+            target[field] = normalizeText(entry[field]);
+          }
+        }
+      );
+      return;
+    }
+    indexByKey.set(key, merged.length);
+    merged.push({ ...entry });
+  });
+
+  return merged;
 }
 
 function skillShouldBeFiltered(skillText, certText) {
@@ -590,6 +813,10 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
       ...collectProfileList(voice, ["experience", "work_experience"]),
     ])
   );
+  const education = normalizeEducation([
+    ...collectProfileList(resume, ["education"]),
+    ...collectProfileList(voice, ["education"]),
+  ]);
 
   const preferredRoles = Array.from(
     new Map(
@@ -609,6 +836,7 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
     certifications,
     experience,
     work_experience: experience,
+    education,
     preferred_roles: preferredRoles,
   };
 
@@ -644,6 +872,7 @@ export function normalizeProfileForDisplay(profile = {}) {
   const experience = dedupeExperienceForDisplay(
     sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? [])
   );
+  const education = normalizeEducation(profile.education ?? []);
   const calculatedExperienceYears = calculateExperienceYears(experience);
 
   return {
@@ -651,6 +880,7 @@ export function normalizeProfileForDisplay(profile = {}) {
     keySkills,
     certifications,
     experience,
+    education,
     calculatedExperienceYears,
   };
 }

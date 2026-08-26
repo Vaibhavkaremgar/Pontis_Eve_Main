@@ -258,6 +258,133 @@ class TestMergeVoiceIntoProfile:
         merged = _merge_voice_into_profile(profile, voice)
         assert len(merged["work_experience"]) == 2
 
+    def test_existing_experience_is_enriched_instead_of_duplicated(self):
+        profile = self._base_profile()
+        profile["work_experience"] = [
+            {
+                "title": "Backend Developer",
+                "company": "Acme",
+                "start_date": "2022-01-01",
+                "end_date": "Present",
+                "description": "Built APIs",
+            }
+        ]
+        voice = {
+            "work_experience": [
+                {
+                    "title": "Python Backend Developer",
+                    "company": "Acme",
+                    "description": "Maintained services and added FastAPI endpoints.",
+                }
+            ]
+        }
+        merged = _merge_voice_into_profile(profile, voice)
+        assert len(merged["work_experience"]) == 1
+        exp = merged["work_experience"][0]
+        assert exp["title"] == "Python Backend Developer"
+        assert exp["company"] == "Acme"
+        assert exp["start_date"] == "2022-01-01"
+        assert exp["end_date"] == "Present"
+        assert "Built APIs" in exp["description"]
+        assert "Maintained services" in exp["description"]
+
+    def test_retaking_voice_intake_is_idempotent(self):
+        profile = self._base_profile()
+        voice = {
+            "work_experience": [
+                {
+                    "title": "Backend Developer",
+                    "company": "Acme",
+                    "start_date": "2022-01-01",
+                    "end_date": "Present",
+                    "description": "Built APIs",
+                }
+            ],
+            "education": [
+                {"degree": "B.Sc CS", "institution": "MIT"},
+            ],
+            "skills": ["Python", "Docker"],
+            "certifications": ["AWS Certified Solutions Architect - Associate"],
+        }
+        merged_once = _merge_voice_into_profile(profile, voice)
+        merged_twice = _merge_voice_into_profile(merged_once, voice)
+        assert merged_twice["work_experience"] == merged_once["work_experience"]
+        assert merged_twice["education"] == merged_once["education"]
+        assert merged_twice["skills"] == merged_once["skills"]
+        assert merged_twice["raw_data"]["certifications"] == merged_once["raw_data"]["certifications"]
+
+    def test_real_start_dates_are_preserved_and_present_is_not_doubled(self):
+        profile = self._base_profile()
+        profile["work_experience"] = [
+            {
+                "title": "Backend Developer",
+                "company": "Acme",
+                "start_date": "2022-01-01",
+                "end_date": "",
+            }
+        ]
+        voice = {
+            "work_experience": [
+                {
+                    "title": "Python Backend Developer",
+                    "company": "Acme",
+                    "end_date": "Present",
+                    "description": "Worked on APIs",
+                }
+            ]
+        }
+        merged = _merge_voice_into_profile(profile, voice)
+        exp = merged["work_experience"][0]
+        assert exp["start_date"] == "2022-01-01"
+        assert exp["end_date"] == "Present"
+        assert exp.get("dates", "") != "Present — Present"
+        assert exp.get("dates", "") != "Present - Present"
+
+    def test_missing_start_date_does_not_generate_present_present(self):
+        profile = self._base_profile()
+        profile["work_experience"] = [
+            {
+                "title": "Backend Developer",
+                "company": "Acme",
+                "end_date": "Present",
+            }
+        ]
+        voice = {
+            "work_experience": [
+                {
+                    "title": "Python Backend Developer",
+                    "company": "Acme",
+                    "end_date": "Present",
+                    "description": "Worked on APIs",
+                }
+            ]
+        }
+        merged = _merge_voice_into_profile(profile, voice)
+        exp = merged["work_experience"][0]
+        assert exp["end_date"] == "Present"
+        assert exp.get("dates", "") not in {"Present â€” Present", "Present - Present"}
+        assert not exp.get("dates", "").startswith("Present â€” Present")
+
+    def test_education_is_preserved_and_merged_without_duplicates(self):
+        profile = self._base_profile()
+        profile["education"] = [
+            {"degree": "B.Sc CS", "institution": "MIT", "start_date": "2012", "end_date": "2016"}
+        ]
+        voice = {
+            "education": [
+                {"degree": "B.Sc CS", "institution": "MIT", "location": "Cambridge"},
+                {"degree": "M.Sc CS", "institution": "Stanford"},
+            ]
+        }
+        merged = _merge_voice_into_profile(profile, voice)
+        assert len(merged["education"]) == 2
+        first = merged["education"][0]
+        assert first["degree"] == "B.Sc CS"
+        assert first["institution"] == "MIT"
+        assert first["start_date"] == "2012"
+        assert first["end_date"] == "2016"
+        assert first["location"] == "Cambridge"
+
     def test_empty_voice_returns_unchanged_profile(self):
         profile = self._base_profile()
         merged = _merge_voice_into_profile(profile, {})

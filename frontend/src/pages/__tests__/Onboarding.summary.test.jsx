@@ -1,15 +1,150 @@
-import { buildSummary } from "../Onboarding";
+import React from "react";
+import { act } from "react";
+import ReactDOM from "react-dom/client";
+
+import Onboarding, { buildSummary } from "../Onboarding";
 import { mergeProfilesForDisplay } from "../../lib/profileNormalization";
+import { saveOnboardingState } from "../../lib/onboardingStorage";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const mockNavigate = jest.fn();
 
 jest.mock("react-router-dom", () => ({
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useSearchParams: () => [new URLSearchParams(), jest.fn()],
 }), { virtual: true });
 
-jest.mock("../../components/onboarding/VoiceIntake", () => () => null);
+jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake-mock" />);
 
 describe("Onboarding voice intake summary", () => {
-  it("shows merged skills, certifications, and latest experience from resume and voice intake", () => {
+  const mergedProfile = mergeProfilesForDisplay(
+    {
+      name: "Suram Test",
+      headline: "Product Manager",
+      location: "New York, NY",
+      keySkills: ["Product", "Strategy"],
+      certifications: ["AWS Certified Solutions Architect - Associate"],
+      experience: [
+        {
+          id: "exp-resume",
+          title: "Product Manager",
+          company: "ResumeCo",
+          dates: "2021 â€” 2023",
+        },
+      ],
+      education: [
+        {
+          degree: "B.Sc CS",
+          institution: "MIT",
+        },
+      ],
+    },
+    {
+      keySkills: ["Leadership", "Strategy"],
+      experience: [
+        {
+          id: "exp-voice",
+          title: "Senior Product Manager",
+          company: "VoiceCo",
+          start_date: "2024-01-01",
+          end_date: "Present",
+        },
+      ],
+      additional_information: "I enjoy building teams.",
+    }
+  );
+
+  function renderOnboarding() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+
+    act(() => {
+      root.render(<Onboarding />);
+    });
+
+    return {
+      container,
+      root,
+      unmount() {
+        act(() => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    saveOnboardingState({
+      step: 5,
+      linkedInAuthenticated: true,
+      voiceIntakeCompleted: true,
+      candidateId: "cand-123",
+      parsedProfile: mergedProfile,
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("shows the summary page after a completed voice intake and keeps resume plus voice data", async () => {
+    const renderResult = renderOnboarding();
+
+    const summary = await waitForElement(renderResult.container, '[data-testid="onboarding-summary-list"]');
+    expect(renderResult.container.querySelector('[data-testid="onboarding-step-5"]')).toBeTruthy();
+    expect(summary.textContent).toContain("Product Manager");
+    expect(summary.textContent).toContain("New York, NY");
+    expect(summary.textContent).toContain("Product, Strategy, Leadership");
+    expect(summary.textContent).toContain("AWS Certified Solutions Architect - Associate");
+    expect(summary.textContent).toContain("Senior Product Manager");
+    expect(summary.textContent).toContain("VoiceCo");
+    expect(summary.textContent).toContain("Present");
+    expect(summary.textContent).toContain("MIT");
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    const enterDashboard = renderResult.container.querySelector('[data-testid="onboarding-enter-dashboard"]');
+    expect(enterDashboard).toBeTruthy();
+
+    act(() => {
+      enterDashboard.click();
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/dashboard");
+
+    renderResult.unmount();
+  });
+});
+
+function flush() {
+  return act(async () => {
+    await Promise.resolve();
+  });
+}
+
+async function waitForElement(container, selector, attempts = 20) {
+  for (let i = 0; i < attempts; i += 1) {
+    await flush();
+    const node = container.querySelector(selector);
+    if (node) return node;
+  }
+  throw new Error(`Timed out waiting for ${selector}`);
+}
+
+async function waitForCondition(predicate, attempts = 20) {
+  for (let i = 0; i < attempts; i += 1) {
+    await flush();
+    if (predicate()) return true;
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+describe("buildSummary", () => {
+  it("uses the merged profile data consistently", () => {
     const merged = mergeProfilesForDisplay(
       {
         headline: "Product Manager",

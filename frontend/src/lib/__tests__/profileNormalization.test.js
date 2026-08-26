@@ -330,4 +330,145 @@ describe("mergeProfilesForDisplay", () => {
       description: "Built services.",
     });
   });
+
+  it("enriches existing experience instead of appending duplicate present roles", () => {
+    const merged = mergeProfilesForDisplay(
+      {
+        experience: [
+          {
+            id: "resume-exp",
+            title: "Backend Developer",
+            company: "Acme",
+            start_date: "2022-01-01",
+            end_date: "Present",
+            description: "Built APIs.",
+          },
+        ],
+        education: [
+          {
+            degree: "B.Sc CS",
+            institution: "MIT",
+            start_date: "2012",
+            end_date: "2016",
+          },
+        ],
+        keySkills: ["Python"],
+      },
+      {
+        experience: [
+          {
+            id: "voice-exp",
+            title: "Python Backend Developer",
+            company: "Acme",
+            description: "Added FastAPI endpoints.",
+          },
+        ],
+        education: [
+          {
+            degree: "B.Sc CS",
+            institution: "MIT",
+            location: "Cambridge",
+          },
+          {
+            degree: "M.Sc CS",
+            institution: "Stanford",
+          },
+        ],
+        keySkills: ["Docker"],
+      }
+    );
+
+    expect(merged.experience).toHaveLength(1);
+    expect(merged.experience[0]).toMatchObject({
+      title: "Python Backend Developer",
+      company: "Acme",
+      start_date: "2022-01-01",
+      end_date: "Present",
+    });
+    expect(merged.experience[0].description).toContain("Built APIs");
+    expect(merged.experience[0].description).toContain("Added FastAPI endpoints");
+    expect(merged.education).toHaveLength(2);
+    expect(merged.education[0]).toMatchObject({
+      degree: "B.Sc CS",
+      institution: "MIT",
+      start_date: "2012",
+      end_date: "2016",
+      location: "Cambridge",
+    });
+    expect(merged.keySkills).toEqual(["Python", "Docker"]);
+  });
+
+  it("does not synthesize Present - Present when a valid start date is missing", () => {
+    const merged = mergeProfilesForDisplay(
+      {
+        experience: [
+          {
+            id: "resume-exp",
+            title: "Backend Developer",
+            company: "Acme",
+            end_date: "Present",
+          },
+        ],
+      },
+      {
+        experience: [
+          {
+            id: "voice-exp",
+            title: "Python Backend Developer",
+            company: "Acme",
+            end_date: "Present",
+            description: "Built APIs.",
+          },
+        ],
+      }
+    );
+
+    expect(merged.experience).toHaveLength(1);
+    expect(merged.experience[0].end_date).toBe("Present");
+    expect(merged.experience[0].dates).not.toBe("Present â€” Present");
+    expect(merged.experience[0].dates).not.toBe("Present - Present");
+  });
+
+  it("is idempotent when the same voice intake data is merged twice", () => {
+    const resume = {
+      keySkills: ["Python"],
+      certifications: ["AWS Certified Solutions Architect - Associate"],
+      experience: [
+        {
+          title: "Backend Developer",
+          company: "Acme",
+          start_date: "2022-01-01",
+          end_date: "Present",
+        },
+      ],
+      education: [
+        {
+          degree: "B.Sc CS",
+          institution: "MIT",
+        },
+      ],
+    };
+    const voice = {
+      keySkills: ["Docker", "Python"],
+      certifications: ["aws certified solutions architect associate"],
+      experience: [
+        {
+          title: "Python Backend Developer",
+          company: "Acme",
+          description: "Built APIs.",
+        },
+      ],
+      education: [
+        {
+          degree: "B.Sc CS",
+          institution: "MIT",
+        },
+      ],
+    };
+
+    const once = mergeProfilesForDisplay(resume, voice);
+    const twice = mergeProfilesForDisplay(once, voice);
+
+    expect(twice).toEqual(once);
+  });
 });
