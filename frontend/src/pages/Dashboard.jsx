@@ -13,7 +13,12 @@ import {
   MOCK_RECENT_ACTIVITY,
   QUICK_ACTIONS,
 } from "../mock";
-import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
+import {
+  isVoiceIntakeCompleteStatus,
+  loadOnboardingState,
+  saveOnboardingState,
+  clearOnboardingState,
+} from "../lib/onboardingStorage";
 import { buildDashboardEveGreetingFromProfile } from "../lib/dashboardMessaging";
 import { hydrateProfileStrength } from "../lib/profileStrength";
 import { normalizeProfileForDisplay } from "../lib/profileNormalization";
@@ -614,9 +619,9 @@ function Dashboard() {
                   candidateProfile={userProfile}
                   onComplete={(result) => {
                     const s = loadOnboardingState();
-                    const completed =
-                      result?.status === "completed" || result?.status === "duplicate";
+                    const completed = isVoiceIntakeCompleteStatus(result?.status);
                     saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+                    setCenterView(completed ? "swipe" : "chat");
                     refreshProfile();
                   }}
                 />

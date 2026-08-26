@@ -70,6 +70,11 @@ export function clearOnboardingState() {
   }
 }
 
+export function isVoiceIntakeCompleteStatus(status) {
+  const normalized = String(status || "").toLowerCase();
+  return normalized === "completed" || normalized === "duplicate";
+}
+
 /**
  * When restoring, clamp the step to something we can actually resume:
  * - If no parsedProfile yet → user must re-upload their resume, so cap at 2.

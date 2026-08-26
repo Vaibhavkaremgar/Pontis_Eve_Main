@@ -5,6 +5,7 @@ No network / DB required.
 import sys
 import os
 import json
+import re
 import pytest
 
 # Allow importing server module directly
@@ -104,8 +105,11 @@ class TestMergeVoiceIntoProfile:
         profile["summary"] = ""
         voice = {"summary": "Voice-derived summary"}
         merged = _merge_voice_into_profile(profile, voice)
-        assert "Voice-derived summary" in merged["summary"]
-        assert "Software Engineer" in merged["summary"]
+        summary = merged["summary"]
+        assert "Software Engineer" in summary
+        assert "Python" in summary
+        assert "Voice-derived summary" in summary
+        assert "Acme" not in summary
 
     def test_existing_summary_not_overwritten(self):
         profile = self._base_profile()
@@ -116,11 +120,13 @@ class TestMergeVoiceIntoProfile:
             "availability": "30 days",
         }
         merged = _merge_voice_into_profile(profile, voice)
-        assert "Experienced engineer" in merged["summary"]
-        assert "Voice-derived summary" in merged["summary"]
-        assert "Go" in merged["summary"]
-        assert "Backend Engineer" in merged["summary"]
-        assert "30 days" in merged["summary"]
+        summary = merged["summary"]
+        assert "Software Engineer" in summary
+        assert "Go" in summary
+        assert "Voice-derived summary" in summary
+        assert "Backend Engineer" in summary
+        assert "30 days" not in summary
+        assert "Acme" not in summary
 
     def test_summary_includes_resume_and_voice_information(self):
         profile = self._base_profile()
@@ -131,12 +137,20 @@ class TestMergeVoiceIntoProfile:
             "availability": "30 days",
         }
         merged = _merge_voice_into_profile(profile, voice)
-        assert "Experienced engineer" in merged["summary"]
-        assert "Looking for backend roles using Java and Spring Boot." in merged["summary"]
-        assert "Java" in merged["summary"]
-        assert "Spring Boot" in merged["summary"]
-        assert "Backend Engineer" in merged["summary"]
-        assert "30 days" in merged["summary"]
+        summary = merged["summary"]
+        sentence_count = len([part for part in re.split(r"[.!?]+", summary) if part.strip()])
+        assert 2 <= sentence_count <= 4
+        assert "Software Engineer" in summary
+        assert "Python" in summary
+        assert "Java" in summary
+        assert "Spring Boot" in summary
+        assert "Backend Engineer" in summary
+        assert "Acme" not in summary
+        assert "MIT" not in summary
+        assert "5.0" not in summary
+        assert "30 days" not in summary
+        assert "Built APIs" not in summary
+        assert summary.count("Python") == 1
 
     def test_summary_deduplicates_repeated_resume_and_voice_information(self):
         profile = self._base_profile()
@@ -144,22 +158,26 @@ class TestMergeVoiceIntoProfile:
         voice = {
             "summary": "Experienced engineer with Python and Django.",
             "skills": ["Python", "Django", "Docker"],
+            "preferred_roles": ["Backend Engineer"],
         }
         merged = _merge_voice_into_profile(profile, voice)
         summary = merged["summary"]
-        assert summary.count("Experienced engineer with Python and Django.") == 1
         assert summary.count("Python") == 1
         assert summary.count("Django") == 1
         assert "Docker" in summary
+        assert "Backend Engineer" in summary
 
     def test_summary_preserves_resume_info_when_voice_is_unrelated(self):
         profile = self._base_profile()
         voice = {"additional_information": "I enjoy hiking on weekends."}
         merged = _merge_voice_into_profile(profile, voice)
-        assert "Experienced engineer" in merged["summary"]
-        assert "Software Engineer" in merged["summary"]
-        assert "Acme" in merged["summary"]
-        assert "I enjoy hiking on weekends." in merged["summary"]
+        summary = merged["summary"]
+        assert "Software Engineer" in summary
+        assert "Python" in summary
+        assert "Django" in summary
+        assert "I enjoy hiking on weekends." in summary
+        assert "Acme" not in summary
+        assert "MIT" not in summary
 
     def test_summary_reflects_latest_merged_profile_state(self):
         profile = self._base_profile()
@@ -170,12 +188,14 @@ class TestMergeVoiceIntoProfile:
         }
         merged = _merge_voice_into_profile(profile, voice)
         summary = merged["summary"]
+        assert "Software Engineer" in summary
         assert "Java" in summary
         assert "Spring Boot" in summary
         assert "Java Backend Developer" in summary
-        assert "Immediately" in summary
         assert "Python" in summary
         assert "Django" in summary
+        assert "Immediately" not in summary
+        assert "Acme" not in summary
 
     def test_experience_years_not_overwritten_if_exists(self):
         profile = self._base_profile()

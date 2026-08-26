@@ -20,6 +20,7 @@ import {
   loadOnboardingState,
   saveOnboardingState,
   resumableStep,
+  isVoiceIntakeCompleteStatus,
 } from "../lib/onboardingStorage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -633,16 +634,16 @@ export default function Onboarding() {
       const elapsed = Date.now() - startedAt;
       setVoiceElapsedMs(elapsed);
     }
-    setVoiceIntakeCompleted(true);
-    // If we came from the dashboard (resume_voice flow), go back to dashboard
-    if (resumeVoiceParam) {
-      const s = loadOnboardingState();
-      saveOnboardingState({ ...s, voiceIntakeCompleted: true });
-      navigate("/dashboard");
-    } else {
-      setStep(5);
-    }
-  }, [resumeVoiceParam, navigate]);
+    const completed = isVoiceIntakeCompleteStatus(intakeResult?.status);
+    setVoiceIntakeCompleted(completed);
+
+    const s = loadOnboardingState();
+    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+
+    // Leave onboarding immediately so the dashboard can restore the correct center view
+    // from the backend voice intake status.
+    navigate("/dashboard", { replace: true });
+  }, [navigate]);
 
   // Persist state whenever the shape changes
   React.useEffect(() => {

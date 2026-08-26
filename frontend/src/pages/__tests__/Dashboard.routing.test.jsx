@@ -24,6 +24,7 @@ jest.mock("../../components/Sidebar", () => () => <div data-testid="sidebar" />)
 jest.mock("../../components/ChatHub", () => ({ chats = [] }) => (
   <div data-testid="chat-hub">{chats[0]?.content || ""}</div>
 ));
+let mockVoiceIntakeCompletionResult = null;
 jest.mock("../../components/LivingProfile", () => (props) => {
   lastLivingProfileProps = props;
   return (
@@ -35,7 +36,18 @@ jest.mock("../../components/LivingProfile", () => (props) => {
   );
 });
 jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
-jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
+jest.mock("../../components/onboarding/VoiceIntake", () => (props) => {
+  const React = require("react");
+  const firedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (firedRef.current || !mockVoiceIntakeCompletionResult) return;
+    firedRef.current = true;
+    props.onComplete?.(mockVoiceIntakeCompletionResult);
+  }, [props]);
+
+  return <div data-testid="voice-intake" />;
+});
 jest.mock("react-resizable-panels", () => ({
   PanelGroup: ({ children }) => <div>{children}</div>,
   Panel: ({ children }) => <div>{children}</div>,
@@ -154,6 +166,7 @@ describe("Dashboard voice intake routing", () => {
     localStorage.clear();
     jest.clearAllMocks();
     lastLivingProfileProps = null;
+    mockVoiceIntakeCompletionResult = null;
     saveOnboardingState({
       candidateId: "cand-123",
       voiceIntakeCompleted: true,
@@ -255,6 +268,76 @@ describe("Dashboard voice intake routing", () => {
 
     expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
     expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+  });
+
+  it("routes an incomplete voice intake back to Chat with Eve", async () => {
+    mockVoiceIntakeCompletionResult = { status: "in_progress" };
+    mockDashboardRequests([
+      makeProfile({
+        strengthPercent: 62,
+        profile_strength_percent: 62,
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        strengthPercent: 62,
+        profile_strength_percent: 62,
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Chat with Eve")
+    );
+    expect(chatToggle).toBeTruthy();
+
+    act(() => {
+      chatToggle.click();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("routes a completed voice intake to Jobs for you", async () => {
+    mockVoiceIntakeCompletionResult = { status: "completed" };
+    mockDashboardRequests([
+      makeProfile({
+        strengthPercent: 62,
+        profile_strength_percent: 62,
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        strengthPercent: 82,
+        profile_strength_percent: 82,
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Chat with Eve")
+    );
+    expect(chatToggle).toBeTruthy();
+
+    act(() => {
+      chatToggle.click();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
   });
 
   it("preserves the backend candidate id on the profile object so photo uploads can use it", async () => {
