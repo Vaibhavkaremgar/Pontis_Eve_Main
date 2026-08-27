@@ -36,7 +36,7 @@ export function getVoiceIntakeCenterView(voiceIntakeResume) {
     Boolean(currentQuestion);
 
   if (isInProgress) return "chat";
-  if (voiceIntakeResume?.status === "completed") return "swipe";
+  if (isVoiceIntakeCompleteStatus(voiceIntakeResume?.status)) return "swipe";
   return null;
 }
 
@@ -115,7 +115,7 @@ function Dashboard() {
     voiceIntakeResume?.status === "in_progress" &&
     Boolean(voiceIntakeResume?.has_open_question) &&
     Boolean(voiceIntakeCurrentQuestion);
-  const voiceIntakeCompleted = voiceIntakeResume?.status === "completed";
+  const voiceIntakeCompleted = isVoiceIntakeCompleteStatus(voiceIntakeResume?.status);
   const voiceIntakeCenterView = getVoiceIntakeCenterView(voiceIntakeResume);
 
   // All state declarations up front so effects can reference them

@@ -1,4 +1,4 @@
-import React from "react";
+﻿import React from "react";
 import axios from "axios";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -657,14 +657,8 @@ export default function Onboarding() {
       voiceIntakeCompleted: completed,
     });
 
-    if (completed) {
-      setStep(5);
-      return;
-    }
-
-    // Incomplete intake still resumes in Chat with Eve from the dashboard.
-    navigate("/dashboard", { replace: true });
-  }, [navigate, parsedProfile]);
+    setStep(5);
+  }, [parsedProfile]);
 
   // Persist state whenever the shape changes
   React.useEffect(() => {

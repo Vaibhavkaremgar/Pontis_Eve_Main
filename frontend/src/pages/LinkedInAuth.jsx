@@ -79,7 +79,7 @@ export default function LinkedInAuth() {
     setError(null);
     fetch(`${BACKEND_URL}/api/auth/linkedin/init`)
       .then((r) => r.json())
-      .then((data) => {
+       .then((data) => {
         sessionStorage.setItem("linkedin_oauth_state", data.state);
         window.location.href = data.auth_url;
       })

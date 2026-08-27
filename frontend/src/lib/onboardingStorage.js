@@ -72,7 +72,8 @@ export function clearOnboardingState() {
 
 export function isVoiceIntakeCompleteStatus(status) {
   const normalized = String(status || "").toLowerCase();
-  return normalized === "completed" || normalized === "duplicate";
+  // Accept the backend's success variants so onboarding never falls through to dashboard.
+  return ["completed", "complete", "done", "finished", "duplicate"].includes(normalized);
 }
 
 /**
