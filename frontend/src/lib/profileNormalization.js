@@ -194,7 +194,12 @@ function formatExperienceDateRange(exp) {
   }
 
   const startLabel = formatExperienceDateLabel(start);
-  if (!startLabel) return rawDates;
+  // No valid start date — if end is open-ended show just "Present", else nothing
+  if (!startLabel || startLabel === "Present") {
+    const endLabel = formatExperienceDateLabel(end);
+    if (endLabel === "Present" || isOpenEndedExperienceValue(normalizeText(start))) return "Present";
+    return rawDates;
+  }
 
   const endLabel = formatExperienceDateLabel(end);
   if (!endLabel || endLabel === "Present") {

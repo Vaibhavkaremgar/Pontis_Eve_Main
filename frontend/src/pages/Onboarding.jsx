@@ -444,32 +444,24 @@ export function buildSummary(profile) {
   if (merged.headline) items.push({ label: "Positioning", value: merged.headline });
   if (merged.location) items.push({ label: "Location", value: merged.location });
   if (merged.keySkills?.length)
-    items.push({
-      label: "Top skills",
-      value: merged.keySkills.slice(0, 8).join(", "),
-    });
+    items.push({ label: "Top skills", value: merged.keySkills.slice(0, 8).join(", ") });
   if (merged.experience?.length) {
     const first = merged.experience[0];
     items.push({
       label: "Latest role",
-      value: `${first.title || ""}${first.company ? " at " + first.company : ""}${
-        first.dates ? " · " + first.dates : ""
-      }`,
+      value: (first.title || "") + (first.company ? " at " + first.company : "") + (first.dates ? " · " + first.dates : ""),
     });
   }
-  if (merged.certifications?.length) {
-    items.push({
-      label: "Certifications",
-      value: merged.certifications.slice(0, 8).join(", "),
-    });
-  }
+  if (merged.certifications?.length)
+    items.push({ label: "Certifications", value: merged.certifications.slice(0, 8).join(", ") });
   if (merged.education?.length) {
     const edu = merged.education[0];
-    items.push({
-      label: "Education",
-      value: `${edu.degree || ""}${edu.institution ? " · " + edu.institution : ""}`,
-    });
+    items.push({ label: "Education", value: (edu.degree || "") + (edu.institution ? " · " + edu.institution : "") });
   }
+  if (merged.preferred_roles?.length)
+    items.push({ label: "Target roles", value: merged.preferred_roles.slice(0, 6).join(", ") });
+  if (merged.additional_information)
+    items.push({ label: "Career context", value: merged.additional_information });
   return items.length ? items : FALLBACK_SUMMARY;
 }
 

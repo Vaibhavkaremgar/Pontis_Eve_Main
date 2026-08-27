@@ -72,6 +72,57 @@ function SectionLabel({ children }) {
   );
 }
 
+export function generateBio(profile) {
+  if (!profile) return "";
+  const name = (profile.name || "").trim();
+  const currentRole = (profile.headline || profile.current_role || "").trim();
+  const targetRoles = (profile.preferred_roles || []).slice(0, 3).join(", ");
+  const topSkills = (profile.keySkills || []).slice(0, 4).join(", ");
+  const latestExp = (profile.experience || [])[0];
+  const prevExp = (profile.experience || [])[1];
+
+  const article = (word) => (word.match(/^[aeiou]/i) ? "an" : "a");
+  const subject = (role) =>
+    name ? `${name} is ${article(role)} ${role}` : `${article(role).charAt(0).toUpperCase() + article(role).slice(1)} ${role}`;
+
+  const parts = [];
+
+  // Line 1: current/recent role context
+  const primaryRole = currentRole || latestExp?.title || "";
+  if (primaryRole) {
+    parts.push(`${subject(primaryRole)} with a background in ${topSkills || "cross-functional work"}.`);
+  }
+
+  // Line 2: previous experience context
+  if (prevExp?.title) {
+    parts.push(`Previously worked as ${article(prevExp.title)} ${prevExp.title}.`);
+  } else if (!currentRole && latestExp) {
+    parts.push(`Brings hands-on experience in ${topSkills || "their field"}.`);
+  }
+
+  // Line 3: career direction
+  if (targetRoles) {
+    parts.push(`Currently exploring opportunities in ${targetRoles}.`);
+  } else if (primaryRole) {
+    parts.push(`Open to new opportunities that leverage their expertise.`);
+  }
+
+  // Line 4: strengths/value
+  if (topSkills && targetRoles) {
+    parts.push(`Brings strong skills in ${topSkills}.`);
+  } else if (profile.additional_information) {
+    const info = profile.additional_information.split(/[.!?]/)[0].trim();
+    if (info) parts.push(info + ".");
+  }
+
+  // Ensure 4-5 lines
+  if (parts.length < 4 && topSkills) {
+    parts.push(`Known for ${topSkills} and a results-driven approach.`);
+  }
+
+  return parts.slice(0, 5).join(" ");
+}
+
 function formatExperienceYears(years) {
   const value = Number(years);
   if (!Number.isFinite(value) || value < 0) return "0";
@@ -303,11 +354,14 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
       {/* Bio */}
       <div>
         <SectionLabel>Bio</SectionLabel>
-        {profile.bio ? (
-          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{profile.bio}</p>
-        ) : (
-          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
-        )}
+        {(() => {
+          const bioText = profile.bio || generateBio(profile);
+          return bioText ? (
+            <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{bioText}</p>
+          ) : (
+            <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+          );
+        })()}
       </div>
 
       {/* Experience */}
