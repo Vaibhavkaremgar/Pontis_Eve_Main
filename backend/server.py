@@ -161,6 +161,18 @@ def _parse_experience_date(value: Any, role: str = "end") -> Optional[int]:
         except ValueError:
             continue
 
+    # Handle "Month YYYY" / "Mon YYYY" (e.g. "January 2025", "Jan 2025")
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            if role == "end":
+                import calendar as _cal
+                last_day = _cal.monthrange(parsed.year, parsed.month)[1]
+                parsed = parsed.replace(day=last_day)
+            return int(parsed.timestamp())
+        except ValueError:
+            continue
+
     if m := re.match(r"^(\d{4})[./](\d{1,2})[./](\d{1,2})$", text):
         year, month, day = map(int, m.groups())
         return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
@@ -3777,6 +3789,12 @@ def _infer_profile_updates_from_message(message: str) -> dict:
 
     work_experience: list[dict[str, str]] = []
     work_patterns = [
+        # "I am a Backend Developer working at Viralbug from January 2025 to present."
+        re.compile(
+            r"\b(?:i\s+am|i(?:'m| am))\s+(?:an?\s+)?(?P<title>.+?)\s+working\s+at\s+(?P<company>.+?)\s+"
+            r"from\s+(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
         re.compile(
             r"\b(?:i\s+was\s+working|i\s+worked|worked|working|i\s+have\s+been\s+working)\s+"
             r"(?:from\s+)?(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)\s+"
@@ -4378,7 +4396,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "preferred_roles": [],
   "current_role": "",
   "current_company": "",
-  "work_experience": [{"title":"","company":"","description":""}],
+  "work_experience": [{"title":"","company":"","start_date":"","end_date":"","description":""}],
   "education": [{"degree":"","institution":""}],
   "certifications": [],
   "additional_information": "",
@@ -4386,6 +4404,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
 }
 Only include fields where the candidate actually provided information.
 Do NOT invent or hallucinate information.
+For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 Return only the JSON object."""
 

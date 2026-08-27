@@ -385,6 +385,30 @@ class TestMergeVoiceIntoProfile:
         assert first["end_date"] == "2016"
         assert first["location"] == "Cambridge"
 
+    def test_voice_intake_month_year_start_date_preserved(self):
+        """Regression: 'January 2025' start date from voice intake must not become 'Present'."""
+        from server import _merge_work_experience
+        existing = [
+            {"title": "Backend Developer", "company": "Viralbug", "description": "Built services."}
+        ]
+        voice_item = [
+            {
+                "title": "Backend Developer",
+                "company": "Viralbug",
+                "start_date": "January 2025",
+                "end_date": "Present",
+            }
+        ]
+        merged = _merge_work_experience(existing, voice_item)
+        assert len(merged) == 1
+        exp = merged[0]
+        assert exp["start_date"] == "January 2025"
+        assert exp["end_date"] == "Present"
+        dates = exp.get("dates") or ""
+        assert "January 2025" in dates
+        assert "Present" in dates
+        assert dates.count("Present") == 1
+
     def test_empty_voice_returns_unchanged_profile(self):
         profile = self._base_profile()
         merged = _merge_voice_into_profile(profile, {})
