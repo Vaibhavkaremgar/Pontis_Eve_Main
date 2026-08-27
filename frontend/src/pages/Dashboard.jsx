@@ -36,6 +36,7 @@ export function getVoiceIntakeCenterView(voiceIntakeResume) {
     Boolean(currentQuestion);
 
   if (isInProgress) return "chat";
+  // Return "swipe" for completed so the effect always drives centerView from backend status
   if (isVoiceIntakeCompleteStatus(voiceIntakeResume?.status)) return "swipe";
   return null;
 }
@@ -210,7 +211,8 @@ function Dashboard() {
   }, [candidateId]);
 
   React.useEffect(() => {
-    if (voiceIntakeCenterView) {
+    // Backend is the single source of truth: apply whenever it resolves to a non-null view
+    if (voiceIntakeCenterView !== null) {
       setCenterView(voiceIntakeCenterView);
     }
   }, [voiceIntakeCenterView]);
@@ -638,13 +640,17 @@ function Dashboard() {
                     )
                   );
                 }
-                const s = loadOnboardingState();
-                const completed = isVoiceIntakeCompleteStatus(result?.status);
-                saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
-                setCenterView(completed ? "swipe" : "chat");
-                setTimeout(() => {
-                  refreshProfile();
-                }, 0);
+                // Refresh from backend - voiceIntakeCenterView effect sets centerView
+                // once the authoritative backend status arrives.
+                refreshProfile().then(() => {
+                  setUserProfile((latest) => {
+                    const backendStatus = latest.voice_intake_resume?.status;
+                    const completed = isVoiceIntakeCompleteStatus(backendStatus);
+                    const s = loadOnboardingState();
+                    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+                    return latest;
+                  });
+                });
               }}
             />
               </div>

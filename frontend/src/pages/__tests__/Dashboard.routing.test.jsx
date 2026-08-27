@@ -396,3 +396,185 @@ describe("Dashboard voice intake routing", () => {
     expect(lastLivingProfileProps.userProfile.experience.map((exp) => exp.company)).toEqual(["VoiceCo"]);
   });
 });
+
+describe("Voice Intake completion/routing regression tests", () => {
+  let renderResult;
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    lastLivingProfileProps = null;
+    mockVoiceIntakeOnComplete = null;
+  });
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("backend returns completed while localStorage says incomplete → Jobs for you", async () => {
+    // localStorage says incomplete, backend says completed
+    saveOnboardingState({
+      candidateId: "cand-123",
+      voiceIntakeCompleted: false,
+    });
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
+  it("backend returns completed while voice_intake_resume says in_progress → Jobs for you", async () => {
+    // First profile call returns in_progress, second (after refresh) returns completed
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    // Initially shows chat (in_progress)
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    // Trigger refresh (simulates VoiceIntake onComplete calling refreshProfile)
+    const refreshBtn = renderResult.container.querySelector('[data-testid="refresh-profile-btn"]');
+    act(() => { refreshBtn.click(); });
+
+    // After refresh with completed status → Jobs for you
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
+  it("backend returns in_progress → Chat with Eve", async () => {
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: true });
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatHub = await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    expect(chatHub.textContent).toContain(currentQuestion);
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("completed Voice Intake onComplete → refreshProfile → Jobs for you (never bypasses via local status)", async () => {
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    // Click Chat with Eve to show voice intake
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    // Simulate VoiceIntake calling onComplete with completed status
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "completed" });
+      await Promise.resolve();
+    });
+
+    // After refreshProfile resolves with completed backend status → Jobs for you
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
+  it("incomplete Voice Intake onComplete → refreshProfile → Chat with Eve", async () => {
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "in_progress" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("refreshing the dashboard after completed Voice Intake still shows Jobs for you", async () => {
+    // Simulate a reload: localStorage has voiceIntakeCompleted=true, backend confirms completed
+    saveOnboardingState({
+      candidateId: "cand-123",
+      voiceIntakeCompleted: true,
+    });
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+  });
+});
