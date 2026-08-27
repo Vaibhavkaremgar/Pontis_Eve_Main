@@ -268,7 +268,10 @@ def _detect_employment_gap(profile: dict) -> Optional[dict]:
     for item in _sort_experience_for_display(experience):
         if not isinstance(item, dict):
             continue
-        key = _normalize_profile_key(_work_exp_key(item))
+        key = _normalize_profile_key(
+                f"{item.get('title') or item.get('role') or ''}|"
+                f"{item.get('company') or item.get('company_name') or ''}"
+            )
         if key in seen:
             continue
         seen.add(key)

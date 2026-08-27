@@ -3784,3 +3784,97 @@ class TestEmploymentGapHandling:
         resume = _build_voice_intake_resume_from_notes(notes, "", existing_resume, candidate_profile=profile)
         assert resume.get("employment_gaps")
         assert resume["employment_gaps"][0]["answer"] == "I took a planned break to care for family."
+
+
+class TestDetectEmploymentGapNameError:
+    """
+    Regression test for NameError: name '_work_exp_key' is not defined.
+
+    _detect_employment_gap used an undefined helper. The fix inlines the
+    title|company key expression that the rest of the codebase already uses.
+    """
+
+    def test_detect_employment_gap_does_not_raise_name_error(self):
+        """_detect_employment_gap must not raise NameError on any profile shape."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {
+                    "title": "Backend Engineer",
+                    "company": "Alpha Corp",
+                    "start_date": "2022-01-01",
+                    "end_date": "2023-06-30",
+                },
+                {
+                    "title": "Senior Engineer",
+                    "company": "Beta Ltd",
+                    "start_date": "2024-01-01",
+                    "end_date": "",
+                },
+            ],
+        }
+        # Must not raise NameError
+        gap = _detect_employment_gap(profile)
+        assert gap is not None
+        assert "gap_key" in gap
+        assert "question" in gap
+
+    def test_detect_employment_gap_deduplicates_identical_entries(self):
+        """Duplicate experience entries must not produce a false gap."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        entry = {
+            "title": "Engineer",
+            "company": "Acme",
+            "start_date": "2022-01-01",
+            "end_date": "2023-01-01",
+        }
+        profile = {
+            "experience": [
+                entry,
+                dict(entry),  # exact duplicate — must be deduped
+                {
+                    "title": "Senior Engineer",
+                    "company": "Acme",
+                    "start_date": "2024-01-01",
+                    "end_date": "",
+                },
+            ],
+        }
+        # Should detect the real gap, not crash or produce a gap between duplicates
+        gap = _detect_employment_gap(profile)
+        assert gap is not None
+
+    def test_voice_intake_experience_merge_no_present_present_dates(self):
+        """
+        Voice Intake experience merging must not produce 'Present — Present' dates.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _merge_work_experience
+
+        existing = [
+            {
+                "title": "Python Developer",
+                "company": "Viral Bug",
+                "start_date": "2022-01-01",
+                "end_date": "Present",
+            }
+        ]
+        new_items = [
+            {
+                "title": "Python Developer",
+                "company": "Viral Bug",
+                "start_date": "2022-01-01",
+                "end_date": "Present",
+            }
+        ]
+        merged = _merge_work_experience(existing, new_items)
+        assert len(merged) == 1
+        dates = merged[0].get("dates") or ""
+        assert dates.count("Present") <= 1, f"'Present — Present' found in dates: {dates!r}"
