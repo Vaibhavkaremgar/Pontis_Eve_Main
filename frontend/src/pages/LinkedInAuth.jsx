@@ -88,7 +88,6 @@ export default function LinkedInAuth() {
         setLoading(false);
       });
   };
-
   const handleGoogle = () => {
     setGoogleLoading(true);
     setError(null);
