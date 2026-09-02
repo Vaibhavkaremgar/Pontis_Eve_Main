@@ -437,11 +437,60 @@ function StepParsing({ onComplete, parsingReady, parsingError }) {
 
 /* ---------- Step 5: Bridge ---------- */
 
+export function buildCareerSummary(profile) {
+  if (!profile) return "";
+  const merged = normalizeProfileForDisplay(profile);
+  const role = (merged.headline || merged.current_role || "").trim();
+  const skills = (merged.keySkills || []).slice(0, 5);
+  const targetRoles = (merged.preferred_roles || []).slice(0, 3);
+  const rawData = (merged.raw_data && typeof merged.raw_data === "object") ? merged.raw_data : {};
+  const rolePrefBio = (rawData.role_preference_bio || "").trim();
+  const additionalInfo = (merged.additional_information || "").trim();
+
+  const sentences = [];
+
+  // Sentence 1: current role + skills background
+  if (role && skills.length) {
+    sentences.push(`${role} with a background in ${skills.slice(0, 4).join(", ")}.`);
+  } else if (role) {
+    sentences.push(`${role} with cross-functional experience.`);
+  } else if (skills.length) {
+    sentences.push(`Professional with a background in ${skills.slice(0, 4).join(", ")}.`);
+  }
+
+  // Sentence 2: voice-derived career interest / role preference bio
+  if (rolePrefBio && rolePrefBio.length > 10) {
+    const clean = rolePrefBio.replace(/\.$/, "");
+    sentences.push(`${clean}.`);
+  } else if (additionalInfo && additionalInfo.length > 10) {
+    const firstSentence = additionalInfo.split(/[.!?]/)[0].trim();
+    if (firstSentence) sentences.push(`${firstSentence}.`);
+  }
+
+  // Sentence 3: target roles
+  if (targetRoles.length) {
+    sentences.push(`Currently targeting ${targetRoles.join(", ")} roles.`);
+  } else if (role) {
+    sentences.push(`Open to new opportunities that leverage their expertise.`);
+  }
+
+  // Sentence 4: skills reinforcement (only if we have room and haven't already covered them)
+  if (sentences.length < 4 && skills.length > 2) {
+    sentences.push(`Brings hands-on experience with ${skills.slice(0, 5).join(", ")}.`);
+  }
+
+  return sentences.slice(0, 4).join(" ");
+}
+
 export function buildSummary(profile) {
   const merged = profile ? normalizeProfileForDisplay(profile) : null;
   if (!merged) return FALLBACK_SUMMARY;
   const items = [];
-  if (merged.headline) items.push({ label: "Positioning", value: merged.headline });
+
+  // Replace "Positioning" with a 3-4 line professional summary paragraph
+  const summaryText = buildCareerSummary(profile);
+  if (summaryText) items.push({ label: "Summary", value: summaryText });
+
   if (merged.location) items.push({ label: "Location", value: merged.location });
   if (merged.keySkills?.length)
     items.push({ label: "Top skills", value: merged.keySkills.slice(0, 8).join(", ") });

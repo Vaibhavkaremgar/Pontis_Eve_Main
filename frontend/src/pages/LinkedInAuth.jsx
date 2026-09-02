@@ -14,7 +14,7 @@ export default function LinkedInAuth() {
 
   // Handle backend redirect landing on this page:
   //   returning candidate → /?candidate_id=...
-  //   new candidate      → /?linkedin_profile=... (fallback if router sends here)
+ //   new candidate      → /?linkedin_profile=... (fallback if router sends here)
   React.useEffect(() => {
     const candidateId = searchParams.get("candidate_id");
     const candidateToken = searchParams.get("candidate_token");
@@ -75,7 +75,7 @@ export default function LinkedInAuth() {
   }, []);
 
   const handleLinkedIn = () => {
-    setLoading(true);
+    setLoading(true); 
     setError(null);
     fetch(`${BACKEND_URL}/api/auth/linkedin/init`)
       .then((r) => r.json())

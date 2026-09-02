@@ -479,7 +479,10 @@ def _normalize_for_frontend(c: dict) -> dict:
     if not isinstance(voice_intake_resume, dict):
         voice_intake_resume = _build_voice_intake_resume({**c, "raw_data": raw_data})
 
-    strength_percent, strength_label = _calculate_profile_strength(c, raw_data)
+    from profile_strength_service import calculate_profile_strength_v2
+    _ps_result = calculate_profile_strength_v2(c, raw_data, c.get("_prefs_row"))
+    strength_percent = _ps_result["percent"]
+    strength_label = _ps_result["label"]
     certifications = _normalize_certifications(raw_data.get("certifications") or [])
     key_skills = _normalize_skills(c.get("skills") or [], certifications=certifications)
 
@@ -506,6 +509,8 @@ def _normalize_for_frontend(c: dict) -> dict:
         "profile_strength_label": strength_label,
         "strengthPercent": strength_percent,
         "strength": strength_label,
+        "profile_strength_detail": _ps_result,
+        "recommendation_readiness": _ps_result.get("recommendation_readiness"),
     }
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
@@ -1039,6 +1044,14 @@ async def _get_candidate_profile_payload(candidate_id: str) -> dict:
     row = await _get_candidate_row(candidate_id)
     enriched = dict(row)
     enriched["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    # Load canonical preferences for strength scoring (Phase 2)
+    async with SessionLocal() as db:
+        _pr = await db.execute(
+            text("SELECT * FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        _prefs_row = _pr.mappings().fetchone()
+    enriched["_prefs_row"] = dict(_prefs_row) if _prefs_row else None
     return _normalize_for_frontend(enriched)
 
 
@@ -1436,36 +1449,13 @@ def _profile_strength_weights(profile: dict, raw_data: dict) -> dict[str, int]:
     return weights
 
 
-def _calculate_profile_strength(profile: dict, raw_data: Optional[dict] = None) -> tuple[int, str]:
+def _calculate_profile_strength(profile: dict, raw_data: Optional[dict] = None, prefs_row: Optional[dict] = None) -> tuple[int, str]:
+    """Delegate to the new layered scoring engine. Returns (percent, label)."""
+    from profile_strength_service import calculate_profile_strength_compat
     strength_profile = _build_profile_strength_source(profile, raw_data)
-    raw = strength_profile.get("raw_data") or {}
-    weights = _profile_strength_weights(strength_profile, raw)
-
-    score = 0
-    if _has_text(strength_profile.get("name")):
-        score += weights["name"]
-    if _has_text(strength_profile.get("email")):
-        score += weights["email"]
-    if _has_photo(strength_profile, raw):
-        score += weights["photo"]
-    if _has_work_experience(strength_profile.get("work_experience") or strength_profile.get("experience")):
-        score += weights["work_experience"]
-    if _has_list_items(strength_profile.get("skills") or strength_profile.get("keySkills")):
-        score += weights["skills"]
-    if _has_target_role(strength_profile, raw):
-        score += weights["target_role"]
-    if _has_projects(strength_profile, raw):
-        score += weights["projects"]
-    if _has_list_items(strength_profile.get("education")):
-        score += weights["education"]
-    if _has_candidate_certificates(strength_profile.get("candidate_certificates")):
-        score += weights["certifications"]
-    if _has_preferences(strength_profile, raw):
-        score += weights["preferences"]
-
-    percent = min(score, 100)
-    label = "Strong" if percent >= 75 else "Developing" if percent >= 50 else "Building"
-    return percent, label
+    return calculate_profile_strength_compat(
+        strength_profile, strength_profile.get("raw_data"), prefs_row
+    )
 
 
 def _clean_str(value: Any) -> str:
@@ -2359,7 +2349,11 @@ def _build_voice_intake_resume_from_notes(
         current_question = promoted_current
         next_question = ""
     if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
-        next_question = ""
+        # Preserve next_question only when it was already equal to current_question
+        # in the persisted state (e.g. LLM returned empty and both fields held the same value).
+        # When they were different before (promotion happened), clear next_question.
+        if existing_current_q != existing_next_q or not existing_next_q:
+            next_question = ""
     if not is_completed and completed_turns and not current_question and not next_question and not pending_question:
         # If the state machine has no active question left, normalize any stale
         # persisted in_progress snapshot into the completed form.
@@ -3141,6 +3135,31 @@ async def get_candidate_chat(candidate_id: str):
 async def get_candidate_profile(candidate_id: str):
     return await _get_candidate_profile_payload(candidate_id)
 
+
+
+
+@api_router.get("/candidate/{candidate_id}/profile/strength")
+async def get_candidate_profile_strength(candidate_id: str):
+    """
+    Return the full structured Profile Strength and Recommendation Readiness
+    for a candidate (Phase 9 output).
+    """
+    from profile_strength_service import calculate_profile_strength_v2
+    candidate = await _get_candidate_row(candidate_id)
+    candidate["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+
+    # Load canonical preferences row
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT * FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        prefs_row_result = row.mappings().fetchone()
+    prefs_row = dict(prefs_row_result) if prefs_row_result else None
+
+    result = calculate_profile_strength_v2(candidate, raw_data, prefs_row)
+    return result
 
 @api_router.get("/candidate/{candidate_id}/profile/download")
 async def download_candidate_profile(candidate_id: str):

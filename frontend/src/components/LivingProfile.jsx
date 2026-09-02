@@ -1344,6 +1344,24 @@ export default function LivingProfile({
             label={userProfile.strength}
             percent={userProfile.strengthPercent}
           />
+          {userProfile.recommendation_readiness && (
+            <span
+              data-testid="recommendation-readiness-badge"
+              className={`text-[10px] font-medium px-2 py-0.5 rounded-full ml-2 ${
+                userProfile.recommendation_readiness.level === "high"
+                  ? "bg-[#D4EDDA] text-[#2E7538]"
+                  : userProfile.recommendation_readiness.level === "medium"
+                  ? "bg-[#FFF3CD] text-[#856404]"
+                  : "bg-[#F8D7DA] text-[#721C24]"
+              }`}
+            >
+              {userProfile.recommendation_readiness.level === "high"
+                ? "Ready for recommendations"
+                : userProfile.recommendation_readiness.level === "medium"
+                ? "Partial match confidence"
+                : "Building match confidence"}
+            </span>
+          )}
         </div>
       </div>
 

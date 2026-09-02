@@ -3,7 +3,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy import text
@@ -22,6 +22,93 @@ W_TARGET_ROLE = 0.35
 W_SKILLS = 0.30
 W_EXPERIENCE = 0.15
 W_SEMANTIC = 0.20
+
+# Evidence level weights for skill scoring (Phase 7/8)
+_EVIDENCE_WEIGHT = {
+    0: 0.3,   # Unknown
+    1: 0.6,   # Claimed
+    2: 0.8,   # Corroborated
+    3: 1.0,   # Demonstrated
+    4: 1.0,   # Verified
+}
+
+
+def _get_candidate_intelligence(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Compute candidate intelligence from profile_strength_service.
+    Cached in candidate dict under '_intelligence' to avoid recomputation.
+    """
+    if "_intelligence" in candidate:
+        return candidate["_intelligence"]
+    try:
+        from profile_strength_service import calculate_profile_strength_v2
+        result = calculate_profile_strength_v2(candidate)
+        candidate["_intelligence"] = result
+        return result
+    except Exception as exc:
+        logger.warning("[matching] Could not compute candidate intelligence: %s", exc)
+        return None
+
+
+def _evidence_weighted_skills_score(
+    candidate_skills: List[str],
+    job_text: str,
+    intelligence: Optional[Dict[str, Any]],
+) -> float:
+    """
+    Score skills with evidence quality weighting.
+    Demonstrated/verified skills count fully; claimed skills count at 0.6.
+    """
+    if not candidate_skills:
+        return 0.0
+    text_tokens = _phrase_set(job_text)
+    evidence = (intelligence or {}).get("evidence") or {}
+    skill_ev = evidence.get("skills", {})
+    ev_level = skill_ev.get("evidence_level", 1)  # default: claimed
+    base_weight = _EVIDENCE_WEIGHT.get(ev_level, 0.6)
+    hits = sum(
+        base_weight for s in candidate_skills
+        if s and _term_in_text(_normalize(s), job_text, text_tokens)
+    )
+    return min(hits / len(candidate_skills), 1.0)
+
+
+def _check_hard_constraints(
+    constraint_profile: Dict[str, Any],
+    job_text: str,
+) -> Tuple[float, List[str]]:
+    """
+    Check candidate hard constraints against job text.
+    Returns (penalty_multiplier, incompatibilities).
+    1.0 = no penalty, 0.1 = near-disqualifying.
+    """
+    if not constraint_profile:
+        return 1.0, []
+    penalty = 1.0
+    incompatibilities: List[str] = []
+    job_lower = job_text.lower()
+
+    work_mode = constraint_profile.get("work_mode_constraint", "unknown")
+    if work_mode == "hard_remote_only":
+        onsite_signals = [
+            "on-site", "onsite", "on site", "in-office", "in office",
+            "office based", "office-based", "must be present",
+        ]
+        if any(s in job_lower for s in onsite_signals):
+            penalty *= 0.1
+            incompatibilities.append("candidate_remote_only_job_requires_onsite")
+
+    salary_min = constraint_profile.get("salary_min")
+    if salary_min and salary_min > 0:
+        nums = re.findall(r"[\d]+(?:\.\d+)?", job_lower.replace(",", ""))
+        job_nums = [float(n) for n in nums if n]
+        if job_nums:
+            job_max = max(job_nums)
+            if job_max < salary_min * 0.7:
+                penalty *= 0.5
+                incompatibilities.append("salary_below_candidate_minimum")
+
+    return penalty, incompatibilities
 EXPERIENCE_EPSILON_YEARS = 1e-6
 _EXPERIENCE_MONTHS = {
     "jan": 1, "january": 1,
@@ -393,6 +480,206 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_job_required_skills(job_text: str) -> List[str]:
+    """
+    Heuristically extract required skills from job text.
+    Looks for skills listed after 'required:', 'requirements:', 'must have:',
+    or in parenthetical skill lists. Falls back to all tech tokens.
+    """
+    lower = job_text.lower()
+    # Look for explicit required section
+    for marker in ("required:", "requirements:", "must have:", "you must have:",
+                   "requires ", "requiring "):
+        idx = lower.find(marker)
+        if idx != -1:
+            snippet = job_text[idx:idx + 300]
+            # Extract comma/newline separated items
+            items = re.split(r"[,\n;]", snippet)
+            skills = []
+            for item in items[1:8]:  # skip the marker itself
+                item = item.strip().strip(".-•*")
+                if 2 <= len(item) <= 40 and not item.lower().startswith(("and ", "or ", "the ")):
+                    skills.append(item)
+            if skills:
+                return skills
+    return []
+
+
+def _skill_evidence_breakdown(
+    candidate_skills: List[str],
+    job_text: str,
+    intelligence: Optional[Dict[str, Any]],
+) -> Dict[str, List[str]]:
+    """
+    Classify each candidate skill that appears in the job text by evidence level.
+    Returns {strong, partial, missing_required} lists for explainability.
+    """
+    text_tokens = _phrase_set(job_text)
+    evidence = (intelligence or {}).get("evidence") or {}
+    skill_ev = evidence.get("skills", {})
+    ev_level = skill_ev.get("evidence_level", 1)
+
+    strong, partial = [], []
+    for s in candidate_skills:
+        if not s:
+            continue
+        if _term_in_text(_normalize(s), job_text, text_tokens):
+            if ev_level >= 3:  # DEMONSTRATED or VERIFIED
+                strong.append(f"{s} — demonstrated")
+            elif ev_level >= 2:  # CORROBORATED
+                strong.append(f"{s} — corroborated")
+            else:
+                partial.append(f"{s} — claimed only")
+    return {"strong": strong, "partial": partial}
+
+
+def _compute_job_specific_confidence(
+    signals: Dict[str, Any],
+    job_title: str,
+    job_text: str,
+    hybrid_score: float,
+    components: Dict[str, Any],
+    intelligence: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Job-Specific Recommendation Confidence.
+
+    Formula (avoids double-counting hybrid_score components):
+
+      base = hybrid_score * 100          # already encodes target_role + skills + experience + semantic
+      readiness_factor                   # scales base by candidate readiness (0.5 – 1.0)
+      constraint_gate                    # hard override: near-disqualify on hard incompatibility
+      evidence_gate                      # cap when required skills are only claimed / missing
+      contradiction_penalty              # reduce for high-severity contradictions relevant to job
+
+      raw_confidence = base * readiness_factor
+      raw_confidence = min(raw_confidence, evidence_cap)
+      raw_confidence -= contradiction_penalty
+      if constraint_gate: raw_confidence = min(raw_confidence, 25)
+
+    Keeps Profile Strength, Recommendation Readiness, and Job-Specific Confidence separate.
+    """
+    rec_readiness = (intelligence or {}).get("recommendation_readiness") or {}
+    readiness_level = rec_readiness.get("level", "low")
+    readiness_confidence = float(rec_readiness.get("confidence") or 0.0)
+
+    # Readiness factor: scales base score — does NOT replace it
+    # High readiness → full weight; Low readiness → 0.6 floor (job-critical info may still be known)
+    if readiness_level == "high":
+        readiness_factor = 1.0
+    elif readiness_level == "medium":
+        readiness_factor = 0.85
+    else:
+        # Low readiness: still allow high confidence if job-critical signals are strong
+        # Use the hybrid score itself as the primary signal; readiness only damps slightly
+        readiness_factor = 0.70
+
+    base = hybrid_score * 100.0
+    raw = base * readiness_factor
+
+    # Evidence cap: if skills are only claimed (not corroborated/demonstrated), cap at 65
+    evidence = (intelligence or {}).get("evidence") or {}
+    skill_ev_level = evidence.get("skills", {}).get("evidence_level", 1)
+    if skill_ev_level <= 1:  # claimed only
+        evidence_cap = 65.0
+    elif skill_ev_level == 2:  # corroborated
+        evidence_cap = 85.0
+    else:  # demonstrated / verified
+        evidence_cap = 100.0
+    raw = min(raw, evidence_cap)
+
+    # Required-skill coverage cap: if job has explicit required skills and candidate
+    # is missing some, cap confidence proportionally.
+    # This prevents high confidence when semantic similarity is high but required skills absent.
+    required_skills = _extract_job_required_skills(job_text)
+    missing_required: List[str] = []
+    if required_skills:
+        candidate_skill_set = signals["skills"]
+        for req in required_skills:
+            req_norm = _normalize(req)
+            if not any(
+                req_norm in _normalize(s) or _normalize(s) in req_norm
+                for s in candidate_skill_set if s
+            ):
+                missing_required.append(req)
+        if missing_required:
+            coverage = 1.0 - (len(missing_required) / len(required_skills))
+            # 0 coverage → max 40; full coverage → no cap
+            required_cap = 40.0 + coverage * 55.0
+            raw = min(raw, required_cap)
+
+    # Hard constraint gate: near-disqualify
+    incompatibilities = components.get("incompatibilities") or []
+    has_hard_constraint = bool(incompatibilities)
+    if has_hard_constraint:
+        raw = min(raw, 25.0)
+
+    # Contradiction penalty: high-severity contradictions relevant to job reduce confidence
+    inconsistencies = (intelligence or {}).get("inconsistencies") or []
+    high_sev = sum(1 for i in inconsistencies if i.get("severity") == "high")
+    medium_sev = sum(1 for i in inconsistencies if i.get("severity") == "medium")
+    raw -= high_sev * 12 + medium_sev * 4
+    raw = max(raw, 0.0)
+
+    score = int(round(min(raw, 100.0)))
+
+    if has_hard_constraint or score < 30:
+        level = "low"
+        tier = "near_disqualified" if has_hard_constraint else "limited"
+    elif score >= 70:
+        level = "high"
+        tier = "strong_personalized"
+    elif score >= 45:
+        level = "medium"
+        tier = "broader_matching"
+    else:
+        level = "low"
+        tier = "limited"
+
+    # Build match explanation
+    skill_breakdown = _skill_evidence_breakdown(signals["skills"], job_text, intelligence)
+    strong_reasons = list(skill_breakdown["strong"])
+    partial_reasons = list(skill_breakdown["partial"])
+
+    if components.get("target_role_score", 0) >= 0.5:
+        strong_reasons.insert(0, "Target role matches")
+    if components.get("experience_score", 0) >= 0.5:
+        strong_reasons.append("Experience requirement satisfied")
+
+    constraint_notes = []
+    if has_hard_constraint:
+        for inc in incompatibilities:
+            if inc == "candidate_remote_only_job_requires_onsite":
+                constraint_notes.append("Remote-only candidate — job requires onsite")
+            elif inc == "salary_below_candidate_minimum":
+                constraint_notes.append("Job salary below candidate minimum")
+            else:
+                constraint_notes.append(inc.replace("_", " "))
+    elif components.get("constraint_penalty", 1.0) >= 1.0:
+        if (intelligence or {}).get("constraint_profile", {}).get("work_mode_constraint") not in (None, "unknown"):
+            constraint_notes.append("Work mode compatible")
+
+    concerns = []
+    for i in inconsistencies:
+        if i.get("severity") in ("high", "medium"):
+            concerns.append(i.get("description", ""))
+
+    return {
+        "recommendation_confidence": {
+            "score": score,
+            "level": level,
+            "tier": tier,
+        },
+        "match_explanation": {
+            "strong": strong_reasons,
+            "partial": partial_reasons,
+            "missing": [],  # populated by callers with job-required skills not in candidate
+            "constraints": constraint_notes,
+            "concerns": concerns,
+        },
+    }
+
+
 def _hybrid_score(
     signals: Dict[str, Any],
     job_title: str,
@@ -400,15 +687,17 @@ def _hybrid_score(
     job_requirements: Any,
     job_skills: Any,
     semantic_score: float,
-) -> Tuple[float, Dict[str, float]]:
+    intelligence: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, Dict[str, Any]]:
     """
     Compute a weighted hybrid score for one job.
+    Integrates candidate intelligence (evidence quality + hard constraints).
     Returns (final_score, component_scores).
     """
     job_text = _job_text(job_title, job_description, job_requirements, job_skills)
 
     tr_score = _target_role_score(signals["target_roles"], job_title, job_text)
-    sk_score = _skills_score(signals["skills"], job_text)
+    sk_score = _evidence_weighted_skills_score(signals["skills"], job_text, intelligence)
     ex_score = _experience_score(signals["past_roles"], job_title, job_text)
     sem_score = max(0.0, min(1.0, float(semantic_score)))
 
@@ -419,13 +708,27 @@ def _hybrid_score(
         + W_SEMANTIC * sem_score
     )
 
-    components = {
+    constraint_profile = (intelligence or {}).get("constraint_profile") or {}
+    constraint_penalty, incompatibilities = _check_hard_constraints(constraint_profile, job_text)
+    final *= constraint_penalty
+
+    components: Dict[str, Any] = {
         "target_role_score": round(tr_score, 4),
         "skills_score": round(sk_score, 4),
         "experience_score": round(ex_score, 4),
         "semantic_score": round(sem_score, 4),
+        "constraint_penalty": round(constraint_penalty, 4),
         "final_score": round(final, 4),
     }
+    if incompatibilities:
+        components["incompatibilities"] = incompatibilities
+
+    # Job-specific confidence layer (built on top of hybrid score, not replacing it)
+    job_confidence = _compute_job_specific_confidence(
+        signals, job_title, job_text, final, components, intelligence
+    )
+    components.update(job_confidence)
+
     return final, components
 
 
@@ -487,6 +790,9 @@ async def refresh_candidate_job_matches(
     # 3. Extract candidate signals once
     signals = _build_candidate_signals(candidate)
 
+    # Compute candidate intelligence once (evidence quality + constraints)
+    intelligence = _get_candidate_intelligence(candidate)
+
     # 4. Hybrid re-ranking
     scored: List[Tuple[str, float, Dict]] = []
     eligible_job_ids: list[str] = []
@@ -512,6 +818,7 @@ async def refresh_candidate_job_matches(
             job_data["requirements"],
             job_data["skills"],
             sem,
+            intelligence=intelligence,
         )
         scored.append((job_id, final, components))
         eligible_job_ids.append(job_id)
