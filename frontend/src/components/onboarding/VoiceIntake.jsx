@@ -39,8 +39,9 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
     ? vir.completed_turns.map((t) => `Q: ${t.question} A: ${t.answer}`).join(" | ")
     : "";
   const currentQuestion = vir.current_question || vir.next_question || "";
+  const isResume = vir.status === "in_progress" && Boolean(currentQuestion);
 
-  return {
+  const overrides = {
     variableValues: {
       candidate_name: p.name || firstName || "",
       candidate_id: candidateId || "",
@@ -69,6 +70,17 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
       source: "eve_candidate_voice_intake",
     },
   };
+
+  // When resuming a partial intake, set firstMessage so VAPI is explicitly
+  // instructed to continue at the saved question, not restart from question 1.
+  if (isResume) {
+    const answeredCount = Array.isArray(vir.completed_turns) ? vir.completed_turns.length : 0;
+    const resumeName = p.name ? p.name.split(" ")[0] : (firstName || "");
+    overrides.firstMessage =
+      `Welcome back${resumeName ? `, ${resumeName}` : ""}! We were in the middle of your voice intake — you've answered ${answeredCount} question${answeredCount === 1 ? "" : "s"} so far. Let me continue where we left off. ${currentQuestion}`;
+  }
+
+  return overrides;
 }
 
 /* ---- Visual ring ---- */

@@ -163,3 +163,110 @@ describe("VoiceIntake candidate context", () => {
     expect(overrides.metadata.candidateId).toBe("candidate-1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// End-to-end regression: answer 2-3 questions -> disconnect -> dashboard ->
+// mic click -> VAPI resumes at next question (not question 1).
+//
+// Verifies the actual VAPI payload / assistant overrides produced after the fix.
+// ---------------------------------------------------------------------------
+describe("E2E regression: partial call -> disconnect -> mic -> resumes at next question", () => {
+  const partialResume = {
+    status: "in_progress",
+    has_open_question: true,
+    current_question: "What kind of role are you targeting next?",
+    next_question: "What kind of role are you targeting next?",
+    progress: 2,
+    completed_turns: [
+      { question: "Tell me about your background.", answer: "I have 5 years in backend engineering." },
+      { question: "What are your key skills?", answer: "Java, Spring Boot, Kubernetes." },
+    ],
+    known_topics: ["background_experience", "skills_technologies"],
+    missing_topics: ["target_role", "career_preferences", "availability_location"],
+  };
+
+  function micClickOverrides() {
+    // Simulates: refreshProfile() returns fresh backend state -> VoiceIntake mounts
+    return buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-e2e",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: partialResume },
+    });
+  }
+
+  it("VAPI firstMessage explicitly resumes at the saved current_question, not question 1", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.firstMessage).toBeDefined();
+    expect(overrides.firstMessage).toContain("What kind of role are you targeting next?");
+    // Must NOT be a generic greeting that would restart from Q1
+    expect(overrides.firstMessage).not.toMatch(/^Hi |^Hello |^Welcome to/i);
+  });
+
+  it("firstMessage references the number of already-answered questions", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.firstMessage).toContain("2 questions");
+  });
+
+  it("firstMessage addresses the candidate by first name", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.firstMessage).toContain("Alex");
+  });
+
+  it("VAPI variableValues carry the saved current_question", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.variableValues.voice_intake_current_question).toBe(
+      "What kind of role are you targeting next?"
+    );
+  });
+
+  it("VAPI variableValues carry all previously answered turns as context", () => {
+    const overrides = micClickOverrides();
+    const answers = overrides.variableValues.voice_intake_answers;
+    expect(answers).toContain("Tell me about your background.");
+    expect(answers).toContain("I have 5 years in backend engineering.");
+    expect(answers).toContain("What are your key skills?");
+    expect(answers).toContain("Java, Spring Boot, Kubernetes.");
+  });
+
+  it("VAPI variableValues carry in_progress status so it does not restart", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.variableValues.voice_intake_status).toBe("in_progress");
+  });
+
+  it("VAPI variableValues carry known and missing topics", () => {
+    const overrides = micClickOverrides();
+    expect(overrides.variableValues.voice_intake_completed_topics).toBe(
+      "background_experience, skills_technologies"
+    );
+    expect(overrides.variableValues.voice_intake_missing_topics).toBe(
+      "target_role, career_preferences, availability_location"
+    );
+  });
+
+  it("no firstMessage when intake has not started (fresh start, not a resume)", () => {
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-fresh",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: null },
+    });
+    expect(overrides.firstMessage).toBeUndefined();
+  });
+
+  it("no firstMessage when intake is completed (mic button is hidden anyway)", () => {
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-done",
+      candidateProfile: {
+        name: "Alex Smith",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          progress: 7,
+          completed_turns: [],
+        },
+      },
+    });
+    expect(overrides.firstMessage).toBeUndefined();
+  });
+});

@@ -225,6 +225,8 @@ function Dashboard() {
         saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
+      // Build freshProfile synchronously before setUserProfile so callers
+      // (e.g. mic-click) always receive the real backend state, not undefined.
       let freshProfile;
       setUserProfile((prev) => {
         freshProfile = hydrateDisplayProfile(mergeProfilesForDisplay({
@@ -256,7 +258,25 @@ function Dashboard() {
         }));
         return freshProfile;
       });
-      return freshProfile;
+      // React batches the state update — freshProfile is assigned synchronously
+      // inside the setter callback above, so it is always defined here.
+      // For the mic-click resume path we also build it directly from backend data
+      // to guarantee voice_intake_resume is never stale.
+      const directFresh = hydrateDisplayProfile(mergeProfilesForDisplay(
+        {
+          ...data,
+          candidate_id: profileCandidateId,
+          candidateId: profileCandidateId,
+          avatar: hasPhotoUrl ? (data.photo_url ?? null) : undefined,
+          voice_intake_resume: data.voice_intake_resume ?? null,
+        },
+        { voice_intake_resume: data.voice_intake_resume ?? null }
+      ));
+      console.log(
+        "[refreshProfile] voice_intake_resume from backend:",
+        JSON.stringify(data.voice_intake_resume ?? null)
+      );
+      return directFresh;
     } catch (err) {
       console.error("refreshProfile failed", err);
       return null;

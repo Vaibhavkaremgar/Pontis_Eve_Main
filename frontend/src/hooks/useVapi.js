@@ -109,6 +109,16 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       console.log("[vapi][DEBUG] pre-start — current_company present:", !!vv.current_company, "len:", (vv.current_company || "").length);
       console.log("[vapi][DEBUG] pre-start — skills present:", !!vv.skills, "len:", (vv.skills || "").length);
       console.log("[vapi][DEBUG] pre-start — work_experience present:", !!vv.work_experience, "len:", (vv.work_experience || "").length);
+      // Resume-path verification: log the full overrides so we can confirm
+      // firstMessage and voice_intake_* fields are populated correctly.
+      console.log("[vapi][DEBUG] vapi.start() overrides:", JSON.stringify({
+        firstMessage: overrides?.firstMessage,
+        voice_intake_status: vv.voice_intake_status,
+        voice_intake_current_question: vv.voice_intake_current_question,
+        voice_intake_completed_topics: vv.voice_intake_completed_topics,
+        voice_intake_missing_topics: vv.voice_intake_missing_topics,
+        voice_intake_answers_len: (vv.voice_intake_answers || "").length,
+      }));
       await vapi.start(assistantId, overrides);
     } catch (err) {
       setError(err?.message || "Failed to start voice call.");
