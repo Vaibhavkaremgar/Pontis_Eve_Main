@@ -171,4 +171,80 @@ describe("Low profile strength popup — session-scoped behavior", () => {
     expect(container.querySelector('[data-testid="weak-profile-popup"]')).toBeNull();
     unmount();
   });
+
+  it("popup Chat with Eve click opens ChatHub, not Voice Intake, when voice intake is completed", async () => {
+    // Profile is completed but weak — popup appears, candidate clicks Chat with Eve
+    mockRequests([makeProfile({
+      profile_strength_percent: 60,
+      profile_strength_label: "Developing",
+      voice_intake_resume: {
+        status: "completed",
+        has_open_question: false,
+        current_question: "",
+        next_question: "",
+      },
+    })]);
+    const { container, unmount } = renderDashboard();
+
+    await waitFor(() => container.querySelector('[data-testid="jobs-deck"]') !== null);
+    act(() => { jest.advanceTimersByTime(900); });
+    expect(container.querySelector('[data-testid="weak-profile-popup"]')).not.toBeNull();
+
+    act(() => {
+      container.querySelector('[data-testid="weak-profile-chat-btn"]').click();
+    });
+
+    // Must show ChatHub — never Voice Intake screen
+    expect(container.querySelector('[data-testid="chat-hub"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+    unmount();
+  });
+
+  it("popup Chat with Eve click is not overridden by the routing effect after a profile refresh", async () => {
+    // Completed profile: routing effect would set centerView=swipe.
+    // After the user clicks Chat with Eve, a subsequent profile refresh must not revert to swipe.
+    mockRequests([
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+      // Second profile response (simulates a refresh) — still completed
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+    const { container, unmount } = renderDashboard();
+
+    await waitFor(() => container.querySelector('[data-testid="jobs-deck"]') !== null);
+    act(() => { jest.advanceTimersByTime(900); });
+
+    // Click Chat with Eve from the popup
+    act(() => {
+      container.querySelector('[data-testid="weak-profile-chat-btn"]').click();
+    });
+    expect(container.querySelector('[data-testid="chat-hub"]')).not.toBeNull();
+
+    // Simulate a profile refresh (e.g. photo change triggers refreshProfile)
+    await act(async () => { await Promise.resolve(); });
+
+    // centerView must remain "chat" — routing effect must not override the explicit choice
+    expect(container.querySelector('[data-testid="chat-hub"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+    expect(container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    unmount();
+  });
 });

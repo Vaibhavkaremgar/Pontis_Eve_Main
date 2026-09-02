@@ -124,6 +124,9 @@ function Dashboard() {
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
+  // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
+  // When true, the auto-routing effect must not override their choice.
+  const userChoseCenterViewRef = React.useRef(false);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
 
   // Load real profile from PostgreSQL on mount
@@ -202,8 +205,9 @@ function Dashboard() {
   }, [candidateId]);
 
   React.useEffect(() => {
-    // Backend is the single source of truth: apply whenever it resolves to a non-null view
-    if (voiceIntakeCenterView !== null) {
+    // Backend is the single source of truth for the initial view.
+    // Skip if the user has already made an explicit navigation choice.
+    if (voiceIntakeCenterView !== null && !userChoseCenterViewRef.current) {
       setCenterView(voiceIntakeCenterView);
     }
   }, [voiceIntakeCenterView]);
@@ -551,7 +555,8 @@ function Dashboard() {
                 data-testid="weak-profile-chat-btn"
                 onClick={() => {
                   setShowWeakProfilePopup(false);
-                  setCenterView(voiceIntakeInProgress || voiceIntakeCompleted ? "chat" : "voice");
+                  userChoseCenterViewRef.current = true;
+                  setCenterView("chat");
                 }}
                 className="flex-1 bg-[#1F1F1F] text-white text-[13px] font-medium rounded-full py-2.5 hover:bg-black transition-colors"
               >
@@ -590,7 +595,10 @@ function Dashboard() {
             {/* Toggle bar */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
               <button
-                onClick={() => setCenterView("swipe")}
+                onClick={() => {
+                  userChoseCenterViewRef.current = true;
+                  setCenterView("swipe");
+                }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "swipe"
                     ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
@@ -601,13 +609,8 @@ function Dashboard() {
               </button>
               <button
                 onClick={() => {
-                  if (voiceIntakeInProgress) {
-                    setCenterView("chat");
-                  } else if (!voiceIntakeCompleted) {
-                    setCenterView("voice");
-                  } else {
-                    setCenterView("chat");
-                  }
+                  userChoseCenterViewRef.current = true;
+                  setCenterView(voiceIntakeInProgress || voiceIntakeCompleted ? "chat" : "voice");
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "chat" || centerView === "voice"
@@ -684,6 +687,7 @@ function Dashboard() {
                 sending={sending}
                 quickActions={QUICK_ACTIONS}
                 onMicClick={voiceIntakeCompleted ? undefined : async () => {
+                  userChoseCenterViewRef.current = true;
                   await refreshProfile();
                   setCenterView("voice");
                 }}
