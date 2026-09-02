@@ -195,6 +195,14 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     if (callState !== VAPI_STATES.PROCESSING) return;
     if (submitting) return;
 
+    const hasCandidateSpeech = transcript.some((t) => t.role === "user" && t.text?.trim());
+    if (!hasCandidateSpeech) {
+      // No candidate interaction — route directly to Chat with Eve
+      console.log("[voice-intake] no candidate speech, routing to chat");
+      onComplete({ status: "no_interaction" });
+      return;
+    }
+
     const transcriptText = buildTranscriptText(transcript);
     if (!transcriptText.trim()) {
       // Empty transcript — skip backend call, go to completed

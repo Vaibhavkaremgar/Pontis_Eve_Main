@@ -515,7 +515,11 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
         onConfirm={handleConfirmDismiss}
       />
       {detailJob && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          data-testid="jobs-detail-backdrop"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setDetailJob(null); }}
+        >
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
             <JobDetailModal
               job={detailJob}
@@ -670,7 +674,11 @@ function TrackedTab({ jobs, onTrack, onDismissJob }) {
         onConfirm={handleConfirmDismiss}
       />
       {detailJob && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          data-testid="tracked-detail-backdrop"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setDetailJob(null); }}
+        >
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
             <JobDetailModal
               job={detailJob}

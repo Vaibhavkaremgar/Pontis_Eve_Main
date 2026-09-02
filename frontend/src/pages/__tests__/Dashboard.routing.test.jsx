@@ -562,6 +562,34 @@ describe("Voice Intake completion/routing regression tests", () => {
     expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
   });
 
+  it("call ended during/before Eve's introduction (no candidate speech) → Chat with Eve UI", async () => {
+    // Candidate starts call, Eve begins speaking, candidate hangs up before saying anything
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({ voice_intake_resume: null }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    // Simulate VoiceIntake calling onComplete with no_interaction status
+    // (triggered when call ends with no candidate speech)
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "no_interaction" });
+      await Promise.resolve();
+    });
+
+    // Must show normal ChatHub with suggestion chips and input — never voice-intake screen
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
   it("call ended with 0 answers → normal Chat with Eve UI (no voice UI)", async () => {
     // Backend returns null voice_intake_resume (no data captured)
     saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });

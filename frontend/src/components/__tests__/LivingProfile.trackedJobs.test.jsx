@@ -135,4 +135,34 @@ describe("Tracked Jobs — clickable card opens JD", () => {
     expect(container.querySelector('[data-testid="tracked-tab-content"]')).toBeTruthy();
     unmount();
   });
+
+  it("clicking outside the job card modal closes it and returns to the jobs list", () => {
+    const { container, unmount } = renderTracked();
+    click(container.querySelector('[data-testid="tracked-job-card-job-tracked-1"]'));
+    expect(container.querySelector('[data-testid="job-detail-panel"]')).toBeTruthy();
+
+    // Click the backdrop (outside the panel) — should close the modal
+    act(() => {
+      const backdrop = container.querySelector('[data-testid="tracked-detail-backdrop"]');
+      backdrop.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="job-detail-panel"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tracked-tab-content"]')).toBeTruthy();
+    unmount();
+  });
+
+  it("clicking inside the job card panel does not close it", () => {
+    const { container, unmount } = renderTracked();
+    click(container.querySelector('[data-testid="tracked-job-card-job-tracked-1"]'));
+    expect(container.querySelector('[data-testid="job-detail-panel"]')).toBeTruthy();
+
+    act(() => {
+      const panel = container.querySelector('[data-testid="job-detail-panel"]');
+      panel.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="job-detail-panel"]')).toBeTruthy();
+    unmount();
+  });
 });
