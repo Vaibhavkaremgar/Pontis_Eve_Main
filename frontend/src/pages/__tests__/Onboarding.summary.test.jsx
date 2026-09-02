@@ -355,6 +355,15 @@ describe("Upload page Back button", () => {
     const backBtn = await waitForElement(container, '[data-testid="onboarding-upload-back"]');
     expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
 
+    // Back button must be in the header (top-left), not inside the upload content
+    const header = container.querySelector("header");
+    expect(header).toBeTruthy();
+    expect(header.contains(backBtn)).toBe(true);
+
+    // Must be bold black
+    expect(backBtn.className).toMatch(/font-bold/);
+    expect(backBtn.className).toMatch(/text-\[#1F1F1F\]/);
+
     act(() => { backBtn.click(); });
 
     await waitForElement(container, '[data-testid="onboarding-step-1"]');

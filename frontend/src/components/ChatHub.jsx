@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Send, ChevronDown, Phone } from "lucide-react";
+import { Plus, Send, ChevronDown, Phone, Mic } from "lucide-react";
 
 function CallSummaryPill({ label, time }) {
   return (
@@ -76,6 +76,7 @@ export default function ChatHub({
   onSend,
   sending,
   quickActions,
+  onMicClick,
 }) {
   const scrollRef = React.useRef(null);
 
@@ -167,6 +168,17 @@ export default function ChatHub({
             className="flex-1 bg-transparent border-none text-[13.5px] text-[#1F1F1F] placeholder:text-[#B5B5B3] focus:outline-none py-1 font-normal"
             disabled={sending}
           />
+          {onMicClick && (
+            <button
+              type="button"
+              data-testid="chat-mic-btn"
+              onClick={onMicClick}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-[#9A9A98] hover:bg-black/[0.04] transition-colors"
+              aria-label="Voice intake"
+            >
+              <Mic className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+          )}
           <button
             type="submit"
             data-testid="chat-send-btn"

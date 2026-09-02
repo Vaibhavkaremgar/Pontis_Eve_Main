@@ -133,6 +133,7 @@ function Dashboard() {
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
+  const [dashboardVoiceActive, setDashboardVoiceActive] = React.useState(false);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
 
   // Load real profile from PostgreSQL on mount
@@ -640,8 +641,9 @@ function Dashboard() {
                     )
                   );
                 }
-                // Refresh from backend - voiceIntakeCenterView effect sets centerView
-                // once the authoritative backend status arrives.
+                // Always route to chat immediately; the voiceIntakeCenterView effect
+                // will override to "swipe" if the backend confirms completed.
+                setCenterView("chat");
                 refreshProfile().then(() => {
                   setUserProfile((latest) => {
                     const backendStatus = latest.voice_intake_resume?.status;
@@ -681,6 +683,25 @@ function Dashboard() {
                   onDismissJob={handleDismissJob}
                 />
               )
+            ) : dashboardVoiceActive ? (
+              <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
+                <VoiceIntake
+                  firstName={userProfile.name?.split(" ")[0] || "there"}
+                  candidateId={candidateId}
+                  candidateProfile={userProfile}
+                  onComplete={(result) => {
+                    setDashboardVoiceActive(false);
+                    if (result?.profile || result?.profile_updates) {
+                      setUserProfile((prev) =>
+                        hydrateDisplayProfile(
+                          mergeProfilesForDisplay(prev, result.profile || result.profile_updates || {})
+                        )
+                      );
+                    }
+                    refreshProfile();
+                  }}
+                />
+              </div>
             ) : (
               <ChatHub
                 chats={chats}
@@ -689,6 +710,7 @@ function Dashboard() {
                 onSend={handleSendMessage}
                 sending={sending}
                 quickActions={QUICK_ACTIONS}
+                onMicClick={() => setDashboardVoiceActive(true)}
               />
             )}
           </div>

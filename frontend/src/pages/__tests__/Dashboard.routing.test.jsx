@@ -22,8 +22,14 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../../components/Sidebar", () => () => <div data-testid="sidebar" />);
-jest.mock("../../components/ChatHub", () => ({ chats = [] }) => (
-  <div data-testid="chat-hub">{chats[0]?.content || ""}</div>
+let mockChatHubOnMicClick = null;
+jest.mock("../../components/ChatHub", () => ({ chats = [], onMicClick }) => (
+  <div data-testid="chat-hub">
+    {chats[0]?.content || ""}
+    {onMicClick && (
+      <button data-testid="chat-mic-btn" onClick={onMicClick}>Mic</button>
+    )}
+  </div>
 ));
 let mockVoiceIntakeCompletionResult = null;
 jest.mock("../../components/LivingProfile", () => (props) => {
@@ -169,6 +175,7 @@ describe("Dashboard voice intake routing", () => {
     lastLivingProfileProps = null;
     mockVoiceIntakeCompletionResult = null;
     mockVoiceIntakeOnComplete = null;
+    mockChatHubOnMicClick = null;
     saveOnboardingState({
       candidateId: "cand-123",
       voiceIntakeCompleted: true,
@@ -405,6 +412,7 @@ describe("Voice Intake completion/routing regression tests", () => {
     jest.clearAllMocks();
     lastLivingProfileProps = null;
     mockVoiceIntakeOnComplete = null;
+    mockChatHubOnMicClick = null;
   });
 
   afterEach(() => {
@@ -554,6 +562,96 @@ describe("Voice Intake completion/routing regression tests", () => {
     expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
   });
 
+  it("call ended with 0 answers → normal Chat with Eve UI (no voice UI)", async () => {
+    // Backend returns null voice_intake_resume (no data captured)
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({ voice_intake_resume: null }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    // Simulate call ended with no answers (empty/partial result)
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "partial" });
+      await Promise.resolve();
+    });
+
+    // Must show ChatHub, not voice-intake, not jobs-deck
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("call ended after partial answers → normal Chat with Eve UI (no voice UI)", async () => {
+    // Backend returns in_progress but without has_open_question (partial capture)
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "in_progress" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("completed Voice Intake → existing completed flow routes to Jobs for you", async () => {
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: null }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    const chatToggle = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatToggle.click(); });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "completed" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
   it("refreshing the dashboard after completed Voice Intake still shows Jobs for you", async () => {
     // Simulate a reload: localStorage has voiceIntakeCompleted=true, backend confirms completed
     saveOnboardingState({
@@ -576,5 +674,187 @@ describe("Voice Intake completion/routing regression tests", () => {
     expect(await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]')).toBeTruthy();
     expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
     expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+  });
+});
+
+describe("Dashboard mic button — voice intake from chat panel", () => {
+  let renderResult;
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    lastLivingProfileProps = null;
+    mockVoiceIntakeOnComplete = null;
+    mockChatHubOnMicClick = null;
+    saveOnboardingState({
+      candidateId: "cand-123",
+      voiceIntakeCompleted: false,
+      isOpenToMatches: true,
+    });
+  });
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("mic button is present in ChatHub when centerView is chat", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    expect(renderResult.container.querySelector('[data-testid="chat-mic-btn"]')).toBeTruthy();
+  });
+
+  it("clicking mic button shows VoiceIntake inline and hides ChatHub", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="voice-intake"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("after mic voice intake completes, stays in dashboard (no summary) and shows ChatHub", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        bio: "Updated bio from voice",
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "completed", profile: { bio: "Updated bio from voice" } });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("profile panel refreshes after mic voice intake completes with profile_updates", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        keySkills: ["Product"],
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        keySkills: ["Product", "Leadership", "Strategy"],
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({
+        status: "completed",
+        profile_updates: { keySkills: ["Product", "Leadership", "Strategy"] },
+      });
+      await Promise.resolve();
+    });
+
+    await waitForCondition(
+      () =>
+        Array.isArray(lastLivingProfileProps?.userProfile?.keySkills) &&
+        lastLivingProfileProps.userProfile.keySkills.length >= 3
+    );
+    expect(lastLivingProfileProps.userProfile.keySkills).toContain("Leadership");
+  });
+
+  it("mic voice intake with partial result stays in ChatHub (not jobs, not voice)", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        voice_intake_resume: {
+          status: "in_progress",
+          has_open_question: true,
+          current_question: currentQuestion,
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "partial" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
   });
 });
