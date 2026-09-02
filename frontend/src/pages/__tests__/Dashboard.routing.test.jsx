@@ -43,8 +43,10 @@ jest.mock("../../components/LivingProfile", () => (props) => {
   );
 });
 jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
+let capturedVoiceIntakeCandidateProfile = null;
 jest.mock("../../components/onboarding/VoiceIntake", () => (props) => {
   mockVoiceIntakeOnComplete = props.onComplete;
+  capturedVoiceIntakeCandidateProfile = props.candidateProfile;
   return <div data-testid="voice-intake" />;
 });
 jest.mock("react-resizable-panels", () => ({
@@ -847,6 +849,46 @@ describe("Dashboard mic button — voice intake from chat panel", () => {
         lastLivingProfileProps.userProfile.keySkills.length >= 3
     );
     expect(lastLivingProfileProps.userProfile.keySkills).toContain("Leadership");
+  });
+
+  it("partial intake → Dashboard → mic → VoiceIntake receives fresh voice_intake_resume so VAPI resumes from saved question", async () => {
+    const partialResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: "What are your key skills?",
+      next_question: "",
+      completed_turns: [
+        { question: "Tell me about your background.", answer: "I build APIs." },
+        { question: "What is your current role?", answer: "Backend Developer." },
+      ],
+      known_topics: ["background_experience", "current_role"],
+      missing_topics: ["skills_technologies", "target_role"],
+    };
+
+    // First call: mount (in_progress → ChatHub). Second call: refreshProfile on mic click.
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: partialResume }),
+      makeProfile({ voice_intake_resume: partialResume }),
+    ]);
+
+    renderResult = renderDashboard();
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    const vir = capturedVoiceIntakeCandidateProfile?.voice_intake_resume;
+    expect(vir).toBeTruthy();
+    expect(vir.status).toBe("in_progress");
+    expect(vir.current_question).toBe("What are your key skills?");
+    expect(vir.completed_turns).toHaveLength(2);
+    expect(vir.known_topics).toContain("background_experience");
+    expect(vir.missing_topics).toContain("skills_technologies");
   });
 
   it("mic voice intake with partial result stays in ChatHub (not jobs, not voice)", async () => {

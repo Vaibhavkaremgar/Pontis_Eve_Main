@@ -127,6 +127,8 @@ function Dashboard() {
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
   // When true, the auto-routing effect must not override their choice.
   const userChoseCenterViewRef = React.useRef(false);
+  // Snapshot of the profile used to start VoiceIntake — always fetched fresh before mounting.
+  const [voiceIntakeProfile, setVoiceIntakeProfile] = React.useState(null);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
 
   // Load real profile from PostgreSQL on mount
@@ -213,7 +215,7 @@ function Dashboard() {
   }, [voiceIntakeCenterView]);
 
   const refreshProfile = React.useCallback(async () => {
-    if (!candidateId) return;
+    if (!candidateId) return null;
     try {
       const res = await axios.get(`${API}/candidate/${candidateId}/profile`);
       const data = res.data;
@@ -223,8 +225,9 @@ function Dashboard() {
         saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
-      setUserProfile((prev) =>
-        hydrateDisplayProfile(mergeProfilesForDisplay({
+      let freshProfile;
+      setUserProfile((prev) => {
+        freshProfile = hydrateDisplayProfile(mergeProfilesForDisplay({
           ...data,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
@@ -250,10 +253,13 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
           profile_strength_percent: prev.profile_strength_percent,
           profile_strength_label: prev.strength,
-        }))
-      );
+        }));
+        return freshProfile;
+      });
+      return freshProfile;
     } catch (err) {
       console.error("refreshProfile failed", err);
+      return null;
     }
   }, [candidateId]);
 
@@ -625,9 +631,9 @@ function Dashboard() {
             {centerView === "voice" ? (
               <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
               <VoiceIntake
-                  firstName={userProfile.name?.split(" ")[0] || "there"}
+                  firstName={(voiceIntakeProfile || userProfile).name?.split(" ")[0] || "there"}
               candidateId={candidateId}
-              candidateProfile={userProfile}
+              candidateProfile={voiceIntakeProfile || userProfile}
               onComplete={(result) => {
                 if (result?.profile || result?.profile_updates) {
                   setUserProfile((prev) =>
@@ -688,7 +694,8 @@ function Dashboard() {
                 quickActions={QUICK_ACTIONS}
                 onMicClick={voiceIntakeCompleted ? undefined : async () => {
                   userChoseCenterViewRef.current = true;
-                  await refreshProfile();
+                  const fresh = await refreshProfile();
+                  setVoiceIntakeProfile(fresh);
                   setCenterView("voice");
                 }}
               />
