@@ -2,7 +2,7 @@ import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
 
-import Onboarding, { buildSummary } from "../Onboarding";
+import Onboarding, { buildSummary, checkVerificationErrors } from "../Onboarding";
 import { mergeProfilesForDisplay } from "../../lib/profileNormalization";
 import { saveOnboardingState } from "../../lib/onboardingStorage";
 import { isVoiceIntakeCompleteStatus } from "../../lib/onboardingStorage";
@@ -334,5 +334,75 @@ describe("buildSummary", () => {
     expect(byLabel["Certifications"].split(", ")).toEqual(["AWS Certified Solutions Architect - Associate"]);
     expect(byLabel["Latest role"]).toContain("Engineer");
     expect(byLabel["Latest role"]).toContain("Acme");
+  });
+});
+
+describe("Upload page Back button", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  it("navigates to the previous onboarding step (step 1) when Back is clicked", async () => {
+    saveOnboardingState({ step: 2, linkedInAuthenticated: true });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+    act(() => { root.render(<Onboarding />); });
+
+    const backBtn = await waitForElement(container, '[data-testid="onboarding-upload-back"]');
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+
+    act(() => { backBtn.click(); });
+
+    await waitForElement(container, '[data-testid="onboarding-step-1"]');
+    expect(container.querySelector('[data-testid="onboarding-step-1"]')).toBeTruthy();
+
+    act(() => { root.unmount(); }); container.remove();
+  });
+});
+
+describe("checkVerificationErrors — email/mobile verification", () => {
+  const resumeProfile = { email: "alice@example.com", phone: "+1-800-555-1234" };
+
+  it("case 1: both email and phone match — returns no errors", () => {
+    const errors = checkVerificationErrors(
+      "alice@example.com",
+      "+18005551234",
+      resumeProfile
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("case 2: email mismatch — returns email error only", () => {
+    const errors = checkVerificationErrors(
+      "bob@example.com",
+      "+18005551234",
+      resumeProfile
+    );
+    expect(errors).toContain("email");
+    expect(errors).not.toContain("phone");
+  });
+
+  it("case 3: phone mismatch — returns phone error only", () => {
+    const errors = checkVerificationErrors(
+      "alice@example.com",
+      "+18005559999",
+      resumeProfile
+    );
+    expect(errors).toContain("phone");
+    expect(errors).not.toContain("email");
+  });
+
+  it("case 4: both email and phone mismatch — returns both errors", () => {
+    const errors = checkVerificationErrors(
+      "bob@example.com",
+      "+18005559999",
+      resumeProfile
+    );
+    expect(errors).toContain("email");
+    expect(errors).toContain("phone");
   });
 });

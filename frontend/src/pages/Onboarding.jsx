@@ -11,6 +11,7 @@ import {
   Plus,
   X,
   ArrowRight,
+  ArrowLeft,
 } from "lucide-react";
 
 import { MOCK_USER_PROFILE } from "../mock";
@@ -318,14 +319,85 @@ function CertificationsRow({ files, onAdd, onRemove }) {
   );
 }
 
+/* ---------- Verification helpers ---------- */
+
+export function normalizeEmail(raw) {
+  return String(raw || "").trim().toLowerCase();
+}
+
+export function normalizePhone(raw) {
+  return String(raw || "").replace(/\D/g, "");
+}
+
+/**
+ * Returns an array of error message strings (empty = both match / no data to compare).
+ * loginEmail  — email from the OAuth provider profile
+ * enteredPhone — digits the candidate typed (any format; we strip non-digits)
+ * resumeProfile — the parsed profile object returned by the backend
+ */
+export function checkVerificationErrors(loginEmail, enteredPhone, resumeProfile) {
+  const errors = [];
+  const resumeEmail = normalizeEmail(resumeProfile?.email);
+  const loginNorm = normalizeEmail(loginEmail);
+  if (loginNorm && resumeEmail && loginNorm !== resumeEmail) {
+    errors.push("email");
+  }
+  const resumePhone = normalizePhone(resumeProfile?.phone);
+  const enteredNorm = normalizePhone(enteredPhone);
+  // Only compare the last N digits of the longer number to handle country-code differences
+  if (enteredNorm && resumePhone) {
+    const len = Math.min(enteredNorm.length, resumePhone.length, 10);
+    if (enteredNorm.slice(-len) !== resumePhone.slice(-len)) {
+      errors.push("phone");
+    }
+  }
+  return errors;
+}
+
+function VerificationErrors({ errors }) {
+  if (!errors || errors.length === 0) return null;
+  const emailMismatch = errors.includes("email");
+  const phoneMismatch = errors.includes("phone");
+  return (
+    <div className="mt-4 space-y-2" data-testid="verification-errors">
+      {emailMismatch && (
+        <p
+          className="text-[12.5px] text-[#E11D48] leading-relaxed"
+          data-testid="verification-error-email"
+        >
+          The login email and email mentioned in your resume do not match. Please correct your details.
+        </p>
+      )}
+      {phoneMismatch && (
+        <p
+          className="text-[12.5px] text-[#E11D48] leading-relaxed"
+          data-testid="verification-error-phone"
+        >
+          The mobile number you entered and the mobile number mentioned in your resume do not match. Please correct your details.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StepUpload({
   resumeFile,
   setResumeFile,
   certsFiles,
   setCertsFiles,
+  onBack,
+  verificationErrors,
 }) {
   return (
     <div>
+      <button
+        onClick={onBack}
+        data-testid="onboarding-upload-back"
+        className="flex items-center gap-1 text-[12.5px] text-[#9A9A98] hover:text-[#1F1F1F] transition-colors mb-6 -ml-1"
+      >
+        <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.75} />
+        Back
+      </button>
       <h1 className="text-[26px] font-medium tracking-tight leading-tight mb-2">
         Let's build your profile.
       </h1>
@@ -348,6 +420,7 @@ function StepUpload({
           }
         />
       </div>
+      <VerificationErrors errors={verificationErrors} />
     </div>
   );
 }
@@ -657,6 +730,7 @@ export default function Onboarding() {
   const [candidateId, setCandidateId] = React.useState(persisted.candidateId ?? null);
   const [parsingReady, setParsingReady] = React.useState(!!persisted.parsedProfile);
   const [parsingError, setParsingError] = React.useState(null);
+  const [verificationErrors, setVerificationErrors] = React.useState([]);
 
   const [transcription, setTranscription] = React.useState(!!persisted.transcription);
   const [muted, setMuted] = React.useState(!!persisted.muted);
@@ -786,6 +860,15 @@ export default function Onboarding() {
           });
         }
       }
+      // Verify email + phone against parsed resume before advancing
+      const loginEmail = loadOnboardingState().linkedInProfile?.email;
+      const vErrors = checkVerificationErrors(loginEmail, phone.formatted, profile);
+      setVerificationErrors(vErrors);
+      if (vErrors.length > 0) {
+        // Stay on step 2 — do not advance to parsing screen
+        setParsingReady(false);
+        return false;
+      }
         setParsingReady(true);
     } catch (err) {
       console.error("resume parse failed", err);
@@ -796,11 +879,15 @@ export default function Onboarding() {
       setTimeout(() => setParsingReady(true), 2000);
       toast.error("Resume parse failed — using defaults");
     }
-  }, [resumeFile, certsFiles, candidateId]);
+  }, [resumeFile, certsFiles, candidateId, phone.formatted]);
 
-  const handleContinueUpload = () => {
-    kickOffParsing();
+  const handleContinueUpload = async () => {
+    setVerificationErrors([]);
     setStep(3);
+    const passed = await kickOffParsing();
+    if (passed === false) {
+      setStep(2);
+    }
   };
 
   const actions = (() => {
@@ -859,6 +946,8 @@ export default function Onboarding() {
               setResumeFile={setResumeFile}
               certsFiles={certsFiles}
               setCertsFiles={setCertsFiles}
+              onBack={() => setStep(1)}
+              verificationErrors={verificationErrors}
             />
           )}
           {step === 3 && (
