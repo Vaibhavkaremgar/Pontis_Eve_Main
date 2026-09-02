@@ -630,17 +630,45 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
   );
 }
 
-function TrackedTab({ jobs, onTrack }) {
+function TrackedTab({ jobs, onTrack, onDismissJob }) {
   const tracked = jobs.filter((j) => j.tracked);
   const [detailJob, setDetailJob] = React.useState(null);
+  const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
+  const [dismissing, setDismissing] = React.useState(false);
 
   const handleApply = React.useCallback(() => {
     if (!detailJob || !detailJob.job_url) return;
     window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
   }, [detailJob]);
 
+  const handleNotInterested = React.useCallback(() => {
+    if (!detailJob) return;
+    setDetailJob(null);
+    setPendingDismissJob(detailJob);
+  }, [detailJob]);
+
+  const handleConfirmDismiss = React.useCallback(async (reason) => {
+    if (!pendingDismissJob || dismissing) return;
+    setDismissing(true);
+    try {
+      await onDismissJob?.(pendingDismissJob.id, reason);
+      setPendingDismissJob(null);
+    } catch {
+      // parent handles refresh
+    } finally {
+      setDismissing(false);
+    }
+  }, [pendingDismissJob, dismissing, onDismissJob]);
+
   return (
     <div className="space-y-2" data-testid="tracked-tab-content">
+      <NotInterestedReasonModal
+        open={Boolean(pendingDismissJob)}
+        job={pendingDismissJob}
+        busy={dismissing}
+        onClose={() => setPendingDismissJob(null)}
+        onConfirm={handleConfirmDismiss}
+      />
       {detailJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
@@ -648,7 +676,7 @@ function TrackedTab({ jobs, onTrack }) {
               job={detailJob}
               onClose={() => setDetailJob(null)}
               onApply={handleApply}
-              onNotInterested={() => setDetailJob(null)}
+              onNotInterested={handleNotInterested}
               applying={false}
             />
           </div>
@@ -722,6 +750,13 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
     if (!file || !candidateId) return;
     setBusy(true);
     try {
+      const arrayBuffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+      const fingerprint = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (documents.resume?.fingerprint && documents.resume.fingerprint === fingerprint) {
+        setDeleteError("Duplicate Upload");
+        return;
+      }
       const fd = new FormData();
       fd.append("file", file);
       const res = await axios.post(`${API}/candidate/${candidateId}/resume/replace`, fd);
@@ -1406,7 +1441,7 @@ export default function LivingProfile({
             />
           )}
           {activeTab === "tracked" && (
-            <TrackedTab jobs={jobs} onTrack={onTrackJob} />
+            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} />
           )}
           {activeTab === "documents" && (
             <DocumentsTab

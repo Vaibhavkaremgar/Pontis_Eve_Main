@@ -3181,7 +3181,7 @@ async def get_candidate_documents(candidate_id: str):
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         resume_row = await db.execute(
-            text("SELECT source_filename FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
+            text("SELECT source_filename, resume_fingerprint FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
             {"cid": candidate_id},
         )
         resume = resume_row.fetchone()
@@ -3191,7 +3191,7 @@ async def get_candidate_documents(candidate_id: str):
         )
         certs = certs_rows.fetchall()
     return {
-        "resume": {"filename": resume[0]} if resume else None,
+        "resume": {"filename": resume[0], "fingerprint": resume[1]} if resume else None,
         "certificates": [{"id": str(r[0]), "filename": r[1]} for r in certs],
     }
 

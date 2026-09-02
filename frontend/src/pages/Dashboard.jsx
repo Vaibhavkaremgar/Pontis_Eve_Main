@@ -87,6 +87,7 @@ function Dashboard() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
+  const popupShownThisSessionRef = React.useRef(false);
 
   const [activeTab, setActiveTab] = React.useState(() => {
     if (stored.newlyOnboarded) {
@@ -337,14 +338,16 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, [candidateId]);
 
-  // Show weak-profile popup once profile loads if voice intake is incomplete and strength < 75
+  // Show weak-profile popup once per session if strength < 75 on first load
   React.useEffect(() => {
-    if (!voiceIntakeCompleted && userProfile.strengthPercent > 0 && userProfile.strengthPercent < 75) {
+    if (popupShownThisSessionRef.current) return;
+    if (userProfile.strengthPercent > 0 && userProfile.strengthPercent < 75) {
+      popupShownThisSessionRef.current = true;
       const t = setTimeout(() => setShowWeakProfilePopup(true), 800);
       return () => clearTimeout(t);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile.strengthPercent, voiceIntakeCompleted]);
+  }, [userProfile.strengthPercent]);
 
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback(() => {
