@@ -3542,8 +3542,11 @@ CANDIDATE PROFILE (current state):
 
 MISSING FIELDS (ask about these — do NOT ask for fields already listed above): {missing_fields}
 
+PROFILE COMPLETION GUIDANCE: {profile_completion_guidance}
+
 BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
+- PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 75% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking profile questions once the guidance says the profile is at 75%+.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
 - Job search, job matching, and job recommendations must ONLY be triggered when the candidate explicitly asks for jobs, roles, or matches (e.g. "find me jobs", "show me matches", "what roles suit me"). Never volunteer job search in response to profile/resume/details questions.
@@ -3664,6 +3667,35 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
             lines.append(f"- Employment gap explained: {explained_gap['answer']}")
 
     return "\n".join(lines) if lines else "No profile data yet.", missing
+
+
+def _build_profile_completion_guidance(profile: dict) -> str:
+    """
+    Return a short guidance string for Eve's system prompt.
+    When profile strength < 75%, returns the single most important next question.
+    When >= 75%, returns a note to stop asking profile questions.
+    """
+    from profile_strength_service import calculate_profile_strength_v2
+    raw_data = profile.get("raw_data") or {}
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except Exception:
+            raw_data = {}
+    try:
+        result = calculate_profile_strength_v2(profile, raw_data)
+        percent = result.get("percent", 0)
+        if percent >= 75:
+            return f"Profile is at {percent}% (75%+ reached). Do NOT ask any more profile-completion questions."
+        next_actions = result.get("recommended_next_actions") or []
+        if next_actions:
+            return (
+                f"Profile is at {percent}% (below 75%). "
+                f"Ask this ONE question to help complete the profile: \"{next_actions[0]}\""
+            )
+        return f"Profile is at {percent}% (below 75%). Ask about any missing fields listed above."
+    except Exception:
+        return "No profile completion guidance available."
 
 
 def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tuple[str, Optional[dict]]:
@@ -4182,6 +4214,7 @@ async def chat(request: ChatRequest):
     missing_fields: list = []
     persisted_window: list[dict] = []
     voice_resume: Optional[dict] = None
+    frontend_profile: Optional[dict] = None
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
@@ -4271,6 +4304,7 @@ async def chat(request: ChatRequest):
     system_prompt = EVE_SYSTEM_TEMPLATE.format(
         profile_context=profile_context + job_context,
         missing_fields=", ".join(missing_fields) if missing_fields else "None",
+        profile_completion_guidance=_build_profile_completion_guidance(frontend_profile) if frontend_profile else "No profile loaded.",
     )
 
     # Build message list: use the incoming request messages as the source of truth for the

@@ -680,7 +680,10 @@ function Dashboard() {
                 onSend={handleSendMessage}
                 sending={sending}
                 quickActions={QUICK_ACTIONS}
-                onMicClick={voiceIntakeCompleted ? undefined : () => setCenterView("voice")}
+                onMicClick={voiceIntakeCompleted ? undefined : async () => {
+                  await refreshProfile();
+                  setCenterView("voice");
+                }}
               />
             )}
           </div>
