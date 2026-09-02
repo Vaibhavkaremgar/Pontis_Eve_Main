@@ -632,8 +632,28 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
 
 function TrackedTab({ jobs, onTrack }) {
   const tracked = jobs.filter((j) => j.tracked);
+  const [detailJob, setDetailJob] = React.useState(null);
+
+  const handleApply = React.useCallback(() => {
+    if (!detailJob || !detailJob.job_url) return;
+    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
+  }, [detailJob]);
+
   return (
     <div className="space-y-2" data-testid="tracked-tab-content">
+      {detailJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
+            <JobDetailModal
+              job={detailJob}
+              onClose={() => setDetailJob(null)}
+              onApply={handleApply}
+              onNotInterested={() => setDetailJob(null)}
+              applying={false}
+            />
+          </div>
+        </div>
+      )}
       {tracked.length === 0 ? (
         <div className="py-10 text-center">
           <p className="text-[13px] text-[#9A9A98] font-normal">
@@ -642,9 +662,11 @@ function TrackedTab({ jobs, onTrack }) {
         </div>
       ) : (
         tracked.map((job) => (
-          <div
+          <button
             key={job.id}
-            className="eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3"
+            data-testid={`tracked-job-card-${job.id}`}
+            onClick={() => setDetailJob(job)}
+            className="text-left w-full eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3"
           >
             <div className="flex items-center gap-3 min-w-0">
               {job.logo ? (
@@ -669,14 +691,17 @@ function TrackedTab({ jobs, onTrack }) {
                   Applied
                 </span>
               )}
-              <button
-                onClick={() => onTrack(job.id)}
+              <span
+                onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && (e.stopPropagation(), onTrack(job.id))}
                 className="text-[11.5px] font-normal text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2"
               >
                 Untrack
-              </button>
+              </span>
             </div>
-          </div>
+          </button>
         ))
       )}
     </div>

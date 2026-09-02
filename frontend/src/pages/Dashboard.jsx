@@ -24,22 +24,12 @@ import { hydrateProfileStrength } from "../lib/profileStrength";
 import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
+import { getVoiceIntakeCenterView } from "../lib/voiceIntakeRouting";
+
+export { getVoiceIntakeCenterView };
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-
-export function getVoiceIntakeCenterView(voiceIntakeResume) {
-  const currentQuestion = voiceIntakeResume?.current_question || "";
-  const isInProgress =
-    voiceIntakeResume?.status === "in_progress" &&
-    Boolean(voiceIntakeResume?.has_open_question) &&
-    Boolean(currentQuestion);
-
-  if (isInProgress) return "chat";
-  // Return "swipe" for completed so the effect always drives centerView from backend status
-  if (isVoiceIntakeCompleteStatus(voiceIntakeResume?.status)) return "swipe";
-  return null;
-}
 
 function buildFallbackProfile(isOpenToMatches = true) {
   return {
@@ -133,7 +123,6 @@ function Dashboard() {
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
-  const [dashboardVoiceActive, setDashboardVoiceActive] = React.useState(false);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
 
   // Load real profile from PostgreSQL on mount
@@ -683,25 +672,6 @@ function Dashboard() {
                   onDismissJob={handleDismissJob}
                 />
               )
-            ) : dashboardVoiceActive ? (
-              <div className="flex-1 overflow-y-auto eve-scroll px-6 py-8">
-                <VoiceIntake
-                  firstName={userProfile.name?.split(" ")[0] || "there"}
-                  candidateId={candidateId}
-                  candidateProfile={userProfile}
-                  onComplete={(result) => {
-                    setDashboardVoiceActive(false);
-                    if (result?.profile || result?.profile_updates) {
-                      setUserProfile((prev) =>
-                        hydrateDisplayProfile(
-                          mergeProfilesForDisplay(prev, result.profile || result.profile_updates || {})
-                        )
-                      );
-                    }
-                    refreshProfile();
-                  }}
-                />
-              </div>
             ) : (
               <ChatHub
                 chats={chats}
@@ -710,7 +680,7 @@ function Dashboard() {
                 onSend={handleSendMessage}
                 sending={sending}
                 quickActions={QUICK_ACTIONS}
-                onMicClick={() => setDashboardVoiceActive(true)}
+                onMicClick={voiceIntakeCompleted ? undefined : () => setCenterView("voice")}
               />
             )}
           </div>
