@@ -99,13 +99,18 @@ const stepMotion = {
   transition: { duration: 0.42, ease: [0.4, 0, 0.2, 1] },
 };
 
-function Shell({ step, children, actions, hideActions = false }) {
+function Shell({ step, children, actions, hideActions = false, backButton }) {
   return (
     <div
       className="min-h-screen bg-[#FBFBF9] text-[#1F1F1F] flex flex-col"
       data-testid={`onboarding-step-${step}`}
     >
-      <header className="w-full pt-8 pb-2 flex justify-center">
+      <header className="w-full pt-8 pb-2 flex justify-center relative">
+        {backButton && (
+          <div className="absolute left-6 top-1/2 -translate-y-1/2">
+            {backButton}
+          </div>
+        )}
         <ProgressDots step={step} />
       </header>
 
@@ -385,19 +390,10 @@ function StepUpload({
   setResumeFile,
   certsFiles,
   setCertsFiles,
-  onBack,
   verificationErrors,
 }) {
   return (
     <div>
-      <button
-        onClick={onBack}
-        data-testid="onboarding-upload-back"
-        className="flex items-center gap-1 text-[12.5px] text-[#9A9A98] hover:text-[#1F1F1F] transition-colors mb-6 -ml-1"
-      >
-        <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.75} />
-        Back
-      </button>
       <h1 className="text-[26px] font-medium tracking-tight leading-tight mb-2">
         Let's build your profile.
       </h1>
@@ -934,8 +930,19 @@ export default function Onboarding() {
     return null;
   })();
 
+  const uploadBackButton = step === 2 ? (
+    <button
+      onClick={() => setStep(1)}
+      data-testid="onboarding-upload-back"
+      className="flex items-center gap-1 text-[13px] font-bold text-[#1F1F1F] hover:opacity-70 transition-opacity"
+    >
+      <ArrowLeft className="w-4 h-4" strokeWidth={2.5} />
+      Back
+    </button>
+  ) : null;
+
   return (
-    <Shell step={step} actions={actions} hideActions={step === 3 || step === 4}>
+    <Shell step={step} actions={actions} hideActions={step === 3 || step === 4} backButton={uploadBackButton}>
       <Toaster position="top-right" richColors closeButton />
       <AnimatePresence mode="wait">
         <motion.div key={step} {...stepMotion}>
@@ -946,7 +953,6 @@ export default function Onboarding() {
               setResumeFile={setResumeFile}
               certsFiles={certsFiles}
               setCertsFiles={setCertsFiles}
-              onBack={() => setStep(1)}
               verificationErrors={verificationErrors}
             />
           )}
