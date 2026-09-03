@@ -148,7 +148,6 @@ function Dashboard() {
           candidate_id: profileCandidateId,
           candidateId: profileCandidateId,
           avatar: data.photo_url ?? null,
-          isOpenToMatches,
           name: data.name ?? "",
           email: data.email ?? "",
           phone: data.phone ?? "",
@@ -168,22 +167,26 @@ function Dashboard() {
           profile_strength_label: data.profile_strength_label ?? data.strength,
         };
         const cachedProfile = stored.parsedProfile ?? buildFallbackProfile(isOpenToMatches);
-        setUserProfile(
+        setUserProfile((prev) =>
           hydrateDisplayProfile(
-            mergeProfilesForDisplay(backendProfile, {
-              ...cachedProfile,
-              voice_intake_resume: data.voice_intake_resume ?? cachedProfile.voice_intake_resume ?? null,
-            })
+            mergeProfilesForDisplay(
+              { ...backendProfile, isOpenToMatches: prev.isOpenToMatches },
+              {
+                ...cachedProfile,
+                isOpenToMatches: prev.isOpenToMatches,
+                voice_intake_resume: data.voice_intake_resume ?? cachedProfile.voice_intake_resume ?? null,
+              }
+            )
           )
         );
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
-        setUserProfile(hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(isOpenToMatches), {
+        setUserProfile((prev) => hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(prev.isOpenToMatches), {
           candidate_id: candidateId,
           candidateId,
           avatar: null,
-          isOpenToMatches,
+          isOpenToMatches: prev.isOpenToMatches,
           name: parsed.name ?? "",
           email: parsed.email ?? "",
           phone: parsed.phone ?? "",
@@ -204,7 +207,7 @@ function Dashboard() {
         })));
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidateId]);
+  }, [candidateId]); // isOpenToMatches intentionally excluded — toggle state is preserved via prev
 
   React.useEffect(() => {
     // Backend is the single source of truth for the initial view.
@@ -234,10 +237,12 @@ function Dashboard() {
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
+          isOpenToMatches: prev.isOpenToMatches,
         }, {
           ...prev,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
+          isOpenToMatches: prev.isOpenToMatches,
           name: prev.name,
           email: prev.email,
           phone: prev.phone,
