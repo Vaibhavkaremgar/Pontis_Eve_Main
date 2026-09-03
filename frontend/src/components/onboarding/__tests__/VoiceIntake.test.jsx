@@ -252,7 +252,7 @@ describe("E2E regression: partial call -> disconnect -> mic -> resumes at next q
     expect(overrides.firstMessage).toBeUndefined();
   });
 
-  it("no firstMessage when intake is completed (mic button is hidden anyway)", () => {
+  it("firstMessage is welcome-back greeting when intake is completed (returning candidate)", () => {
     const overrides = buildVoiceIntakeAssistantOverrides({
       firstName: "Alex",
       candidateId: "cid-done",
@@ -267,7 +267,10 @@ describe("E2E regression: partial call -> disconnect -> mic -> resumes at next q
         },
       },
     });
-    expect(overrides.firstMessage).toBeUndefined();
+    expect(overrides.firstMessage).toBeDefined();
+    expect(overrides.firstMessage).toContain("Welcome back");
+    expect(overrides.firstMessage).toContain("Alex");
+    expect(overrides.firstMessage).toContain("How can I help you improve your profile?");
   });
 });
 

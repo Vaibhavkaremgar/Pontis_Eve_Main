@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 import { Mic, MicOff, Radio, PhoneOff, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import useVapi, { VAPI_STATES, buildTranscriptText } from "../../hooks/useVapi";
-import { loadOnboardingState, saveOnboardingState } from "../../lib/onboardingStorage";
+import { loadOnboardingState, saveOnboardingState, isVoiceIntakeCompleteStatus } from "../../lib/onboardingStorage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -82,6 +82,9 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
     const resumeName = p.name ? p.name.split(" ")[0] : (firstName || "");
     overrides.firstMessage =
       `Welcome back${resumeName ? `, ${resumeName}` : ""}! We were in the middle of your voice intake — you've answered ${answeredCount} question${answeredCount === 1 ? "" : "s"} so far. Let me continue where we left off. ${currentQuestion}`;
+  } else if (isVoiceIntakeCompleteStatus(vir.status)) {
+    const completedName = p.name ? p.name.split(" ")[0] : (firstName || "");
+    overrides.firstMessage = `Welcome back${completedName ? `, ${completedName}` : ""}. How can I help you improve your profile?`;
   }
 
   return overrides;

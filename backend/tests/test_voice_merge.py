@@ -414,3 +414,153 @@ class TestMergeVoiceIntoProfile:
         merged = _merge_voice_into_profile(profile, {})
         assert merged["name"] == profile["name"]
         assert merged["skills"] == profile["skills"]
+
+
+class TestRegressionEducationAndNewJob:
+    """
+    Regression tests for:
+    1. Education date preservation — resume dates must not be overwritten by Voice Intake.
+    2. New current job via Voice Intake — a different company must create a separate
+       work-experience record, not be merged into the previous employer's entry.
+    """
+
+    def test_education_dates_preserved_when_voice_adds_extra_fields(self):
+        """
+        Resume education entry has start_date/end_date.
+        Voice Intake provides the same degree/institution with no dates.
+        The original dates must be preserved exactly.
+        """
+        from server import _merge_education
+
+        existing = [
+            {
+                "degree": "B.Sc Computer Science",
+                "institution": "MIT",
+                "start_date": "2015",
+                "end_date": "2019",
+            }
+        ]
+        voice_edu = [
+            {
+                "degree": "B.Sc Computer Science",
+                "institution": "MIT",
+                "location": "Cambridge, MA",
+                # no start_date / end_date from voice
+            }
+        ]
+        merged = _merge_education(existing, voice_edu)
+        assert len(merged) == 1
+        entry = merged[0]
+        assert entry["start_date"] == "2015", "start_date must not be cleared"
+        assert entry["end_date"] == "2019", "end_date must not be cleared"
+        assert entry["location"] == "Cambridge, MA", "new field from voice should be added"
+
+    def test_education_dates_not_overwritten_by_voice_dates(self):
+        """
+        Resume has specific dates; Voice Intake provides different/empty dates.
+        Resume dates must win.
+        """
+        from server import _merge_education
+
+        existing = [
+            {
+                "degree": "M.Sc Data Science",
+                "institution": "Stanford",
+                "start_date": "2019",
+                "end_date": "2021",
+            }
+        ]
+        voice_edu = [
+            {
+                "degree": "M.Sc Data Science",
+                "institution": "Stanford",
+                "start_date": "",   # voice provides empty — must not overwrite
+                "end_date": "",
+            }
+        ]
+        merged = _merge_education(existing, voice_edu)
+        assert len(merged) == 1
+        entry = merged[0]
+        assert entry["start_date"] == "2019"
+        assert entry["end_date"] == "2021"
+
+    def test_voice_intake_new_current_job_creates_separate_record(self):
+        """
+        Candidate has an existing resume entry at 'Viral Bug'.
+        Voice Intake reports a NEW current job at 'NewCorp' with a different title.
+        The result must have TWO separate work-experience records — the original
+        Viral Bug entry must be unchanged (same company, same description, same dates).
+        """
+        from server import _merge_work_experience
+
+        existing = [
+            {
+                "title": "Python Developer",
+                "company": "Viral Bug",
+                "start_date": "2022-01-01",
+                "end_date": "2024-06-30",
+                "description": "Built backend services with FastAPI.",
+            }
+        ]
+        voice_new_job = [
+            {
+                "title": "Senior Backend Engineer",
+                "company": "NewCorp",
+                "start_date": "January 2025",
+                "end_date": "Present",
+                "description": "Leading API platform development.",
+            }
+        ]
+        merged = _merge_work_experience(existing, voice_new_job)
+
+        assert len(merged) == 2, (
+            f"Expected 2 separate work-experience records, got {len(merged)}: {merged}"
+        )
+
+        viral_bug = next((e for e in merged if "Viral Bug" in (e.get("company") or "")), None)
+        newcorp = next((e for e in merged if "NewCorp" in (e.get("company") or "")), None)
+
+        assert viral_bug is not None, "Viral Bug entry must be preserved"
+        assert newcorp is not None, "NewCorp entry must be created"
+
+        # Original entry must be completely unchanged
+        assert viral_bug["title"] == "Python Developer"
+        assert viral_bug["company"] == "Viral Bug"
+        assert viral_bug["start_date"] == "2022-01-01"
+        assert viral_bug["end_date"] == "2024-06-30"
+        assert "FastAPI" in viral_bug["description"]
+
+        # New entry must carry the voice-provided data
+        assert newcorp["title"] == "Senior Backend Engineer"
+        assert newcorp["start_date"] == "January 2025"
+        assert newcorp["end_date"] == "Present"
+
+    def test_voice_intake_same_company_merges_not_duplicates(self):
+        """
+        Voice Intake provides updated info for the SAME company already in the resume.
+        Must enrich the existing entry, not create a duplicate.
+        """
+        from server import _merge_work_experience
+
+        existing = [
+            {
+                "title": "Backend Developer",
+                "company": "Acme Corp",
+                "description": "Built REST APIs.",
+            }
+        ]
+        voice_same = [
+            {
+                "title": "Backend Developer",
+                "company": "Acme Corp",
+                "start_date": "March 2023",
+                "end_date": "Present",
+            }
+        ]
+        merged = _merge_work_experience(existing, voice_same)
+
+        assert len(merged) == 1, "Same company must be merged, not duplicated"
+        entry = merged[0]
+        assert entry["company"] == "Acme Corp"
+        assert entry["start_date"] == "March 2023"
+        assert "REST APIs" in entry["description"]

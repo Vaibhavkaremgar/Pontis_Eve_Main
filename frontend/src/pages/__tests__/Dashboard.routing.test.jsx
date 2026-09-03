@@ -1089,3 +1089,170 @@ describe("Mic button always visible in Chat with Eve", () => {
     expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
   });
 });
+
+describe("Dashboard mic — returning candidate behavior", () => {
+  let renderResult;
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    lastLivingProfileProps = null;
+    mockVoiceIntakeOnComplete = null;
+    capturedVoiceIntakeCandidateProfile = null;
+    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true });
+  });
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("completed returning candidate: mic click opens VoiceIntake with completed voice_intake_resume (welcome-back flow)", async () => {
+    const completedResume = {
+      status: "completed",
+      has_open_question: false,
+      current_question: "",
+      next_question: "",
+      completed_turns: [
+        { question: "Tell me about yourself.", answer: "I build APIs." },
+      ],
+      known_topics: ["background_experience", "skills_technologies"],
+      missing_topics: [],
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: completedResume }),
+      makeProfile({ voice_intake_resume: completedResume }),
+    ]);
+    renderResult = renderDashboard();
+
+    // Completed intake → default view is jobs-deck
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+
+    // Navigate to Chat with Eve
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    // Click mic
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    // VoiceIntake receives the completed resume — not null, not reset
+    const vir = capturedVoiceIntakeCandidateProfile?.voice_intake_resume;
+    expect(vir?.status).toBe("completed");
+    // No restart: completed_turns preserved
+    expect(vir?.completed_turns).toHaveLength(1);
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
+  it("completed returning candidate: VoiceIntake receives completed status so buildVoiceIntakeAssistantOverrides sets welcome-back firstMessage", async () => {
+    // This test verifies the profile passed to VoiceIntake has status=completed,
+    // which triggers the welcome-back firstMessage branch in buildVoiceIntakeAssistantOverrides.
+    const completedResume = {
+      status: "completed",
+      has_open_question: false,
+      current_question: "",
+      next_question: "",
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: completedResume }),
+      makeProfile({ voice_intake_resume: completedResume }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    // The profile passed to VoiceIntake has completed status — the component
+    // will build a welcome-back firstMessage from this.
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.status).toBe("completed");
+  });
+
+  it("incomplete returning candidate: mic click passes exact voice_intake_resume state so VAPI resumes from saved question", async () => {
+    const partialResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: "What kind of role are you targeting?",
+      next_question: "",
+      completed_turns: [
+        { question: "Tell me about your background.", answer: "I build APIs." },
+        { question: "What are your key skills?", answer: "Python, FastAPI." },
+      ],
+      known_topics: ["background_experience", "skills_technologies"],
+      missing_topics: ["target_role", "availability_location"],
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: partialResume }),
+      makeProfile({ voice_intake_resume: partialResume }),
+    ]);
+    renderResult = renderDashboard();
+
+    // In-progress → default view is chat-hub
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    const vir = capturedVoiceIntakeCandidateProfile?.voice_intake_resume;
+    expect(vir?.status).toBe("in_progress");
+    expect(vir?.current_question).toBe("What kind of role are you targeting?");
+    expect(vir?.completed_turns).toHaveLength(2);
+    expect(vir?.known_topics).toContain("background_experience");
+    expect(vir?.missing_topics).toContain("target_role");
+  });
+
+  it("incomplete returning candidate: does not restart from beginning (current_question is preserved, not empty)", async () => {
+    const partialResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: "What is your availability?",
+      next_question: "",
+      completed_turns: [
+        { question: "Tell me about yourself.", answer: "I am a developer." },
+      ],
+      known_topics: ["background_experience"],
+      missing_topics: ["availability_location"],
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: partialResume }),
+      makeProfile({ voice_intake_resume: partialResume }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    // current_question must not be empty — a non-empty value means VAPI will resume, not restart
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.current_question).toBe(
+      "What is your availability?"
+    );
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.current_question).not.toBe("");
+  });
+});

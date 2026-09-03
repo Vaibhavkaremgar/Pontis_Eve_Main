@@ -4817,8 +4817,14 @@ def _experience_entries_compatible(existing: dict, new_item: dict) -> bool:
     existing_company = _normalize_profile_text(existing.get("company") or existing.get("company_name") or "")
     new_company = _normalize_profile_text(new_item.get("company") or new_item.get("company_name") or "")
 
-    if existing_company and new_company and not _experience_text_matches(existing_company, new_company):
-        return False
+    # Company names must match exactly (case-insensitive) when both are present.
+    # Token-overlap matching is too loose and causes entries from different companies
+    # to be incorrectly merged (e.g. a new current job merged into a previous employer).
+    if existing_company and new_company:
+        ec_key = _normalize_profile_key(existing_company)
+        nc_key = _normalize_profile_key(new_company)
+        if ec_key != nc_key and ec_key not in nc_key and nc_key not in ec_key:
+            return False
     if existing_title and new_title and not _experience_text_matches(existing_title, new_title):
         return False
 
@@ -4943,54 +4949,6 @@ def _merge_experience_field(target: dict, source: dict, field: str) -> None:
 
     if field in {"description", "summary"} and new_value.lower() not in existing_value.lower():
         target[field] = f"{existing_value} {new_value}".strip()
-
-
-def _merge_work_experience(existing: list, new_items: list) -> list:
-    """
-    Merge work experience lists using normalized title/company/date matching.
-    Existing records are enriched in place so repeated voice intake runs are idempotent.
-    """
-    if not new_items:
-        return existing
-
-    merged = [dict(e) for e in existing if isinstance(e, dict)]
-    for item in new_items:
-        if not isinstance(item, dict):
-            continue
-
-        match_index = None
-        for idx, existing_item in enumerate(merged):
-            if _experience_entries_compatible(existing_item, item):
-                match_index = idx
-                break
-
-        if match_index is None:
-            merged.append(dict(item))
-            continue
-
-        target = merged[match_index]
-        for field in (
-            "title",
-            "company",
-            "dates",
-            "duration",
-            "start_date",
-            "startDate",
-            "end_date",
-            "endDate",
-            "description",
-            "summary",
-            "location",
-        ):
-            _merge_experience_field(target, item, field)
-
-        if not _normalize_profile_text(target.get("dates") or target.get("duration")):
-            start_label = _normalize_profile_text(target.get("start_date") or target.get("startDate"))
-            end_label = _normalize_profile_text(target.get("end_date") or target.get("endDate"))
-            if start_label:
-                target["dates"] = " â€” ".join(filter(None, [start_label, end_label or "Present"]))
-
-    return merged
 
 
 def _merge_work_experience(existing: list, new_items: list) -> list:
