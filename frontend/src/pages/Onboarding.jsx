@@ -840,7 +840,6 @@ export default function Onboarding() {
         const current = loadOnboardingState();
         saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token || current.candidateToken || null });
       }
-      setParsedProfile(profile);
       if (candidate_id) {
         setCandidateId(candidate_id);
         if (candidate_token) {
@@ -861,11 +860,13 @@ export default function Onboarding() {
       const vErrors = checkVerificationErrors(loginEmail, phone.formatted, profile);
       setVerificationErrors(vErrors);
       if (vErrors.length > 0) {
-        // Stay on step 2 — do not advance to parsing screen
+        // Stay on step 2 — do not save mismatched profile or advance
         setParsingReady(false);
+        setParsedProfile(null);
         return false;
       }
-        setParsingReady(true);
+      setParsedProfile(profile);
+      setParsingReady(true);
     } catch (err) {
       console.error("resume parse failed", err);
       const detail =

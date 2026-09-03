@@ -31,7 +31,7 @@ describe("Onboarding voice intake summary", () => {
           id: "exp-resume",
           title: "Product Manager",
           company: "ResumeCo",
-          dates: "2021 â€” 2023",
+          dates: "2021 â€" 2023",
         },
       ],
       education: [
@@ -267,7 +267,7 @@ describe("buildSummary", () => {
             id: "exp-resume",
             title: "Product Manager",
             company: "ResumeCo",
-            dates: "2021 â€” 2023",
+            dates: "2021 â€" 2023",
           },
         ],
       },
@@ -308,7 +308,7 @@ describe("buildSummary", () => {
             id: "exp-1",
             title: "Engineer",
             company: "Acme",
-            dates: "2024 â€” Present",
+            dates: "2024 â€" Present",
           },
         ],
       },
@@ -413,5 +413,124 @@ describe("checkVerificationErrors — email/mobile verification", () => {
     );
     expect(errors).toContain("email");
     expect(errors).toContain("phone");
+  });
+});
+
+/* ---------- Regression tests: email/mobile mismatch on resume upload ---------- */
+
+const mockAxios = { post: jest.fn() };
+jest.mock("axios", () => mockAxios);
+
+describe("Resume upload — email/mobile mismatch regression", () => {
+  const LOGIN_EMAIL = "alice@example.com";
+  const LOGIN_PHONE_DIGITS = "8005551234"; // matches +1-800-555-1234
+
+  function seedStep2(extraState = {}) {
+    saveOnboardingState({
+      step: 2,
+      linkedInAuthenticated: true,
+      linkedInProfile: { email: LOGIN_EMAIL },
+      candidateId: null,
+      phoneDigits: LOGIN_PHONE_DIGITS,
+      countryCode: "US",
+      ...extraState,
+    });
+  }
+
+  async function renderAndSubmit(resumeData) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+    act(() => { root.render(<Onboarding />); });
+
+    await waitForElement(container, '[data-testid="onboarding-step-2"]');
+
+    // Attach a fake file so the Continue button is enabled
+    const input = container.querySelector('[data-testid="onboarding-resume-input"]');
+    const file = new File(["pdf"], "resume.pdf", { type: "application/pdf" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+
+    // Click Continue
+    const continueBtn = container.querySelector('[data-testid="onboarding-continue-upload"]');
+    await act(async () => { continueBtn.click(); });
+    for (let i = 0; i < 15; i++) await act(async () => { await Promise.resolve(); });
+
+    return {
+      container,
+      unmount() { act(() => { root.unmount(); }); container.remove(); },
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    mockAxios.post.mockResolvedValue({ data: { candidate_id: "cand-new" } });
+  });
+
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  it("1. email mismatch → error shown, stays on step 2, does not advance", async () => {
+    mockAxios.post.mockResolvedValue({
+      data: { candidate_id: "cand-new", email: "bob@example.com", phone: "+18005551234", name: "Bob" },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="verification-error-email"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    unmount();
+  });
+
+  it("2. mobile mismatch → error shown, stays on step 2, does not advance", async () => {
+    mockAxios.post.mockResolvedValue({
+      data: { candidate_id: "cand-new", email: LOGIN_EMAIL, phone: "+18005559999", name: "Alice" },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="verification-error-phone"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    unmount();
+  });
+
+  it("3. both email and mobile mismatch → both errors shown, stays on step 2", async () => {
+    mockAxios.post.mockResolvedValue({
+      data: { candidate_id: "cand-new", email: "bob@example.com", phone: "+18005559999", name: "Bob" },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="verification-error-email"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="verification-error-phone"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    unmount();
+  });
+
+  it("4. both match → no errors, advances to parsing step (step 3)", async () => {
+    mockAxios.post.mockResolvedValue({
+      data: { candidate_id: "cand-new", email: LOGIN_EMAIL, phone: "+18005551234", name: "Alice" },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="verification-errors"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeTruthy();
+    unmount();
+  });
+
+  it("5. resume missing email and phone → no errors, existing flow continues to step 3", async () => {
+    mockAxios.post.mockResolvedValue({
+      data: { candidate_id: "cand-new", name: "Alice" },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="verification-errors"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeTruthy();
+    unmount();
   });
 });
