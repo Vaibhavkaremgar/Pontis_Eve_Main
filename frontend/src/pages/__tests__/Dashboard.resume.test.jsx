@@ -57,7 +57,7 @@ describe("Dashboard voice intake resume", () => {
       expect(getVoiceIntakeCenterView(voiceIntakeResume)).toBe("chat");
     });
 
-    it("returns 'swipe' for completed so mic button is hidden", () => {
+    it("returns 'swipe' for completed (initial routing to Jobs for you)", () => {
       expect(getVoiceIntakeCenterView({ status: "completed" })).toBe("swipe");
     });
 
@@ -115,7 +115,7 @@ describe("Dashboard voice intake resume", () => {
       expect(overrides.variableValues.voice_intake_status).toBe("in_progress");
     });
 
-    it("does not route to voice view when intake is completed - mic button is hidden", () => {
+    it("routes to swipe (Jobs for you) on initial load when intake is completed", () => {
       const completedResume = { status: "completed", has_open_question: false, current_question: "" };
       expect(getVoiceIntakeCenterView(completedResume)).toBe("swipe");
     });
@@ -186,15 +186,15 @@ describe("Dashboard voice intake resume", () => {
       expect(overrides.variableValues.voice_intake_answers).toBe("");
     });
 
-    it("when backend status is completed, Dashboard hides the mic button entirely", () => {
+    it("when backend status is completed, initial routing goes to swipe (mic is still always visible)", () => {
       const completedResume = {
         status: "completed",
         has_open_question: false,
         current_question: "",
         progress: 6,
       };
-      // voiceIntakeCompleted=true -> onMicClick=undefined -> mic button not rendered
-      // getVoiceIntakeCenterView drives centerView to 'swipe' via the effect
+      // getVoiceIntakeCenterView drives initial centerView to 'swipe'
+      // but mic button is always rendered regardless of completed status
       expect(getVoiceIntakeCenterView(completedResume)).toBe("swipe");
     });
   });

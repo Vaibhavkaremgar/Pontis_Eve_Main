@@ -4554,6 +4554,7 @@ Only include fields where the candidate actually provided information.
 Do NOT invent or hallucinate information.
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
+For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
 Return only the JSON object."""
 
 
@@ -5319,11 +5320,10 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
                 existing_pr.append(r)
                 seen_pr.add(r.lower())
         raw_data["preferred_roles"] = existing_pr
-    if voice.get("certifications") is not None or raw_data.get("certifications") is not None or merged.get("parsed_resume_json"):
-        raw_data["certifications"] = _candidate_certification_sources(
-            merged,
-            voice.get("certifications") or [],
-        )
+    raw_data["certifications"] = _candidate_certification_sources(
+        merged,
+        voice.get("certifications") or [],
+    )
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
 
@@ -5561,7 +5561,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     # 5. Merge into existing profile, preferences, and resume state.
     merged = await _persist_voice_intake_profile_state(
         request.candidate_id,
-        candidate,
+        existing_candidate,
         voice_data,
         voice_intake_state,
     )

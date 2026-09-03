@@ -712,7 +712,7 @@ function Dashboard() {
                 onSend={handleSendMessage}
                 sending={sending}
                 quickActions={QUICK_ACTIONS}
-                onMicClick={voiceIntakeCompleted ? undefined : async () => {
+                onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();
                   setVoiceIntakeProfile(fresh);

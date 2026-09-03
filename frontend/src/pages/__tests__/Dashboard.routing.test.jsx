@@ -928,3 +928,164 @@ describe("Dashboard mic button — voice intake from chat panel", () => {
     expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
   });
 });
+
+describe("Mic button always visible in Chat with Eve", () => {
+  let renderResult;
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    lastLivingProfileProps = null;
+    mockVoiceIntakeOnComplete = null;
+    capturedVoiceIntakeCandidateProfile = null;
+    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true });
+  });
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("incomplete intake → mic visible + resume works", async () => {
+    const partialResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: "What are your key skills?",
+      next_question: "",
+      completed_turns: [{ question: "Tell me about yourself.", answer: "I build APIs." }],
+      known_topics: ["background_experience"],
+      missing_topics: ["skills_technologies", "target_role"],
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: partialResume }),
+      makeProfile({ voice_intake_resume: partialResume }),
+    ]);
+    renderResult = renderDashboard();
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    // Mic is visible
+    expect(renderResult.container.querySelector('[data-testid="chat-mic-btn"]')).toBeTruthy();
+
+    // Clicking mic resumes from persisted state
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    const vir = capturedVoiceIntakeCandidateProfile?.voice_intake_resume;
+    expect(vir?.status).toBe("in_progress");
+    expect(vir?.current_question).toBe("What are your key skills?");
+    expect(vir?.completed_turns).toHaveLength(1);
+    expect(vir?.known_topics).toContain("background_experience");
+  });
+
+  it("completed intake with profile <75% → mic visible in ChatHub", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    // Wait for profile to load (jobs-deck is the default view for completed intake)
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    expect(renderResult.container.querySelector('[data-testid="chat-mic-btn"]')).toBeTruthy();
+  });
+
+  it("completed intake with profile >=75% → mic visible in ChatHub", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 82,
+        profile_strength_label: "Strong",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+      makeProfile({
+        profile_strength_percent: 82,
+        profile_strength_label: "Strong",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    expect(renderResult.container.querySelector('[data-testid="chat-mic-btn"]')).toBeTruthy();
+  });
+
+  it("mic click on completed intake opens VoiceIntake with completed state, does not reset profile", async () => {
+    const completedResume = {
+      status: "completed",
+      has_open_question: false,
+      current_question: "",
+      next_question: "",
+    };
+    mockDashboardRequests([
+      makeProfile({ voice_intake_resume: completedResume }),
+      makeProfile({ voice_intake_resume: completedResume }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    await waitForCondition(() => capturedVoiceIntakeCandidateProfile !== null);
+
+    // VoiceIntake receives the completed state — not null, not reset
+    const vir = capturedVoiceIntakeCandidateProfile?.voice_intake_resume;
+    expect(vir?.status).toBe("completed");
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+});
