@@ -4345,3 +4345,244 @@ class TestCareerGapMandatory:
         vi = state["raw_data"].get("voice_intake") or {}
         gaps = vi.get("employment_gaps") or []
         assert len(gaps) == 1
+
+
+# ─────────────────────────────────────────────
+# Career-gap VAPI variable injection tests
+# ─────────────────────────────────────────────
+
+class TestCareerGapVapiVariables:
+    """
+    Regression tests for career-gap detection and VAPI variable injection.
+
+    Requirements:
+    - _build_career_gap_vapi_vars returns all 4 variables.
+    - career_gap_detected=True only for meaningful unexplained gaps (>=30 days).
+    - career_gap_start / career_gap_end are human-readable month-year labels.
+    - career_gap_context is a non-empty descriptive string when gap detected.
+    - No gap → career_gap_detected=False, other fields empty strings.
+    - Explained gap (answered in voice_intake) → career_gap_detected=False.
+    - _normalize_for_frontend includes all 4 variables in the returned profile.
+    """
+
+    GAP_PROFILE = {
+        "experience": [
+            {
+                "title": "Backend Engineer",
+                "company": "Alpha Corp",
+                "start_date": "2022-01-01",
+                "end_date": "2023-06-30",
+            },
+            {
+                "title": "Senior Engineer",
+                "company": "Beta Ltd",
+                "start_date": "2024-01-01",
+                "end_date": "",
+            },
+        ],
+    }
+
+    NO_GAP_PROFILE = {
+        "experience": [
+            {
+                "title": "Engineer",
+                "company": "A",
+                "start_date": "2022-01-01",
+                "end_date": "2023-06-30",
+            },
+            {
+                "title": "Senior Engineer",
+                "company": "B",
+                "start_date": "2023-06-01",
+                "end_date": "",
+            },
+        ],
+    }
+
+    def test_gap_detected_true_for_meaningful_gap(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars(self.GAP_PROFILE)
+        assert result["career_gap_detected"] is True
+
+    def test_gap_start_is_human_readable_month_year(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars(self.GAP_PROFILE)
+        # Should be "June 2023" (end of Alpha Corp role)
+        assert "2023" in result["career_gap_start"]
+        assert result["career_gap_start"] != ""
+
+    def test_gap_end_is_human_readable_month_year(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars(self.GAP_PROFILE)
+        # Should be "January 2024" (start of Beta Ltd role)
+        assert "2024" in result["career_gap_end"]
+        assert result["career_gap_end"] != ""
+
+    def test_gap_context_is_descriptive_string(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars(self.GAP_PROFILE)
+        ctx = result["career_gap_context"]
+        assert isinstance(ctx, str) and len(ctx) > 10
+        assert "Alpha Corp" in ctx or "Backend Engineer" in ctx
+        assert "Beta Ltd" in ctx or "Senior Engineer" in ctx
+
+    def test_no_gap_returns_false_and_empty_strings(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars(self.NO_GAP_PROFILE)
+        assert result["career_gap_detected"] is False
+        assert result["career_gap_start"] == ""
+        assert result["career_gap_end"] == ""
+        assert result["career_gap_context"] == ""
+
+    def test_empty_experience_returns_no_gap(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        result = _build_career_gap_vapi_vars({"experience": []})
+        assert result["career_gap_detected"] is False
+
+    def test_explained_gap_returns_no_gap(self):
+        """Once a gap is answered in voice_intake, career_gap_detected must be False."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        answered_profile = {
+            **self.GAP_PROFILE,
+            "raw_data": {
+                "voice_intake": {
+                    "employment_gaps": [
+                        {
+                            "gap_key": gap["gap_key"],
+                            "question": gap["question"],
+                            "answer": "I took a planned break to care for family.",
+                        }
+                    ]
+                }
+            },
+        }
+        result = _build_career_gap_vapi_vars(answered_profile)
+        assert result["career_gap_detected"] is False
+
+    def test_short_gap_under_30_days_not_detected(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        profile = {
+            "experience": [
+                {"title": "Eng", "company": "A", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Sr Eng", "company": "B", "start_date": "2023-07-15", "end_date": ""},
+            ]
+        }
+        result = _build_career_gap_vapi_vars(profile)
+        assert result["career_gap_detected"] is False
+
+    def test_normalize_for_frontend_includes_all_four_gap_vars(self):
+        """_normalize_for_frontend must include all 4 career gap VAPI variables."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _normalize_for_frontend
+
+        candidate = {
+            "id": "test-gap-normalize",
+            "name": "Test Candidate",
+            "email": "test@example.com",
+            "work_experience": [
+                {
+                    "title": "Backend Engineer",
+                    "company": "Alpha Corp",
+                    "start_date": "2022-01-01",
+                    "end_date": "2023-06-30",
+                },
+                {
+                    "title": "Senior Engineer",
+                    "company": "Beta Ltd",
+                    "start_date": "2024-01-01",
+                    "end_date": "",
+                },
+            ],
+            "skills": [],
+            "education": [],
+            "raw_data": {},
+        }
+        profile = _normalize_for_frontend(candidate)
+        assert "career_gap_detected" in profile
+        assert "career_gap_start" in profile
+        assert "career_gap_end" in profile
+        assert "career_gap_context" in profile
+        assert profile["career_gap_detected"] is True
+        assert "2023" in profile["career_gap_start"]
+        assert "2024" in profile["career_gap_end"]
+
+    def test_normalize_for_frontend_no_gap_profile(self):
+        """Profile with no gap must have career_gap_detected=False in frontend shape."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _normalize_for_frontend
+
+        candidate = {
+            "id": "test-no-gap",
+            "name": "No Gap Candidate",
+            "work_experience": [
+                {"title": "Eng", "company": "A", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Sr Eng", "company": "B", "start_date": "2023-06-01", "end_date": ""},
+            ],
+            "skills": [],
+            "education": [],
+            "raw_data": {},
+        }
+        profile = _normalize_for_frontend(candidate)
+        assert profile["career_gap_detected"] is False
+        assert profile["career_gap_start"] == ""
+        assert profile["career_gap_end"] == ""
+        assert profile["career_gap_context"] == ""
+
+    def test_vapi_vars_not_hardcoded_to_any_candidate(self):
+        """
+        career_gap_* variables must differ between two candidates with different gaps.
+        Ensures no hardcoded candidate data.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_career_gap_vapi_vars
+
+        profile_a = {
+            "experience": [
+                {"title": "Dev", "company": "X", "start_date": "2020-01-01", "end_date": "2021-06-30"},
+                {"title": "Sr Dev", "company": "Y", "start_date": "2022-06-01", "end_date": ""},
+            ]
+        }
+        profile_b = {
+            "experience": [
+                {"title": "Analyst", "company": "P", "start_date": "2019-01-01", "end_date": "2020-03-31"},
+                {"title": "Sr Analyst", "company": "Q", "start_date": "2021-01-01", "end_date": ""},
+            ]
+        }
+        result_a = _build_career_gap_vapi_vars(profile_a)
+        result_b = _build_career_gap_vapi_vars(profile_b)
+
+        assert result_a["career_gap_detected"] is True
+        assert result_b["career_gap_detected"] is True
+        # Dates must differ between the two candidates
+        assert result_a["career_gap_start"] != result_b["career_gap_start"]
+        assert result_a["career_gap_end"] != result_b["career_gap_end"]

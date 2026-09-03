@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
+﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -430,6 +430,33 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
     return json.loads(raw)
 
 
+def _build_career_gap_vapi_vars(profile: dict) -> dict:
+    """
+    Derive career-gap VAPI variables from the candidate profile.
+    Returns the four variables expected by the VAPI assistant:
+      career_gap_detected, career_gap_start, career_gap_end, career_gap_context
+    """
+    gap = _detect_employment_gap(profile)
+    if not gap:
+        return {
+            "career_gap_detected": False,
+            "career_gap_start": "",
+            "career_gap_end": "",
+            "career_gap_context": "",
+        }
+    return {
+        "career_gap_detected": True,
+        "career_gap_start": gap["previous_end_label"],
+        "career_gap_end": gap["current_start_label"],
+        "career_gap_context": (
+            f"Gap between {gap['previous_label']} "
+            f"(ended {gap['previous_end_label']}) and "
+            f"{gap['current_label']} "
+            f"(started {gap['current_start_label']})"
+        ),
+    }
+
+
 def _normalize_for_frontend(c: dict) -> dict:
     """Map DB candidate row → Eve frontend profile shape."""
     work_exp = _sort_experience_for_display(c.get("work_experience") or [])
@@ -514,6 +541,11 @@ def _normalize_for_frontend(c: dict) -> dict:
     }
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
+
+    # Career-gap VAPI variables - derived dynamically from parsed experience
+    gap_vars = _build_career_gap_vapi_vars({**c, "experience": experience, "raw_data": raw_data})
+    profile.update(gap_vars)
+
     return profile
 
 

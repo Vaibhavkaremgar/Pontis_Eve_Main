@@ -64,6 +64,10 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
       voice_intake_missing_topics: missingTopics,
       voice_intake_answers: completedQA,
       voice_intake_current_question: currentQuestion,
+      career_gap_detected: p.career_gap_detected === true,
+      career_gap_start: p.career_gap_start || "",
+      career_gap_end: p.career_gap_end || "",
+      career_gap_context: p.career_gap_context || "",
     },
     metadata: {
       candidateId: candidateId || "",
