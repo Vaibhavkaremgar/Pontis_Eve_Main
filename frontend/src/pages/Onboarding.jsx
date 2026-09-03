@@ -871,10 +871,10 @@ export default function Onboarding() {
       console.error("resume parse failed", err);
       const detail =
         err?.response?.data?.detail ||
-        "Couldn't read that PDF. You can retry, or continue with defaults.";
+        "Couldn't read that PDF. Please try again.";
       setParsingError(detail);
-      setTimeout(() => setParsingReady(true), 2000);
-      toast.error("Resume parse failed — using defaults");
+      setParsingReady(false);
+      return false;
     }
   }, [resumeFile, certsFiles, candidateId, phone.formatted]);
 

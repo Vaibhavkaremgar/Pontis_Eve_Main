@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
 import uuid
 from datetime import datetime, timezone
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
 import pypdf
 import io
 import asyncio
@@ -417,17 +417,24 @@ Return only the JSON object, no markdown, no explanation."""
 
 
 async def _parse_resume_with_llm(resume_text: str) -> dict:
-    resp = await openai_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": PARSE_SYSTEM},
-            {"role": "user", "content": resume_text[:12000]},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    raw = resp.choices[0].message.content or "{}"
-    return json.loads(raw)
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": PARSE_SYSTEM},
+                {"role": "user", "content": resume_text[:12000]},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or "{}"
+        return json.loads(raw)
+    except OpenAIRateLimitError as exc:
+        logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
+        raise HTTPException(
+            status_code=429,
+            detail="Resume parsing is temporarily unavailable due to high demand. Please try again in a moment.",
+        ) from exc
 
 
 def _build_career_gap_vapi_vars(profile: dict) -> dict:

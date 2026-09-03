@@ -534,3 +534,76 @@ describe("Resume upload — email/mobile mismatch regression", () => {
     unmount();
   });
 });
+
+/* ---------- Regression tests: parse/429 failure — must not advance ---------- */
+
+describe("Resume upload — parse/429 failure regression", () => {
+  const LOGIN_EMAIL = "alice@example.com";
+  const LOGIN_PHONE_DIGITS = "8005551234";
+
+  function seedStep2() {
+    saveOnboardingState({
+      step: 2,
+      linkedInAuthenticated: true,
+      linkedInProfile: { email: LOGIN_EMAIL },
+      candidateId: null,
+      phoneDigits: LOGIN_PHONE_DIGITS,
+      countryCode: "US",
+    });
+  }
+
+  async function renderAndSubmit() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+    act(() => { root.render(<Onboarding />); });
+
+    await waitForElement(container, '[data-testid="onboarding-step-2"]');
+
+    const input = container.querySelector('[data-testid="onboarding-resume-input"]');
+    const file = new File(["pdf"], "resume.pdf", { type: "application/pdf" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+
+    const continueBtn = container.querySelector('[data-testid="onboarding-continue-upload"]');
+    await act(async () => { continueBtn.click(); });
+    for (let i = 0; i < 15; i++) await act(async () => { await Promise.resolve(); });
+
+    return {
+      container,
+      unmount() { act(() => { root.unmount(); }); container.remove(); },
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => { document.body.innerHTML = ""; });
+
+  it("6. 429 rate-limit error → stays on step 2, does not advance", async () => {
+    mockAxios.post.mockRejectedValue({
+      response: {
+        status: 429,
+        data: { detail: "Resume parsing is temporarily unavailable due to high demand. Please try again in a moment." },
+      },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    unmount();
+  });
+
+  it("7. generic parse failure → stays on step 2, does not advance", async () => {
+    mockAxios.post.mockRejectedValue(new Error("Network Error"));
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    unmount();
+  });
+});

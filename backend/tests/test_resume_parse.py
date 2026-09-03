@@ -1,6 +1,7 @@
 """Backend tests for the /api/onboarding/parse-resume endpoint (with OCR fallback)."""
 import io
 import os
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import requests
@@ -144,3 +145,23 @@ def test_image_pdf_triggers_ocr_fallback():
     data = r.json()
     assert "_meta" in data
     assert data["_meta"].get("used_ocr") is True, f"Expected OCR fallback, meta={data.get('_meta')}"
+
+
+# --- Unit test: Groq 429 rate-limit → endpoint returns 429, not 500 ---
+@pytest.mark.asyncio
+async def test_parse_resume_llm_rate_limit_returns_429():
+    """_parse_resume_with_llm must raise HTTPException(429) on RateLimitError,
+    so the endpoint returns 429 instead of an unhandled 500."""
+    from openai import RateLimitError
+    from fastapi import HTTPException
+    import server
+
+    fake_response = type("R", (), {"status_code": 429, "headers": {}, "text": "rate limited"})()
+    rate_limit_exc = RateLimitError("rate limited", response=fake_response, body=None)
+
+    with patch.object(server.openai_client.chat.completions, "create", new=AsyncMock(side_effect=rate_limit_exc)):
+        with pytest.raises(HTTPException) as exc_info:
+            await server._parse_resume_with_llm("some resume text")
+
+    assert exc_info.value.status_code == 429
+    assert "temporarily unavailable" in exc_info.value.detail.lower() or "rate" in exc_info.value.detail.lower()
