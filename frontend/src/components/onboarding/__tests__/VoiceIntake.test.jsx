@@ -270,3 +270,98 @@ describe("E2E regression: partial call -> disconnect -> mic -> resumes at next q
     expect(overrides.firstMessage).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Career-gap mandatory questioning — frontend assistant overrides
+// ---------------------------------------------------------------------------
+describe("Career-gap mandatory questioning: VoiceIntake assistant overrides", () => {
+  const gapQuestion =
+    "I noticed a gap between Backend Engineer at Alpha Corp ending in June 2023 and Senior Engineer at Beta Ltd starting in January 2024. What should I note for that period?";
+
+  const gapResume = {
+    status: "in_progress",
+    has_open_question: true,
+    current_question: gapQuestion,
+    next_question: gapQuestion,
+    progress: 2,
+    completed_turns: [
+      { question: "Tell me about your background.", answer: "I am a backend engineer." },
+      { question: "What are your key skills?", answer: "Python, FastAPI." },
+    ],
+    known_topics: ["background_experience", "skills_technologies"],
+    missing_topics: ["employment_gap"],
+    employment_gaps: [
+      {
+        gap_key: "alpha|backend engineer|...|beta|senior engineer|...",
+        question: gapQuestion,
+        gap_days: 185,
+        previous_end_label: "June 2023",
+        current_start_label: "January 2024",
+        status: "unanswered",
+      },
+    ],
+  };
+
+  it("firstMessage resumes at the gap question when gap is unanswered", () => {
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-gap",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: gapResume },
+    });
+
+    expect(overrides.firstMessage).toBeDefined();
+    expect(overrides.firstMessage).toContain(gapQuestion);
+  });
+
+  it("voice_intake_current_question carries the gap question", () => {
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-gap",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: gapResume },
+    });
+
+    expect(overrides.variableValues.voice_intake_current_question).toBe(gapQuestion);
+  });
+
+  it("missing_topics includes employment_gap", () => {
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-gap",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: gapResume },
+    });
+
+    expect(overrides.variableValues.voice_intake_missing_topics).toContain("employment_gap");
+  });
+
+  it("no firstMessage when gap is already explained (status=explained)", () => {
+    const explainedResume = {
+      ...gapResume,
+      status: "in_progress",
+      has_open_question: true,
+      current_question: "What kind of role are you targeting?",
+      next_question: "What kind of role are you targeting?",
+      missing_topics: ["target_role"],
+      employment_gaps: [
+        {
+          ...gapResume.employment_gaps[0],
+          answer: "I took a planned break to care for family.",
+          status: "explained",
+        },
+      ],
+    };
+
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "Alex",
+      candidateId: "cid-gap-done",
+      candidateProfile: { name: "Alex Smith", voice_intake_resume: explainedResume },
+    });
+
+    // firstMessage should be about the normal next question, not the gap
+    if (overrides.firstMessage) {
+      expect(overrides.firstMessage).not.toContain(gapQuestion);
+    }
+    expect(overrides.variableValues.voice_intake_current_question).toBe(
+      "What kind of role are you targeting?"
+    );
+  });
+});

@@ -3878,3 +3878,470 @@ class TestDetectEmploymentGapNameError:
         assert len(merged) == 1
         dates = merged[0].get("dates") or ""
         assert dates.count("Present") <= 1, f"'Present — Present' found in dates: {dates!r}"
+
+
+# ─────────────────────────────────────────────
+# Career-gap mandatory questioning tests
+# ─────────────────────────────────────────────
+
+class TestCareerGapMandatory:
+    """
+    Tests for mandatory career-gap questioning in Voice Intake.
+
+    Requirements:
+    - Gaps detected from resume are persisted as unanswered.
+    - Gap question is mandatory: injected even when other questions are pending.
+    - Disconnect before answering: gap persisted as unanswered, resume resumes from gap.
+    - After answering: gap marked explained, normal flow continues.
+    - Does not depend on 75% profile score.
+    """
+
+    GAP_PROFILE = {
+        "experience": [
+            {
+                "title": "Backend Engineer",
+                "company": "Alpha Corp",
+                "start_date": "2022-01-01",
+                "end_date": "2023-06-30",
+            },
+            {
+                "title": "Senior Engineer",
+                "company": "Beta Ltd",
+                "start_date": "2024-01-01",
+                "end_date": "",
+            },
+        ],
+    }
+
+    def _gap(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+        return _detect_employment_gap(self.GAP_PROFILE)
+
+    # ── 1. Gap detection ────────────────────────────────────────────────────
+
+    def test_gap_detected_from_resume_experience(self):
+        """_detect_employment_gap returns a gap for a 6-month career break."""
+        gap = self._gap()
+        assert gap is not None
+        assert "gap_key" in gap
+        assert "question" in gap
+        assert gap["gap_days"] >= 30
+
+    def test_gap_question_references_dates(self):
+        """Gap question must mention the end date of the previous role and start of next."""
+        gap = self._gap()
+        assert gap is not None
+        # June 2023 end, January 2024 start
+        assert "2023" in gap["question"] or "June" in gap["question"]
+        assert "2024" in gap["question"] or "January" in gap["question"]
+
+    def test_no_gap_when_roles_overlap(self):
+        """No gap detected when roles overlap."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {"title": "Eng", "company": "A", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Sr Eng", "company": "B", "start_date": "2023-05-01", "end_date": ""},
+            ]
+        }
+        assert _detect_employment_gap(profile) is None
+
+    def test_no_gap_for_short_break_under_30_days(self):
+        """Gaps shorter than 30 days are not flagged."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        profile = {
+            "experience": [
+                {"title": "Eng", "company": "A", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Sr Eng", "company": "B", "start_date": "2023-07-15", "end_date": ""},
+            ]
+        }
+        assert _detect_employment_gap(profile) is None
+
+    # ── 2. Mandatory gap question injection ─────────────────────────────────
+
+    def test_gap_question_injected_even_when_other_questions_pending(self):
+        """
+        Gap question must become current_question even when other intake questions
+        are already pending — it is mandatory and takes priority.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        # Existing resume has a normal pending question
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 1,
+            "completed_turns": [
+                {"question": "Tell me about your background.", "answer": "I am a backend engineer."},
+            ],
+            "current_question": "What are your key skills?",
+            "next_question": "What kind of role are you targeting?",
+            "missing_topics": ["skills_technologies", "target_role"],
+            "known_topics": ["background_experience"],
+        }
+
+        resume = _build_voice_intake_resume_from_notes(
+            [], "", existing_resume, candidate_profile=self.GAP_PROFILE
+        )
+
+        # Gap question must override current_question
+        assert resume["current_question"] == gap["question"]
+        assert resume["status"] == "in_progress"
+        assert "employment_gap" in (resume.get("missing_topics") or [])
+
+    def test_gap_persisted_as_unanswered_in_employment_gaps(self):
+        """
+        When a gap is detected and no answer exists, it must be persisted
+        with status='unanswered' in employment_gaps.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        resume = _build_voice_intake_resume_from_notes(
+            [], "", None, candidate_profile=self.GAP_PROFILE
+        )
+
+        gaps = resume.get("employment_gaps") or []
+        assert len(gaps) == 1
+        assert gaps[0]["gap_key"] == gap["gap_key"]
+        assert gaps[0]["status"] == "unanswered"
+        assert gaps[0]["question"] == gap["question"]
+
+    def test_gap_question_mandatory_regardless_of_profile_score(self):
+        """
+        Gap question must be injected regardless of profile completeness.
+        A fully-answered intake that still has an unanswered gap must surface it.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap, VOICE_INTAKE_TOPICS
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        # Simulate all normal topics answered (would be "completed" without gap)
+        all_turns = [
+            {"question": f"Q{i}", "answer": f"A{i}"}
+            for i in range(len(VOICE_INTAKE_TOPICS))
+        ]
+        existing_resume = {
+            "status": "in_progress",
+            "progress": len(VOICE_INTAKE_TOPICS),
+            "completed_turns": all_turns,
+            "current_question": None,
+            "next_question": None,
+            "missing_topics": [],
+            "known_topics": list(VOICE_INTAKE_TOPICS),
+        }
+
+        resume = _build_voice_intake_resume_from_notes(
+            [], "", existing_resume, candidate_profile=self.GAP_PROFILE
+        )
+
+        # Must not be completed — gap is still unanswered
+        assert resume["status"] == "in_progress"
+        assert resume["current_question"] == gap["question"]
+
+    # ── 3. Disconnect before answering gap ──────────────────────────────────
+
+    def test_disconnect_before_gap_answer_persists_unanswered(self):
+        """
+        If candidate disconnects before answering the gap question,
+        the gap must remain with status='unanswered'.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        # Gap question was asked but candidate disconnected (no user answer)
+        notes = [
+            {"role": "assistant", "text": gap["question"], "final": True},
+            # no user answer — disconnect
+        ]
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 0,
+            "completed_turns": [],
+            "employment_gaps": [
+                {
+                    "gap_key": gap["gap_key"],
+                    "question": gap["question"],
+                    "gap_days": gap["gap_days"],
+                    "previous_label": gap["previous_label"],
+                    "current_label": gap["current_label"],
+                    "previous_end_label": gap["previous_end_label"],
+                    "current_start_label": gap["current_start_label"],
+                    "status": "unanswered",
+                }
+            ],
+        }
+
+        resume = _build_voice_intake_resume_from_notes(
+            notes, "", existing_resume, candidate_profile=self.GAP_PROFILE
+        )
+
+        gaps = resume.get("employment_gaps") or []
+        assert len(gaps) == 1
+        assert gaps[0]["status"] == "unanswered"
+        assert not gaps[0].get("answer")
+        # Gap question must still be current_question
+        assert resume["current_question"] == gap["question"]
+
+    def test_resume_from_unanswered_gap_on_return(self):
+        """
+        When candidate returns (new session, empty voice_notes),
+        Voice Intake must resume from the unanswered gap question.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        persisted = {
+            "status": "in_progress",
+            "progress": 2,
+            "completed_turns": [
+                {"question": "Tell me about your background.", "answer": "I am a backend engineer."},
+                {"question": "What are your key skills?", "answer": "Python, FastAPI."},
+            ],
+            "current_question": gap["question"],
+            "next_question": "",
+            "employment_gaps": [
+                {
+                    "gap_key": gap["gap_key"],
+                    "question": gap["question"],
+                    "gap_days": gap["gap_days"],
+                    "previous_label": gap["previous_label"],
+                    "current_label": gap["current_label"],
+                    "previous_end_label": gap["previous_end_label"],
+                    "current_start_label": gap["current_start_label"],
+                    "status": "unanswered",
+                }
+            ],
+            "missing_topics": ["employment_gap"],
+            "known_topics": ["background_experience", "skills_technologies"],
+        }
+
+        # New session — no new voice_notes
+        resume = _build_voice_intake_resume_from_notes(
+            [], "", persisted, candidate_profile=self.GAP_PROFILE
+        )
+
+        assert resume["status"] == "in_progress"
+        assert resume["current_question"] == gap["question"]
+        gaps = resume.get("employment_gaps") or []
+        assert gaps[0]["status"] == "unanswered"
+
+    # ── 4. Answering the gap marks it explained ──────────────────────────────
+
+    def test_answering_gap_marks_it_explained_and_continues_flow(self):
+        """
+        When the candidate answers the gap question, the gap must be marked
+        'explained' and Voice Intake must continue with the normal flow.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        notes = [
+            {"role": "assistant", "text": gap["question"], "final": True},
+            {"role": "user", "text": "I took a planned break to care for family.", "final": True},
+        ]
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 0,
+            "completed_turns": [],
+            "current_question": gap["question"],
+            "employment_gaps": [
+                {
+                    "gap_key": gap["gap_key"],
+                    "question": gap["question"],
+                    "gap_days": gap["gap_days"],
+                    "previous_label": gap["previous_label"],
+                    "current_label": gap["current_label"],
+                    "previous_end_label": gap["previous_end_label"],
+                    "current_start_label": gap["current_start_label"],
+                    "status": "unanswered",
+                }
+            ],
+            "missing_topics": ["employment_gap"],
+            "known_topics": [],
+        }
+
+        resume = _build_voice_intake_resume_from_notes(
+            notes, "", existing_resume, candidate_profile=self.GAP_PROFILE
+        )
+
+        gaps = resume.get("employment_gaps") or []
+        assert len(gaps) == 1
+        assert gaps[0]["status"] == "explained"
+        assert gaps[0]["answer"] == "I took a planned break to care for family."
+        # Gap question must no longer be current_question
+        assert resume.get("current_question") != gap["question"]
+
+    def test_explained_gap_not_re_asked(self):
+        """Once a gap is explained, _detect_employment_gap returns None for that profile."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _detect_employment_gap
+
+        gap_first = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap_first is not None
+
+        answered_profile = {
+            **self.GAP_PROFILE,
+            "raw_data": {
+                "voice_intake": {
+                    "employment_gaps": [
+                        {
+                            "gap_key": gap_first["gap_key"],
+                            "question": gap_first["question"],
+                            "answer": "I took a planned break to care for family.",
+                            "status": "explained",
+                        }
+                    ]
+                }
+            },
+        }
+        assert _detect_employment_gap(answered_profile) is None
+
+    # ── 5. Gap persistence fields ────────────────────────────────────────────
+
+    def test_gap_record_contains_required_fields(self):
+        """Each gap record must contain dates, question, explanation, and status."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes, _detect_employment_gap
+
+        gap = _detect_employment_gap(self.GAP_PROFILE)
+        assert gap is not None
+
+        resume = _build_voice_intake_resume_from_notes(
+            [], "", None, candidate_profile=self.GAP_PROFILE
+        )
+
+        gaps = resume.get("employment_gaps") or []
+        assert len(gaps) == 1
+        g = gaps[0]
+        assert g.get("gap_key")
+        assert g.get("question")
+        assert g.get("previous_end_label")
+        assert g.get("current_start_label")
+        assert g.get("gap_days", 0) >= 30
+        assert g.get("status") == "unanswered"
+
+    # ── 6. Integration: gap seeding after resume parse ───────────────────────
+
+    def test_seed_employment_gaps_after_parse_persists_unanswered(self, monkeypatch):
+        """
+        _seed_employment_gaps_after_parse must write an unanswered gap record
+        into raw_data.voice_intake.employment_gaps when a gap is detected.
+        """
+        import sys, os, asyncio
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = {"raw_data": {}}
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self._row = row
+            def fetchone(self):
+                return self._row
+
+        class FakeSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def execute(self_inner, statement, params=None):
+                sql = str(statement)
+                if "SELECT raw_data" in sql:
+                    return FakeResult((state["raw_data"],))
+                if "UPDATE candidates SET" in sql:
+                    state["raw_data"] = json.loads(params["rd"])
+                    return FakeResult()
+                return FakeResult()
+            async def commit(self): return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        parsed = {
+            "work_experience": [
+                {"title": "Backend Engineer", "company": "Alpha", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Senior Engineer", "company": "Beta", "start_date": "2024-01-01", "end_date": ""},
+            ]
+        }
+
+        asyncio.run(server._seed_employment_gaps_after_parse("cid-test", parsed))
+
+        vi = state["raw_data"].get("voice_intake") or {}
+        gaps = vi.get("employment_gaps") or []
+        assert len(gaps) == 1
+        assert gaps[0]["status"] == "unanswered"
+        assert gaps[0]["gap_key"]
+
+    def test_seed_employment_gaps_idempotent(self, monkeypatch):
+        """Calling _seed_employment_gaps_after_parse twice must not duplicate gaps."""
+        import sys, os, asyncio
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        state = {"raw_data": {}}
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self._row = row
+            def fetchone(self):
+                return self._row
+
+        class FakeSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def execute(self_inner, statement, params=None):
+                sql = str(statement)
+                if "SELECT raw_data" in sql:
+                    return FakeResult((state["raw_data"],))
+                if "UPDATE candidates SET" in sql:
+                    state["raw_data"] = json.loads(params["rd"])
+                    return FakeResult()
+                return FakeResult()
+            async def commit(self): return None
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+
+        parsed = {
+            "work_experience": [
+                {"title": "Backend Engineer", "company": "Alpha", "start_date": "2022-01-01", "end_date": "2023-06-30"},
+                {"title": "Senior Engineer", "company": "Beta", "start_date": "2024-01-01", "end_date": ""},
+            ]
+        }
+
+        asyncio.run(server._seed_employment_gaps_after_parse("cid-test", parsed))
+        asyncio.run(server._seed_employment_gaps_after_parse("cid-test", parsed))
+
+        vi = state["raw_data"].get("voice_intake") or {}
+        gaps = vi.get("employment_gaps") or []
+        assert len(gaps) == 1

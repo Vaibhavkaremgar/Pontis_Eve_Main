@@ -2411,38 +2411,42 @@ def _build_voice_intake_resume_from_notes(
                     current_question = None
                 if _normalize_profile_key(next_question or "") == _normalize_profile_key(matched_gap_question):
                     next_question = ""
-            elif not current_question and not next_question:
+                # Mark gap as explained in employment_gaps list
+                if existing_gap:
+                    existing_gap["status"] = "explained"
+            else:
+                # Gap is unanswered — mandatory: override current/next question
                 is_completed = False
-                next_question = employment_gap["question"]
+                gap_q = employment_gap["question"]
                 missing_topics = _merge_voice_intake_topic_list(missing_topics, ["employment_gap"])
                 if existing_gap:
-                    existing_gap["question"] = employment_gap["question"]
+                    existing_gap["question"] = gap_q
                     existing_gap["gap_days"] = employment_gap["gap_days"]
                     existing_gap["previous_label"] = employment_gap["previous_label"]
                     existing_gap["current_label"] = employment_gap["current_label"]
                     existing_gap["previous_end_label"] = employment_gap["previous_end_label"]
                     existing_gap["current_start_label"] = employment_gap["current_start_label"]
+                    existing_gap.setdefault("status", "unanswered")
+                    answered_text = completed_turn_answers.get(_normalize_profile_key(gap_q))
+                    if answered_text:
+                        existing_gap["answer"] = answered_text
+                        existing_gap["status"] = "explained"
+                        employment_gap = None
                 else:
                     employment_gaps.append({
                         "gap_key": employment_gap["gap_key"],
-                        "question": employment_gap["question"],
+                        "question": gap_q,
                         "gap_days": employment_gap["gap_days"],
                         "previous_label": employment_gap["previous_label"],
                         "current_label": employment_gap["current_label"],
                         "previous_end_label": employment_gap["previous_end_label"],
                         "current_start_label": employment_gap["current_start_label"],
+                        "status": "unanswered",
                     })
-            elif existing_gap:
-                existing_gap["question"] = employment_gap["question"]
-                existing_gap["gap_days"] = employment_gap["gap_days"]
-                existing_gap["previous_label"] = employment_gap["previous_label"]
-                existing_gap["current_label"] = employment_gap["current_label"]
-                existing_gap["previous_end_label"] = employment_gap["previous_end_label"]
-                existing_gap["current_start_label"] = employment_gap["current_start_label"]
-                answered_text = completed_turn_answers.get(_normalize_profile_key(existing_gap.get("question")))
-                if answered_text:
-                    existing_gap["answer"] = answered_text
-                    employment_gap = None
+                # Mandatory: gap question takes priority over any other question
+                if employment_gap is not None:
+                    current_question = gap_q
+                    next_question = ""
 
     status = "completed" if is_completed else "in_progress"
     if is_completed:
@@ -2926,11 +2930,70 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
         cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, force_new=True)
 
     asyncio.ensure_future(_trigger_matching(cid))
+    asyncio.ensure_future(_seed_employment_gaps_after_parse(cid, parsed))
 
     profile = _normalize_for_frontend({**parsed, "id": cid})
     profile["_meta"] = {"used_ocr": used_ocr}
     profile["candidate_token"] = _issue_candidate_session_token(cid)
     return profile
+
+
+async def _seed_employment_gaps_after_parse(candidate_id: str, parsed: dict) -> None:
+    """Detect career gaps from parsed resume and persist them as unanswered in voice_intake."""
+    profile_for_gap = {
+        "experience": [
+            {
+                "title": w.get("title", ""),
+                "company": w.get("company", ""),
+                "start_date": w.get("start_date", ""),
+                "end_date": w.get("end_date", ""),
+            }
+            for w in (parsed.get("work_experience") or [])
+        ]
+    }
+    gap = _detect_employment_gap(profile_for_gap)
+    if not gap:
+        return
+    try:
+        async with SessionLocal() as db:
+            row = await db.execute(
+                text("SELECT raw_data FROM candidates WHERE id = :cid LIMIT 1"),
+                {"cid": candidate_id},
+            )
+            result = row.fetchone()
+        if not result:
+            return
+        raw_data = _parse_raw_data(result[0])
+        voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+        existing_gaps = voice_intake.get("employment_gaps") or []
+        already = any(
+            _normalize_profile_key(g.get("gap_key")) == _normalize_profile_key(gap["gap_key"])
+            for g in existing_gaps
+            if isinstance(g, dict)
+        )
+        if already:
+            return
+        existing_gaps.append({
+            "gap_key": gap["gap_key"],
+            "question": gap["question"],
+            "gap_days": gap["gap_days"],
+            "previous_label": gap["previous_label"],
+            "current_label": gap["current_label"],
+            "previous_end_label": gap["previous_end_label"],
+            "current_start_label": gap["current_start_label"],
+            "status": "unanswered",
+        })
+        voice_intake["employment_gaps"] = existing_gaps
+        raw_data["voice_intake"] = voice_intake
+        async with SessionLocal() as db:
+            await db.execute(
+                text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
+                {"rd": json.dumps(raw_data), "cid": candidate_id},
+            )
+            await db.commit()
+        logger.info("[gap-seed] seeded unanswered gap for candidate %s", candidate_id)
+    except Exception as exc:
+        logger.warning("[gap-seed] failed for candidate %s: %s", candidate_id, exc)
 
 
 @api_router.post("/candidate/{candidate_id}/photo")
