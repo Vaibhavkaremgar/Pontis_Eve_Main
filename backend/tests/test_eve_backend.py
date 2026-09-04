@@ -861,3 +861,108 @@ def test_dismiss_job_persists_hidden_reason(monkeypatch):
     )
     assert "hidden_reason" in update_sql
     assert update_params["reason"] == "Salary is too low"
+
+
+# ---------------------------------------------------------------------------
+# Regression: resume replacement must not overwrite original name/email in DB
+# ---------------------------------------------------------------------------
+
+def test_upsert_candidate_preserves_name_email_on_resume_replace(monkeypatch):
+    """
+    When existing_id is provided (resume replace flow), _upsert_candidate must
+    keep the original name and email from the DB row, not the parsed resume values.
+    """
+    import sys
+    import os
+    import asyncio
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    import server
+
+    executed_updates = []
+
+    class FakeResult:
+        def __init__(self, rows=None):
+            self._rows = rows or []
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def mappings(self):
+            return self
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            p = params or {}
+            # Candidate exists check
+            if "SELECT 1 FROM candidates WHERE id" in sql:
+                return FakeResult([{"1": 1}])
+            # Original identity fetch
+            if "SELECT name, email FROM candidates" in sql:
+                return FakeResult([("Alice Original", "alice@original.com")])
+            # raw_data fetch
+            if "SELECT raw_data FROM candidates" in sql:
+                return FakeResult([('{"certifications": []}',)])
+            # internal_candidate_resumes check
+            if "SELECT id FROM internal_candidate_resumes" in sql:
+                return FakeResult([{"id": "res-1"}])
+            # Capture the UPDATE
+            if "UPDATE candidates SET" in sql:
+                executed_updates.append(p)
+            return FakeResult()
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+    # Stub file I/O
+    monkeypatch.setattr(server, "DOCS_DIR", type("P", (), {
+        "__truediv__": lambda self, other: type("P", (), {
+            "__truediv__": lambda s, o: type("P", (), {
+                "mkdir": lambda *a, **kw: None,
+                "__truediv__": lambda s2, o2: type("P", (), {
+                    "write_bytes": lambda s3, b: None,
+                    "__str__": lambda s3: "/tmp/fake.pdf",
+                })(),
+            })(),
+        })(),
+    })())
+
+    parsed_from_new_resume = {
+        "name": "Alice Replaced",
+        "email": "alice@replaced.com",
+        "phone": "555-0000",
+        "current_role": "Engineer",
+        "current_company": "NewCo",
+        "location": "NYC",
+        "bio": "New bio",
+        "skills": [],
+        "work_experience": [],
+        "education": [],
+        "experience_years": 5,
+        "certifications": [],
+    }
+
+    asyncio.run(server._upsert_candidate(
+        parsed_from_new_resume,
+        fingerprint="abc123",
+        file_bytes=b"%PDF-fake",
+        original_filename="new_resume.pdf",
+        resume_text="some text",
+        existing_id="cand-original",
+    ))
+
+    assert executed_updates, "No UPDATE was executed"
+    update_params = executed_updates[0]
+    assert update_params["name"] == "Alice Original", (
+        f"name was overwritten to {update_params['name']!r}; expected 'Alice Original'"
+    )
+    assert update_params["email"] == "alice@original.com", (
+        f"email was overwritten to {update_params['email']!r}; expected 'alice@original.com'"
+    )

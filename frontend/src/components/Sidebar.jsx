@@ -17,12 +17,15 @@ export default function Sidebar({
   activeTab,
   setActiveTab,
   userProfile,
+  footerIdentity,
   jobsCount,
   opportunitiesCount,
   recentActivity,
   onLogout,
   onSettings,
 }) {
+  const displayName = (footerIdentity ?? userProfile).name;
+  const displayEmail = (footerIdentity ?? userProfile).email;
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef(null);
 
@@ -184,11 +187,11 @@ export default function Sidebar({
             <User className="w-[15px] h-[15px] text-[#7B6FB8]" strokeWidth={1.8} />
           </div>
           <div className="flex-1 min-w-0 text-left">
-            <p className="text-[12px] font-medium text-[#1F1F1F] truncate">
-              {userProfile.name}
+            <p data-testid="sidebar-footer-name" className="text-[12px] font-medium text-[#1F1F1F] truncate">
+              {displayName}
             </p>
-            <p className="text-[10.5px] text-[#9A9A98] truncate">
-              {userProfile.email}
+            <p data-testid="sidebar-footer-email" className="text-[10.5px] text-[#9A9A98] truncate">
+              {displayEmail}
             </p>
           </div>
           <ChevronsUpDown

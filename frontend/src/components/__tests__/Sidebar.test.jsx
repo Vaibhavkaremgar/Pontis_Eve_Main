@@ -61,7 +61,53 @@ describe("Sidebar user footer", () => {
     expect(card.textContent).toContain("jane@example.com");
   });
 
-  it("shows Settings alongside Logout and wires the callback", () => {
+  it("footer identity stays static when footerIdentity prop is provided, even if userProfile changes", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+
+    const originalIdentity = { name: "Alice Original", email: "alice@original.com" };
+
+    act(() => {
+      root.render(
+        <Sidebar
+          activeTab="documents"
+          setActiveTab={jest.fn()}
+          userProfile={originalIdentity}
+          footerIdentity={originalIdentity}
+          jobsCount={0}
+          opportunitiesCount={0}
+          recentActivity={[]}
+          onLogout={jest.fn()}
+        />
+      );
+    });
+
+    // Simulate resume replacement: userProfile updates but footerIdentity stays locked
+    act(() => {
+      root.render(
+        <Sidebar
+          activeTab="documents"
+          setActiveTab={jest.fn()}
+          userProfile={{ name: "Alice Replaced", email: "alice@replaced.com" }}
+          footerIdentity={originalIdentity}
+          jobsCount={0}
+          opportunitiesCount={0}
+          recentActivity={[]}
+          onLogout={jest.fn()}
+        />
+      );
+    });
+
+    const nameEl = container.querySelector('[data-testid="sidebar-footer-name"]');
+    const emailEl = container.querySelector('[data-testid="sidebar-footer-email"]');
+
+    expect(nameEl.textContent).toBe("Alice Original");
+    expect(emailEl.textContent).toBe("alice@original.com");
+
+    act(() => root.unmount());
+    container.remove();
+  });
     const onSettings = jest.fn();
     renderResult = renderSidebar({ onSettings });
 

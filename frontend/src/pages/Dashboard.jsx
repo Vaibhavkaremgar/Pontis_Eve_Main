@@ -100,6 +100,9 @@ function Dashboard() {
   const [userProfile, setUserProfile] = React.useState(() =>
     hydrateDisplayProfile(buildFallbackProfile(isOpenToMatches))
   );
+  // Locked on first non-empty profile load; never updated by resume replacement.
+  const footerIdentityRef = React.useRef({ name: "", email: "" });
+  const [footerIdentity, setFooterIdentity] = React.useState({ name: "", email: "" });
   const voiceIntakeResume = userProfile.voice_intake_resume;
   const voiceIntakeResumeQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
   const voiceIntakeCurrentQuestion = voiceIntakeResume?.current_question || "";
@@ -179,6 +182,11 @@ function Dashboard() {
             )
           )
         );
+        if (!footerIdentityRef.current.name && (backendProfile.name || backendProfile.email)) {
+          const locked = { name: backendProfile.name || "", email: backendProfile.email || "" };
+          footerIdentityRef.current = locked;
+          setFooterIdentity(locked);
+        }
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
@@ -611,6 +619,7 @@ function Dashboard() {
             activeTab={activeTab}
             setActiveTab={setActiveTab}
             userProfile={userProfile}
+            footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
             jobsCount={availableJobs.filter((j) => !j.viewed).length}
             opportunitiesCount={opportunitiesCount}
             recentActivity={MOCK_RECENT_ACTIVITY}

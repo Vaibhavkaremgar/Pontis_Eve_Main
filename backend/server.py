@@ -2810,7 +2810,18 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 }
             )
 
-            # UPDATE existing candidate — preserve raw_data, write all resume fields
+            # UPDATE existing candidate — preserve raw_data, write all resume fields.
+            # When replacing a resume (existing_id provided), preserve the original
+            # name and email so the sidebar footer identity stays stable.
+            existing_name_row = await db.execute(
+                text("SELECT name, email FROM candidates WHERE id = :cid LIMIT 1"),
+                {"cid": cid},
+            )
+            existing_identity = existing_name_row.fetchone()
+            preserved_name = (existing_identity[0] or "") if existing_identity else ""
+            preserved_email = (existing_identity[1] or "") if existing_identity else ""
+            update_name = preserved_name if existing_id and preserved_name else parsed.get("name", "")
+            update_email = preserved_email if existing_id and preserved_email else parsed.get("email", "")
             await db.execute(
                 text("""
                     UPDATE candidates SET
@@ -2831,8 +2842,8 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     WHERE id = :cid
                 """),
                 {
-                    "name": parsed.get("name", ""),
-                    "email": parsed.get("email", ""),
+                    "name": update_name,
+                    "email": update_email,
                     "phone": parsed.get("phone", ""),
                     "current_role": parsed.get("current_role") or parsed.get("headline", ""),
                     "current_company": parsed.get("current_company", ""),

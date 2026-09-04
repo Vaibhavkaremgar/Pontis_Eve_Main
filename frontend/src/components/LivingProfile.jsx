@@ -913,7 +913,24 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
             </div>
           </div>
         ) : (
-          <p className="text-[13px] text-[#9A9A98] font-normal">No resume on file.</p>
+          <div className="flex flex-col gap-2">
+            <p className="text-[13px] text-[#9A9A98] font-normal">No resume on file.</p>
+            <input
+              ref={resumeInputRef}
+              type="file"
+              accept=".pdf"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
+            />
+            <button
+              data-testid="upload-resume-btn"
+              onClick={() => resumeInputRef.current?.click()}
+              disabled={busy || !candidateId}
+              className="self-start text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              Upload Resume
+            </button>
+          </div>
         )}
       </div>
 
@@ -970,7 +987,17 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
             ))}
           </div>
         ) : (
-          <p className="text-[13px] text-[#9A9A98] font-normal">No certificates uploaded yet.</p>
+          <div className="flex flex-col gap-2">
+            <p className="text-[13px] text-[#9A9A98] font-normal">No certificates uploaded yet.</p>
+            <button
+              data-testid="upload-certificate-btn"
+              onClick={() => certInputRef.current?.click()}
+              disabled={busy || !candidateId}
+              className="self-start text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              Upload Certificate
+            </button>
+          </div>
         )}
         <input
           ref={certInputRef}
