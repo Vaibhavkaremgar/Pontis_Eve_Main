@@ -2712,6 +2712,62 @@ async def _get_candidate_row(candidate_id: str) -> dict:
     return dict(result)
 
 
+def _merge_resume_into_existing_profile(existing: dict, parsed: dict) -> dict:
+    """
+    Merge a freshly-parsed resume into an existing candidate profile.
+
+    Rules:
+    - Identity (name, email, phone) is ALWAYS taken from the existing DB row.
+      The parsed resume values are ignored for these three fields.
+    - Scalar profile fields (current_role, current_company, location, summary,
+      experience_years) are updated from the new resume only when the existing
+      value is empty/None.
+    - List fields (skills, work_experience, education) are merged/enriched
+      using the existing merge helpers — no duplicates, existing data preserved.
+    """
+    merged = dict(existing)
+
+    # Identity is always immutable
+    merged["name"] = existing.get("name") or ""
+    merged["email"] = existing.get("email") or ""
+    merged["phone"] = existing.get("phone") or parsed.get("phone") or ""
+
+    # Scalar enrichment: only fill if currently empty
+    for field, parsed_key in (
+        ("current_role", "current_role"),
+        ("current_role", "headline"),
+        ("current_company", "current_company"),
+        ("location", "location"),
+        ("summary", "bio"),
+        ("summary", "summary"),
+    ):
+        if not merged.get(field) and parsed.get(parsed_key):
+            merged[field] = parsed[parsed_key]
+
+    # experience_years: keep existing if set; fill from new resume otherwise
+    if merged.get("experience_years") is None and parsed.get("experience_years") is not None:
+        try:
+            merged["experience_years"] = float(parsed["experience_years"])
+        except (TypeError, ValueError):
+            pass
+
+    # Merge lists
+    merged["skills"] = _merge_skills(
+        existing.get("skills") or [],
+        parsed.get("skills") or [],
+    )
+    merged["work_experience"] = _merge_work_experience(
+        existing.get("work_experience") or [],
+        parsed.get("work_experience") or [],
+    )
+    merged["education"] = _merge_education(
+        existing.get("education") or [],
+        parsed.get("education") or [],
+    )
+
+    return merged
+
+
 async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                              original_filename: str, resume_text: str = "",
                              existing_id: Optional[str] = None,
@@ -2808,18 +2864,38 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 }
             )
 
-            # UPDATE existing candidate — preserve raw_data, write all resume fields.
-            # When replacing a resume (existing_id provided), preserve the original
-            # name and email so the sidebar footer identity stays stable.
-            existing_name_row = await db.execute(
-                text("SELECT name, email FROM candidates WHERE id = :cid LIMIT 1"),
+            # UPDATE existing candidate — merge resume into existing profile.
+            # Identity (name, email, phone) is always preserved from the DB.
+            # All other fields are merged/enriched rather than replaced.
+            existing_row_result = await db.execute(
+                text("SELECT name, email, phone, current_role, current_company, location, summary, skills, work_experience, education, experience_years FROM candidates WHERE id = :cid LIMIT 1"),
                 {"cid": cid},
             )
-            existing_identity = existing_name_row.fetchone()
-            preserved_name = (existing_identity[0] or "") if existing_identity else ""
-            preserved_email = (existing_identity[1] or "") if existing_identity else ""
-            update_name = preserved_name if existing_id and preserved_name else parsed.get("name", "")
-            update_email = preserved_email if existing_id and preserved_email else parsed.get("email", "")
+            existing_row = existing_row_result.fetchone()
+            if existing_row:
+                existing_dict = {
+                    "name": existing_row[0] or "",
+                    "email": existing_row[1] or "",
+                    "phone": existing_row[2] or "",
+                    "current_role": existing_row[3] or "",
+                    "current_company": existing_row[4] or "",
+                    "location": existing_row[5] or "",
+                    "summary": existing_row[6] or "",
+                    "skills": existing_row[7] if isinstance(existing_row[7], list) else (json.loads(existing_row[7]) if existing_row[7] else []),
+                    "work_experience": existing_row[8] if isinstance(existing_row[8], list) else (json.loads(existing_row[8]) if existing_row[8] else []),
+                    "education": existing_row[9] if isinstance(existing_row[9], list) else (json.loads(existing_row[9]) if existing_row[9] else []),
+                    "experience_years": existing_row[10],
+                    "raw_data": existing_raw_data,
+                }
+            else:
+                existing_dict = {"raw_data": existing_raw_data}
+            merged = _merge_resume_into_existing_profile(existing_dict, parsed)
+            merged_skills = _normalize_skills(merged.get("skills") or [], certifications=existing_raw_data.get("certifications") or [])
+            merged_work_exp = merged.get("work_experience") or []
+            merged_edu = merged.get("education") or []
+            existing_raw_data["certifications"] = _candidate_certification_sources(
+                {"raw_data": existing_raw_data, "parsed_resume_json": parsed}
+            )
             await db.execute(
                 text("""
                     UPDATE candidates SET
@@ -2840,18 +2916,18 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     WHERE id = :cid
                 """),
                 {
-                    "name": update_name,
-                    "email": update_email,
-                    "phone": parsed.get("phone", ""),
-                    "current_role": parsed.get("current_role") or parsed.get("headline", ""),
-                    "current_company": parsed.get("current_company", ""),
-                    "location": parsed.get("location", ""),
-                    "summary": parsed.get("bio") or parsed.get("summary", ""),
-                    "skills": skills_json,
-                    "work_experience": work_exp_json,
-                    "education": edu_json,
-                    "exp_years": parsed.get("experience_years"),
-                        "raw_data": json.dumps(existing_raw_data),
+                    "name": merged["name"],
+                    "email": merged["email"],
+                    "phone": merged["phone"],
+                    "current_role": merged.get("current_role") or "",
+                    "current_company": merged.get("current_company") or "",
+                    "location": merged.get("location") or "",
+                    "summary": merged.get("summary") or "",
+                    "skills": json.dumps(merged_skills),
+                    "work_experience": json.dumps(merged_work_exp),
+                    "education": json.dumps(merged_edu),
+                    "exp_years": merged.get("experience_years"),
+                    "raw_data": json.dumps(existing_raw_data),
                     "resume_file_path": str(dest_path),
                     "resume_text": resume_text,
                     "parsed_resume_json": json.dumps(parsed),
