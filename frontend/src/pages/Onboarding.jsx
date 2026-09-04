@@ -363,8 +363,17 @@ function VerificationErrors({ errors }) {
   if (!errors || errors.length === 0) return null;
   const emailMismatch = errors.includes("email");
   const phoneMismatch = errors.includes("phone");
+  const duplicateResume = errors.includes("duplicate_resume");
   return (
     <div className="mt-4 space-y-2" data-testid="verification-errors">
+      {duplicateResume && (
+        <p
+          className="text-[12.5px] text-[#E11D48] leading-relaxed"
+          data-testid="verification-error-duplicate-resume"
+        >
+          Duplicate resume. Please upload a different resume.
+        </p>
+      )}
       {emailMismatch && (
         <p
           className="text-[12.5px] text-[#E11D48] leading-relaxed"
@@ -869,6 +878,11 @@ export default function Onboarding() {
       setParsingReady(true);
     } catch (err) {
       console.error("resume parse failed", err);
+      if (err?.response?.status === 409) {
+        setVerificationErrors(["duplicate_resume"]);
+        setParsingReady(false);
+        return false;
+      }
       const detail =
         err?.response?.data?.detail ||
         "Couldn't read that PDF. Please try again.";

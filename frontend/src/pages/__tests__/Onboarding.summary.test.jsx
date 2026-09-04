@@ -606,4 +606,22 @@ describe("Resume upload — parse/429 failure regression", () => {
     expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
     unmount();
   });
+
+  it("8. 409 duplicate resume → error shown, stays on step 2, does not advance", async () => {
+    mockAxios.post.mockRejectedValue({
+      response: {
+        status: 409,
+        data: { detail: "Duplicate resume" },
+      },
+    });
+    seedStep2();
+    const { container, unmount } = await renderAndSubmit();
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="onboarding-step-3"]')).toBeFalsy();
+    const errEl = container.querySelector('[data-testid="verification-error-duplicate-resume"]');
+    expect(errEl).toBeTruthy();
+    expect(errEl.textContent).toContain("Duplicate resume. Please upload a different resume.");
+    unmount();
+  });
 });

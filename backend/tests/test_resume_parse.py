@@ -147,6 +147,46 @@ def test_image_pdf_triggers_ocr_fallback():
     assert data["_meta"].get("used_ocr") is True, f"Expected OCR fallback, meta={data.get('_meta')}"
 
 
+# --- Duplicate resume fingerprint → endpoint returns 409, not 500 ---
+@pytest.mark.asyncio
+async def test_duplicate_resume_returns_409():
+    """Uploading the same PDF twice (force_new path) must return HTTP 409 Conflict."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import server
+
+    fake_fingerprint = "aabbcc" * 10  # 60-char hex
+
+    # Simulate DB row found for this fingerprint
+    fake_row = MagicMock()
+    fake_result = MagicMock()
+    fake_result.fetchone.return_value = fake_row
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=fake_result)
+    fake_db.__aenter__ = AsyncMock(return_value=fake_db)
+    fake_db.__aexit__ = AsyncMock(return_value=False)
+
+    from fastapi import HTTPException
+
+    with patch.object(server, "SessionLocal", return_value=fake_db), \
+         patch("hashlib.sha256") as mock_sha, \
+         patch.object(server, "_extract_pdf_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm", new=AsyncMock(return_value={"name": "Test"})):
+        mock_sha.return_value.hexdigest.return_value = fake_fingerprint
+
+        from fastapi import UploadFile
+        import io
+        fake_file = MagicMock(spec=UploadFile)
+        fake_file.filename = "resume.pdf"
+        fake_file.read = AsyncMock(return_value=b"%PDF-1.4 fake content")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await server.parse_resume(file=fake_file, existing_id=None)
+
+    assert exc_info.value.status_code == 409
+    assert "Duplicate resume" in exc_info.value.detail
+
+
 # --- Unit test: Groq 429 rate-limit → endpoint returns 429, not 500 ---
 @pytest.mark.asyncio
 async def test_parse_resume_llm_rate_limit_returns_429():

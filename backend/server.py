@@ -2961,6 +2961,16 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
     parsed = await _parse_resume_with_llm(resume_text)
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
+    # Reject duplicate resume when creating a new candidate (force_new path).
+    if not existing_id:
+        async with SessionLocal() as _db:
+            _dup = await _db.execute(
+                text("SELECT candidate_id FROM internal_candidate_resumes WHERE resume_fingerprint = :fp LIMIT 1"),
+                {"fp": fingerprint},
+            )
+            if _dup.fetchone():
+                raise HTTPException(status_code=409, detail="Duplicate resume")
+
     # If an existing_id is provided (e.g. test candidate re-onboarding), update that record.
     # Otherwise force_new=True to create a fresh record for a genuinely new candidate.
     if existing_id:
