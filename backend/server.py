@@ -19,6 +19,7 @@ from typing import List, Literal, Optional, Any, Dict
 import uuid
 from datetime import datetime, timezone
 from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
+from groq_client import GroqClientPool, AllKeysRateLimitedError
 import pypdf
 import io
 import asyncio
@@ -50,10 +51,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-openai_client = AsyncOpenAI(
-    api_key=os.environ["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1",
-)
+openai_client = GroqClientPool(base_url="https://api.groq.com/openai/v1")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
@@ -429,7 +427,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
         )
         raw = resp.choices[0].message.content or "{}"
         return json.loads(raw)
-    except OpenAIRateLimitError as exc:
+    except (OpenAIRateLimitError, AllKeysRateLimitedError) as exc:
         logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
         raise HTTPException(
             status_code=429,
