@@ -744,18 +744,24 @@ function TrackedTab({ jobs, onTrack, onDismissJob }) {
   );
 }
 
-function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
+function _normalizeIdentity(str) {
+  return (str || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function DocumentsTab({ documents, docsLoading, candidateId, userProfile, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
   const resumeInputRef = React.useRef(null);
   const certInputRef = React.useRef(null);
   const certReplaceRefs = React.useRef({});
   const [busy, setBusy] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
   const [confirmDelete, setConfirmDelete] = React.useState(null); // { type: 'resume' } | { type: 'cert', id, filename }
+  const [identityError, setIdentityError] = React.useState(null);
 
   const viewUrl = (path) => `${API}${path}`;
 
   const handleResumeReplace = async (file) => {
     if (!file || !candidateId) return;
+    setIdentityError(null);
     setBusy(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -765,29 +771,53 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
         setDeleteError("Duplicate Upload");
         return;
       }
+
+      // Identity verification: parse resume and compare name/email
+      const verifyFd = new FormData();
+      verifyFd.append("file", file);
+      const verifyRes = await axios.post(`${API}/candidate/${candidateId}/resume/verify`, verifyFd);
+      const resumeName = _normalizeIdentity(verifyRes.data?.name);
+      const resumeEmail = _normalizeIdentity(verifyRes.data?.email);
+      const accountName = _normalizeIdentity(userProfile?.name);
+      const accountEmail = _normalizeIdentity(userProfile?.email);
+      const nameMatch = !resumeName || !accountName || resumeName === accountName;
+      const emailMatch = !resumeEmail || !accountEmail || resumeEmail === accountEmail;
+      if (!nameMatch || !emailMatch) {
+        setIdentityError("Resume name/email does not match your account details. Please upload your own resume.");
+        return;
+      }
+
       const fd = new FormData();
       fd.append("file", file);
       const res = await axios.post(`${API}/candidate/${candidateId}/resume/replace`, fd);
       onResumeReplaced(file.name, res.data?.profile ?? null);
-    } catch {
-      onResumeReplaced(file.name, null);
+    } catch (err) {
+      if (err?.response?.status === 400 || err?.response?.status === 422) {
+        setIdentityError("Could not verify resume identity. Please try again.");
+      } else {
+        onResumeReplaced(file.name, null);
+      }
     } finally {
       setBusy(false);
+      if (resumeInputRef.current) resumeInputRef.current.value = "";
     }
   };
 
-  const handleCertUpload = async (file) => {
-    if (!file || !candidateId) return;
+  const handleCertUpload = async (files) => {
+    if (!files?.length || !candidateId) return;
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await axios.post(`${API}/candidate/${candidateId}/certificates/upload`, fd);
-      onCertUploaded(res.data);
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await axios.post(`${API}/candidate/${candidateId}/certificates/upload`, fd);
+        onCertUploaded(res.data);
+      }
     } catch {
       // silent
     } finally {
       setBusy(false);
+      if (certInputRef.current) certInputRef.current.value = "";
     }
   };
 
@@ -833,6 +863,19 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
 
   return (
     <div className="space-y-8" data-testid="documents-tab-content">
+      {/* Identity mismatch warning */}
+      {identityError && (
+        <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 flex items-start justify-between gap-3">
+          <p className="text-[13px] text-red-600 font-normal">{identityError}</p>
+          <button
+            onClick={() => setIdentityError(null)}
+            className="text-red-400 hover:text-red-600 shrink-0 text-[16px] leading-none"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {/* Confirmation dialog */}
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -894,7 +937,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                 type="file"
                 accept=".pdf"
                 className="hidden"
-                onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
+                onChange={(e) => { setIdentityError(null); e.target.files?.[0] && handleResumeReplace(e.target.files[0]); }}
               />
               <button
                 onClick={() => resumeInputRef.current?.click()}
@@ -920,7 +963,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
               type="file"
               accept=".pdf"
               className="hidden"
-              onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
+              onChange={(e) => { setIdentityError(null); e.target.files?.[0] && handleResumeReplace(e.target.files[0]); }}
             />
             <button
               data-testid="upload-resume-btn"
@@ -937,8 +980,11 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
       {/* Certificates */}
       <div>
         <h3 className="text-[13px] font-medium text-[#1F1F1F] mb-3">Certificates</h3>
-        {documents.certificates.length > 0 ? (
-          <div className="space-y-1">
+        {documents.certificates.length === 0 && (
+          <p className="text-[13px] text-[#9A9A98] font-normal mb-2">No certificates uploaded yet.</p>
+        )}
+        {documents.certificates.length > 0 && (
+          <div className="space-y-1 mb-3">
             {documents.certificates.map((cert) => (
               <div
                 key={cert.id}
@@ -986,32 +1032,22 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
               </div>
             ))}
           </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <p className="text-[13px] text-[#9A9A98] font-normal">No certificates uploaded yet.</p>
-            <button
-              data-testid="upload-certificate-btn"
-              onClick={() => certInputRef.current?.click()}
-              disabled={busy || !candidateId}
-              className="self-start text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
-            >
-              Upload Certificate
-            </button>
-          </div>
         )}
         <input
           ref={certInputRef}
           type="file"
           accept=".pdf,.png,.jpg,.jpeg"
+          multiple
           className="hidden"
-          onChange={(e) => e.target.files?.[0] && handleCertUpload(e.target.files[0])}
+          onChange={(e) => e.target.files?.length && handleCertUpload(Array.from(e.target.files))}
         />
         <button
+          data-testid="add-certificate-btn"
           onClick={() => certInputRef.current?.click()}
           disabled={busy || !candidateId}
-          className="mt-3 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+          className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
         >
-          + Add certificate
+          + Add Certificate
         </button>
       </div>
     </div>
@@ -1483,6 +1519,7 @@ export default function LivingProfile({
               documents={documents}
               docsLoading={docsLoading}
               candidateId={candidateId}
+              userProfile={userProfile}
               onResumeReplaced={onResumeReplaced}
               onCertUploaded={onCertUploaded}
               onCertReplaced={onCertReplaced}

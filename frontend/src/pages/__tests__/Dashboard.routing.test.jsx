@@ -1256,3 +1256,238 @@ describe("Dashboard mic — returning candidate behavior", () => {
     expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.current_question).not.toBe("");
   });
 });
+
+describe("Maybe Later → Chat with Eve regression tests", () => {
+  let renderResult;
+
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    lastLivingProfileProps = null;
+    mockVoiceIntakeOnComplete = null;
+    capturedVoiceIntakeCandidateProfile = null;
+    jest.useFakeTimers();
+    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true });
+  });
+
+  afterEach(() => {
+    jest.runAllTimers();
+    jest.useRealTimers();
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("Maybe Later → Chat with Eve tab shows ChatHub, not VoiceIntake", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    // Wait for initial render and popup timer
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+
+    // Dismiss popup with Maybe Later
+    const dismissBtn = renderResult.container.querySelector('[data-testid="weak-profile-dismiss-btn"]');
+    expect(dismissBtn).not.toBeNull();
+    act(() => { dismissBtn.click(); });
+
+    // Navigate to Chat with Eve tab
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    expect(chatBtn).toBeTruthy();
+    act(() => { chatBtn.click(); });
+
+    // Must show ChatHub — never VoiceIntake
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("Maybe Later → Chat with Eve tab shows mic button in ChatHub", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+
+    act(() => {
+      renderResult.container.querySelector('[data-testid="weak-profile-dismiss-btn"]').click();
+    });
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    expect(renderResult.container.querySelector('[data-testid="chat-mic-btn"]')).toBeTruthy();
+  });
+
+  it("Maybe Later → Chat with Eve → mic click launches VoiceIntake", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+
+    act(() => {
+      renderResult.container.querySelector('[data-testid="weak-profile-dismiss-btn"]').click();
+    });
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    capturedVoiceIntakeCandidateProfile = null;
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="voice-intake"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeNull();
+  });
+
+  it("Maybe Later → mic → VoiceIntake completes → profile updates reflected in Profile section", async () => {
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        keySkills: ["JavaScript"],
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        keySkills: ["JavaScript"],
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 80,
+        profile_strength_label: "Strong",
+        keySkills: ["JavaScript", "React", "Node.js"],
+        bio: "Experienced full-stack developer",
+        voice_intake_resume: {
+          status: "completed",
+          has_open_question: false,
+          current_question: "",
+          next_question: "",
+        },
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+
+    act(() => {
+      renderResult.container.querySelector('[data-testid="weak-profile-dismiss-btn"]').click();
+    });
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+
+    // VoiceIntake completes with new profile data
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({
+        status: "completed",
+        profile_updates: {
+          keySkills: ["JavaScript", "React", "Node.js"],
+          bio: "Experienced full-stack developer",
+        },
+      });
+      await Promise.resolve();
+    });
+
+    // Profile section must reflect the new data from voice intake
+    await waitForCondition(
+      () =>
+        Array.isArray(lastLivingProfileProps?.userProfile?.keySkills) &&
+        lastLivingProfileProps.userProfile.keySkills.length >= 3
+    );
+    expect(lastLivingProfileProps.userProfile.keySkills).toContain("React");
+    expect(lastLivingProfileProps.userProfile.keySkills).toContain("Node.js");
+  });
+
+  it("Maybe Later → Chat tab → routing effect does not override to voice after profile refresh", async () => {
+    // Profile has no voice_intake_resume — routing effect returns null, so it must not override
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 55,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+    ]);
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+
+    act(() => {
+      renderResult.container.querySelector('[data-testid="weak-profile-dismiss-btn"]').click();
+    });
+
+    const chatBtn = Array.from(renderResult.container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Chat with Eve")
+    );
+    act(() => { chatBtn.click(); });
+
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    // Simulate a profile refresh
+    const refreshBtn = renderResult.container.querySelector('[data-testid="refresh-profile-btn"]');
+    act(() => { refreshBtn.click(); });
+    await flush();
+
+    // Must still show ChatHub — not voice-intake, not jobs-deck
+    expect(renderResult.container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
+  });
+
+  async function flush() {
+    await act(async () => { await Promise.resolve(); });
+  }
+});

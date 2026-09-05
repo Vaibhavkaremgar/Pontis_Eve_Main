@@ -147,41 +147,181 @@ def test_image_pdf_triggers_ocr_fallback():
     assert data["_meta"].get("used_ocr") is True, f"Expected OCR fallback, meta={data.get('_meta')}"
 
 
-# --- Duplicate resume fingerprint → endpoint returns 409, not 500 ---
-@pytest.mark.asyncio
-async def test_duplicate_resume_returns_409():
-    """Uploading the same PDF twice (force_new path) must return HTTP 409 Conflict."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-    import server
+# ---------------------------------------------------------------------------
+# Regression tests: mismatch-first, duplicate-after-match, normal upload
+# ---------------------------------------------------------------------------
 
-    fake_fingerprint = "aabbcc" * 10  # 60-char hex
-
-    # Simulate DB row found for this fingerprint
-    fake_row = MagicMock()
+def _make_fake_db(fetchone_return=None):
+    """Build a minimal async context-manager DB mock."""
+    from unittest.mock import AsyncMock, MagicMock
     fake_result = MagicMock()
-    fake_result.fetchone.return_value = fake_row
-
+    fake_result.fetchone.return_value = fetchone_return
     fake_db = AsyncMock()
     fake_db.execute = AsyncMock(return_value=fake_result)
     fake_db.__aenter__ = AsyncMock(return_value=fake_db)
     fake_db.__aexit__ = AsyncMock(return_value=False)
+    return fake_db
 
+
+def _make_fake_file(filename="resume.pdf", content=b"%PDF-1.4 fake"):
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import UploadFile
+    f = MagicMock(spec=UploadFile)
+    f.filename = filename
+    f.read = AsyncMock(return_value=content)
+    return f
+
+
+@pytest.mark.asyncio
+async def test_identity_mismatch_email_stops_before_duplicate_check():
+    """
+    When the resume email differs from the logged-in candidate's email,
+    a 422 must be raised immediately — duplicate-resume check must NOT run.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch, call
+    import server
     from fastapi import HTTPException
+
+    # DB row for the logged-in candidate (email mismatch)
+    id_row = MagicMock()
+    id_row.__getitem__ = lambda self, i: ("real@example.com" if i == 0 else "")
+    id_result = MagicMock()
+    id_result.fetchone.return_value = id_row
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=id_result)
+    fake_db.__aenter__ = AsyncMock(return_value=fake_db)
+    fake_db.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(server, "SessionLocal", return_value=fake_db), \
+         patch.object(server, "_extract_pdf_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm",
+                      new=AsyncMock(return_value={"name": "Other", "email": "other@example.com", "phone": ""})):
+
+        with pytest.raises(HTTPException) as exc_info:
+            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+
+    assert exc_info.value.status_code == 422
+    assert "email" in exc_info.value.detail.lower()
+    # Duplicate check (fingerprint query) must NOT have been called
+    for c in fake_db.execute.call_args_list:
+        sql = str(c)
+        assert "resume_fingerprint" not in sql, "Duplicate check ran despite identity mismatch"
+
+
+@pytest.mark.asyncio
+async def test_identity_mismatch_phone_stops_before_duplicate_check():
+    """
+    When the resume phone differs from the logged-in candidate's phone,
+    a 422 must be raised — duplicate check must NOT run.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import server
+    from fastapi import HTTPException
+
+    id_row = MagicMock()
+    id_row.__getitem__ = lambda self, i: ("" if i == 0 else "+1-555-000-0001")
+    id_result = MagicMock()
+    id_result.fetchone.return_value = id_row
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=id_result)
+    fake_db.__aenter__ = AsyncMock(return_value=fake_db)
+    fake_db.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(server, "SessionLocal", return_value=fake_db), \
+         patch.object(server, "_extract_pdf_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm",
+                      new=AsyncMock(return_value={"name": "Other", "email": "", "phone": "+1-555-999-9999"})):
+
+        with pytest.raises(HTTPException) as exc_info:
+            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+
+    assert exc_info.value.status_code == 422
+    assert "mobile" in exc_info.value.detail.lower() or "phone" in exc_info.value.detail.lower()
+    for c in fake_db.execute.call_args_list:
+        assert "resume_fingerprint" not in str(c), "Duplicate check ran despite phone mismatch"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resume_returns_409_after_identity_match():
+    """
+    When identity matches (or no existing_id), a duplicate fingerprint must
+    return HTTP 409 with the correct message.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import server
+    from fastapi import HTTPException
+
+    fake_fingerprint = "aabbcc" * 10
+
+    # First DB call (identity check for existing_id): returns matching candidate
+    id_row = MagicMock()
+    id_row.__getitem__ = lambda self, i: ("same@example.com" if i == 0 else "")
+    id_result = MagicMock()
+    id_result.fetchone.return_value = id_row
+
+    # Second DB call (fingerprint check): returns a row (duplicate found)
+    dup_row = MagicMock()
+    dup_result = MagicMock()
+    dup_result.fetchone.return_value = dup_row
+
+    call_count = 0
+
+    async def _execute_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return id_result if call_count == 1 else dup_result
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(side_effect=_execute_side_effect)
+    fake_db.__aenter__ = AsyncMock(return_value=fake_db)
+    fake_db.__aexit__ = AsyncMock(return_value=False)
 
     with patch.object(server, "SessionLocal", return_value=fake_db), \
          patch("hashlib.sha256") as mock_sha, \
          patch.object(server, "_extract_pdf_text", return_value=("enough text " * 10, False)), \
-         patch.object(server, "_parse_resume_with_llm", new=AsyncMock(return_value={"name": "Test"})):
+         patch.object(server, "_parse_resume_with_llm",
+                      new=AsyncMock(return_value={"name": "Same", "email": "same@example.com", "phone": ""})):
         mock_sha.return_value.hexdigest.return_value = fake_fingerprint
 
-        from fastapi import UploadFile
-        import io
-        fake_file = MagicMock(spec=UploadFile)
-        fake_file.filename = "resume.pdf"
-        fake_file.read = AsyncMock(return_value=b"%PDF-1.4 fake content")
+        with pytest.raises(HTTPException) as exc_info:
+            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+
+    assert exc_info.value.status_code == 409
+    assert "Duplicate resume" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_normal_upload_no_existing_id_duplicate_check_runs():
+    """
+    When no existing_id is provided (new candidate), identity check is skipped
+    and duplicate fingerprint check runs. A duplicate must return 409.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import server
+    from fastapi import HTTPException
+
+    fake_fingerprint = "ccddee" * 10
+
+    dup_row = MagicMock()
+    dup_result = MagicMock()
+    dup_result.fetchone.return_value = dup_row
+
+    fake_db = AsyncMock()
+    fake_db.execute = AsyncMock(return_value=dup_result)
+    fake_db.__aenter__ = AsyncMock(return_value=fake_db)
+    fake_db.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(server, "SessionLocal", return_value=fake_db), \
+         patch("hashlib.sha256") as mock_sha, \
+         patch.object(server, "_extract_pdf_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm",
+                      new=AsyncMock(return_value={"name": "New", "email": "new@example.com", "phone": ""})):
+        mock_sha.return_value.hexdigest.return_value = fake_fingerprint
 
         with pytest.raises(HTTPException) as exc_info:
-            await server.parse_resume(file=fake_file, existing_id=None)
+            await server.parse_resume(file=_make_fake_file(), existing_id=None)
 
     assert exc_info.value.status_code == 409
     assert "Duplicate resume" in exc_info.value.detail

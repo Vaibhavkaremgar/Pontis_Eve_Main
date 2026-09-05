@@ -762,7 +762,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
         cleaned_items = [item for item in cleaned_items if item]
         if not cleaned_items:
             return []
-        return [
+        return [ 
             ListFlowable(
                 [ListItem(p(item, bullet_style), leftIndent=6) for item in cleaned_items],
                 bulletType="bullet",
@@ -3441,6 +3441,19 @@ async def delete_resume(candidate_id: str):
     return {"status": "deleted"}
 
 
+@api_router.post("/candidate/{candidate_id}/resume/verify")
+async def verify_resume_identity(candidate_id: str, file: UploadFile = File(...)):
+    """Parse a resume PDF and return the extracted name and email for identity pre-check."""
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF resumes are supported.")
+    file_bytes = await file.read()
+    resume_text, _ = _extract_pdf_text(file_bytes)
+    if len(resume_text.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Resume appears empty or unreadable.")
+    parsed = await _parse_resume_with_llm(resume_text)
+    return {"name": parsed.get("name") or "", "email": parsed.get("email") or ""}
+
+
 @api_router.post("/candidate/{candidate_id}/resume/replace")
 async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
     await _get_candidate_row(candidate_id)
@@ -3895,23 +3908,115 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         return "No profile completion guidance available."
 
 
+# Conversational prefixes that must never appear as list items in structured fields.
+_CONVERSATIONAL_LIST_PREFIXES = re.compile(
+    r"^(?:"
+    # "These are [my] skills", "Here are the skills", "My skills", "The skills", etc.
+    r"(?:these\s+are|here\s+are)\s+(?:my\s+|the\s+|our\s+)?(?:skills?|certifications?|certificates?|preferred\s+roles?|roles?|technologies?|tools?|projects?|education|experience)\b.*"
+    r"|(?:my|the|some|a\s+few|following|listed\s+below)\s+(?:are\s+)?(?:skills?|certifications?|certificates?|preferred\s+roles?|roles?|technologies?|tools?|projects?|education|experience)\b.*"
+    r"|(?:i\s+have|i\s+hold|i\s+possess|i\s+know|i\s+use|i\s+work\s+with)\s+(?:the\s+following\s+)?(?:skills?|certifications?|tools?|technologies?)\b.*"
+    r"|(?:skills?|certifications?|certificates?|preferred\s+roles?|technologies?|tools?)\s+(?:are|include|i\s+have|i\s+know)\b.*"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_structured_list_items(items: list) -> list:
+    """
+    Remove conversational noise phrases from a list of strings.
+    Keeps only items that look like real structured data (short, no verb phrases).
+    """
+    if not isinstance(items, list):
+        return items
+    cleaned: list = []
+    for item in items:
+        if not isinstance(item, str):
+            cleaned.append(item)
+            continue
+        stripped = item.strip()
+        if not stripped:
+            continue
+        # Drop items that match conversational prefix patterns
+        if _CONVERSATIONAL_LIST_PREFIXES.match(stripped):
+            continue
+        # Drop items that are full sentences (contain a verb phrase indicating prose)
+        if re.search(
+            r"\b(?:are|is|were|was|have|has|had|include|includes|following|below|above|here|these|those|this|that)\b",
+            stripped,
+            re.IGNORECASE,
+        ) and len(stripped.split()) > 4:
+            continue
+        cleaned.append(stripped)
+    return cleaned
+
+
+def _sanitize_profile_updates(updates: dict) -> dict:
+    """
+    Validate and clean a profile_updates dict before it is applied.
+    Strips conversational noise from list fields so only real structured data is saved.
+    """
+    if not isinstance(updates, dict):
+        return {}
+    sanitized: dict = {}
+    for field, value in updates.items():
+        if field in ("skills", "certifications", "preferred_roles"):
+            if not isinstance(value, list):
+                continue
+            clean_items = _sanitize_structured_list_items(value)
+            if clean_items:
+                sanitized[field] = clean_items
+        elif field == "work_experience":
+            if not isinstance(value, list):
+                continue
+            valid_entries = [
+                entry for entry in value
+                if isinstance(entry, dict)
+                and (_normalize_profile_text(entry.get("title")) or _normalize_profile_text(entry.get("company")))
+            ]
+            if valid_entries:
+                sanitized[field] = valid_entries
+        elif field == "education":
+            if not isinstance(value, list):
+                continue
+            valid_entries = [
+                entry for entry in value
+                if isinstance(entry, dict)
+                and (_normalize_profile_text(entry.get("degree")) or _normalize_profile_text(entry.get("institution")))
+            ]
+            if valid_entries:
+                sanitized[field] = valid_entries
+        elif field == "experience_years":
+            try:
+                sanitized[field] = float(value)
+            except (TypeError, ValueError):
+                pass
+        elif value is not None:
+            sanitized[field] = value
+    return sanitized
+
+
 def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tuple[str, Optional[dict]]:
     """Split LLM reply into (clean_reply, profile_updates_dict)."""
     marker_start = "<<<PROFILE_UPDATES>>>"
     marker_end = "<<<END_UPDATES>>>"
     if marker_start not in reply_text:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
-        return reply_text.strip(), fallback_updates or None
+        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else None
+        return reply_text.strip(), sanitized or None
     parts = reply_text.split(marker_start, 1)
     clean = parts[0].strip()
     rest = parts[1].split(marker_end, 1)[0].strip()
     try:
         data = json.loads(rest)
         updates = data.get("profile_updates")
-        return clean, updates if isinstance(updates, dict) else None
+        if isinstance(updates, dict):
+            sanitized = _sanitize_profile_updates(updates)
+            return clean, sanitized or None
+        return clean, None
     except Exception:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
-        return clean, fallback_updates or None
+        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else None
+        return clean, sanitized or None
 
 
 def _split_update_list(text: str) -> list[str]:

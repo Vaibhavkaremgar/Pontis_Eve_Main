@@ -9,10 +9,8 @@ import ChatHub from "../components/ChatHub";
 import LivingProfile from "../components/LivingProfile";
 import SwipeJobDeck from "../components/SwipeJobCard";
 import CandidateSettingsModal from "../components/CandidateSettingsModal";
-import {
-  MOCK_RECENT_ACTIVITY,
-  QUICK_ACTIONS,
-} from "../mock";
+import { MOCK_RECENT_ACTIVITY } from "../mock";
+import { getDynamicChatSuggestions } from "../lib/chatSuggestions";
 import {
   isVoiceIntakeCompleteStatus,
   loadOnboardingState,
@@ -603,7 +601,10 @@ function Dashboard() {
               </button>
               <button
                 data-testid="weak-profile-dismiss-btn"
-                onClick={() => setShowWeakProfilePopup(false)}
+                onClick={() => {
+                  setShowWeakProfilePopup(false);
+                  userChoseCenterViewRef.current = true;
+                }}
                 className="flex-1 bg-black/[0.05] text-[#1F1F1F] text-[13px] font-medium rounded-full py-2.5 hover:bg-black/[0.09] transition-colors"
               >
                 Maybe later
@@ -650,7 +651,7 @@ function Dashboard() {
               <button
                 onClick={() => {
                   userChoseCenterViewRef.current = true;
-                  setCenterView(voiceIntakeInProgress || voiceIntakeCompleted ? "chat" : "voice");
+                  setCenterView("chat");
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "chat" || centerView === "voice"
@@ -725,7 +726,7 @@ function Dashboard() {
                 setInputValue={setInputValue}
                 onSend={handleSendMessage}
                 sending={sending}
-                quickActions={QUICK_ACTIONS}
+                quickActions={getDynamicChatSuggestions(userProfile)}
                 onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();
