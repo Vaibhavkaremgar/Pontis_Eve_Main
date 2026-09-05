@@ -66,7 +66,7 @@ export default function LinkedInAuth() {
 
     // Already authenticated from a previous session
     const stored = loadOnboardingState();
-    if (stored.linkedInAuthenticated && stored.candidateId) { s
+    if (stored.linkedInAuthenticated && stored.candidateId) { 
       navigate("/dashboard", { replace: true });
     } else if (stored.linkedInAuthenticated && !stored.candidateId) {
       navigate("/onboarding", { replace: true });
