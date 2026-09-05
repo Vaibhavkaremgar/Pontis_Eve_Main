@@ -427,31 +427,14 @@ function Dashboard() {
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    const text = inputValue.trim();
-    if (!text || sending) return;
-
-    const userMsg = { id: `u-${Date.now()}`, sender: "user", content: text };
-    const nextChats = [...chats, userMsg];
-    setChats(nextChats);
-    setInputValue("");
+  const _sendToEve = React.useCallback(async (historyPayload, currentChats) => {
     setSending(true);
-
     try {
-      const historyPayload = nextChats
-        .filter((c) => c.sender === "user" || c.sender === "eve")
-        .map((c) => ({
-          role: c.sender === "user" ? "user" : "assistant",
-          content: c.content,
-        }));
-
       const res = await axios.post(`${API}/chat`, {
         messages: historyPayload,
         session_id: sessionIdRef.current,
         candidate_id: candidateId,
       });
-
       const reply = res?.data?.reply?.trim();
       if (reply) {
         setChats((prev) => [
@@ -461,7 +444,6 @@ function Dashboard() {
       } else {
         toast.error("Eve didn't respond. Try again?");
       }
-
       if (res?.data?.profile_updates && candidateId) {
         await refreshProfile();
       }
@@ -471,7 +453,43 @@ function Dashboard() {
     } finally {
       setSending(false);
     }
+  }, [candidateId, refreshProfile]);
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    const text = inputValue.trim();
+    if (!text || sending) return;
+
+    const userMsg = { id: `u-${Date.now()}`, sender: "user", content: text };
+    const nextChats = [...chats, userMsg];
+    setChats(nextChats);
+    setInputValue("");
+
+    const historyPayload = nextChats
+      .filter((c) => c.sender === "user" || c.sender === "eve")
+      .map((c) => ({
+        role: c.sender === "user" ? "user" : "assistant",
+        content: c.content,
+      }));
+    await _sendToEve(historyPayload, nextChats);
   };
+
+  // Suggestion chips act as profile-improvement prompts: Eve asks the candidate
+  // the question; the instruction is not shown as a user bubble.
+  const handleSuggestionClick = React.useCallback(async (suggestion) => {
+    if (sending) return;
+    const instruction = `[PROFILE_QUESTION] Please ask me the following question to help complete my profile: "${suggestion}"`;
+    const historyPayload = [
+      ...chats
+        .filter((c) => c.sender === "user" || c.sender === "eve")
+        .map((c) => ({
+          role: c.sender === "user" ? "user" : "assistant",
+          content: c.content,
+        })),
+      { role: "user", content: instruction },
+    ];
+    await _sendToEve(historyPayload, chats);
+  }, [sending, chats, _sendToEve]);
 
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {
     setDocuments((prev) => ({ ...prev, resume: { filename } }));
@@ -727,6 +745,7 @@ function Dashboard() {
                 onSend={handleSendMessage}
                 sending={sending}
                 quickActions={getDynamicChatSuggestions(userProfile)}
+                onSuggestionClick={handleSuggestionClick}
                 onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();

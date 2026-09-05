@@ -3756,6 +3756,7 @@ PROFILE COMPLETION GUIDANCE: {profile_completion_guidance}
 
 BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
+- PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
 - PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 75% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking profile questions once the guidance says the profile is at 75%+.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
@@ -3775,6 +3776,11 @@ BEHAVIOR:
 - Only include profile_updates when the candidate actually provides new information.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
 - Do NOT overwrite fields that already have good data unless the candidate is correcting them.
+- DELETION: When the candidate asks to remove/delete a specific item from their profile (e.g. "remove FastAPI from my skills", "delete my AWS cert"), include a "profile_deletions" key inside profile_updates with the field and item to remove:
+  <<<PROFILE_UPDATES>>>
+  {{"profile_updates": {{"profile_deletions": {{"skills": ["FastAPI"]}}}}}}
+  <<<END_UPDATES>>>
+  Supported deletion fields: skills, certifications, preferred_roles, work_experience, education.
 
 JOB RECOMMENDATIONS — STRICT RULES:
 - NEVER invent, fabricate, or hallucinate job titles, company names, salaries, benefits, job descriptions, or hiring status.
@@ -3954,11 +3960,16 @@ def _sanitize_profile_updates(updates: dict) -> dict:
     """
     Validate and clean a profile_updates dict before it is applied.
     Strips conversational noise from list fields so only real structured data is saved.
+    Also handles profile_deletions sub-dict.
     """
     if not isinstance(updates, dict):
         return {}
     sanitized: dict = {}
     for field, value in updates.items():
+        if field == "profile_deletions":
+            if isinstance(value, dict):
+                sanitized[field] = value
+            continue
         if field in ("skills", "certifications", "preferred_roles"):
             if not isinstance(value, list):
                 continue
@@ -3995,27 +4006,136 @@ def _sanitize_profile_updates(updates: dict) -> dict:
     return sanitized
 
 
+# Patterns that signal a deletion intent in natural language.
+_DELETION_PATTERNS = re.compile(
+    r"\b(?:remove|delete|drop|take\s+out|get\s+rid\s+of)\b",
+    re.IGNORECASE,
+)
+
+# Map section keywords to profile field names for deletion.
+_DELETION_SECTION_MAP = {
+    "skill": "skills",
+    "skills": "skills",
+    "certification": "certifications",
+    "certifications": "certifications",
+    "cert": "certifications",
+    "role": "preferred_roles",
+    "roles": "preferred_roles",
+    "preferred role": "preferred_roles",
+    "preferred roles": "preferred_roles",
+    "experience": "work_experience",
+    "work experience": "work_experience",
+    "job": "work_experience",
+    "education": "education",
+    "degree": "education",
+    "project": "projects",
+    "projects": "projects",
+}
+
+
+def _detect_deletion_intent(message: str) -> Optional[dict]:
+    """
+    Detect natural-language deletion requests such as:
+      "remove FastAPI from my skills"
+      "delete AWS cert from my certifications"
+    Returns {"field": str, "item": str} or None.
+    """
+    if not isinstance(message, str) or not _DELETION_PATTERNS.search(message):
+        return None
+
+    # Pattern: remove/delete <item> from (my) <section>
+    m = re.search(
+        r"\b(?:remove|delete|drop|take\s+out|get\s+rid\s+of)\s+(?P<item>.+?)\s+from\s+(?:my\s+)?(?P<section>[\w\s]+?)(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m:
+        item = m.group("item").strip().strip('"\'')
+        section_raw = m.group("section").strip().lower().rstrip("s")
+        # Try exact then prefix match
+        field = _DELETION_SECTION_MAP.get(section_raw) or _DELETION_SECTION_MAP.get(section_raw + "s")
+        if not field:
+            for key, val in _DELETION_SECTION_MAP.items():
+                if section_raw.startswith(key) or key.startswith(section_raw):
+                    field = val
+                    break
+        if field and item:
+            return {"field": field, "item": item}
+
+    # Pattern: remove/delete <item> (no explicit section — infer from context)
+    m2 = re.search(
+        r"\b(?:remove|delete|drop)\s+(?P<item>[\w\s.+#-]{2,60})(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m2:
+        item = m2.group("item").strip().strip('"\'')
+        if item:
+            return {"field": None, "item": item}  # field unknown; caller must resolve
+    return None
+
+
+def _apply_deletion_to_profile_updates(updates: dict, deletion: dict) -> dict:
+    """
+    Embed a deletion instruction into the profile_updates dict so
+    _apply_profile_updates can process it.
+    """
+    if not deletion or not deletion.get("item"):
+        return updates
+    result = dict(updates)
+    existing_deletions = result.get("profile_deletions") or {}
+    field = deletion.get("field")
+    item = deletion["item"]
+    if field:
+        bucket = existing_deletions.get(field) or []
+        if item not in bucket:
+            bucket.append(item)
+        existing_deletions[field] = bucket
+    else:
+        # Unknown field — store under "_unknown" for best-effort matching
+        bucket = existing_deletions.get("_unknown") or []
+        if item not in bucket:
+            bucket.append(item)
+        existing_deletions["_unknown"] = bucket
+    result["profile_deletions"] = existing_deletions
+    return result
+
+
 def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tuple[str, Optional[dict]]:
-    """Split LLM reply into (clean_reply, profile_updates_dict)."""
+    """Split LLM reply into (clean_reply, profile_updates_dict).
+    Also detects natural-language deletion requests in the candidate message.
+    """
     marker_start = "<<<PROFILE_UPDATES>>>"
     marker_end = "<<<END_UPDATES>>>"
+
+    # Detect deletion intent from the candidate's own message first
+    deletion = _detect_deletion_intent(candidate_message) if candidate_message else None
+
     if marker_start not in reply_text:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
-        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else None
+        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
+        if deletion:
+            sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
         return reply_text.strip(), sanitized or None
+
     parts = reply_text.split(marker_start, 1)
     clean = parts[0].strip()
     rest = parts[1].split(marker_end, 1)[0].strip()
     try:
         data = json.loads(rest)
-        updates = data.get("profile_updates")
+        updates = data.get("profile_updates") or {}
         if isinstance(updates, dict):
             sanitized = _sanitize_profile_updates(updates)
-            return clean, sanitized or None
-        return clean, None
+        else:
+            sanitized = {}
+        if deletion:
+            sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
+        return clean, sanitized or None
     except Exception:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
-        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else None
+        sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
+        if deletion:
+            sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
         return clean, sanitized or None
 
 
@@ -4230,11 +4350,48 @@ VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "certifications",
+    "profile_deletions",
 }
 
 
+def _remove_item_from_list(existing_list: list, item_to_remove: str) -> tuple[list, bool]:
+    """
+    Remove an item from a list using case-insensitive matching.
+    Returns (new_list, was_found).
+    """
+    key = item_to_remove.strip().lower()
+    new_list = [x for x in existing_list if str(x).strip().lower() != key]
+    return new_list, len(new_list) < len(existing_list)
+
+
+def _remove_item_from_dict_list(existing_list: list, item_to_remove: str, match_fields: list) -> tuple[list, bool]:
+    """
+    Remove a dict entry from a list by fuzzy-matching item_to_remove against match_fields.
+    Returns (new_list, was_found).
+    """
+    key = item_to_remove.strip().lower()
+    new_list = []
+    found = False
+    for entry in existing_list:
+        if not isinstance(entry, dict):
+            new_list.append(entry)
+            continue
+        matched = any(
+            key in str(entry.get(f) or "").strip().lower()
+            or str(entry.get(f) or "").strip().lower() in key
+            for f in match_fields
+        )
+        if matched and not found:
+            found = True  # remove only the first match
+        else:
+            new_list.append(entry)
+    return new_list, found
+
+
 async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
-    """Validate and apply structured profile updates to PostgreSQL, merging lists."""
+    """Validate and apply structured profile updates to PostgreSQL, merging lists.
+    Also handles profile_deletions to remove specific items from profile sections.
+    """
     safe = {k: v for k, v in updates.items() if k in VALID_UPDATE_FIELDS and v is not None}
     if not safe:
         return
@@ -4338,6 +4495,80 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
             if new_value != existing_value:
                 set_clauses.append(f"{field} = :{field}")
                 params[field] = new_value
+
+    # ---------- Handle profile_deletions ----------
+    deletions = safe.get("profile_deletions")
+    if isinstance(deletions, dict):
+        for del_field, del_items in deletions.items():
+            if not isinstance(del_items, list):
+                continue
+            for item in del_items:
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                if del_field == "skills":
+                    current = existing.get("skills") or []
+                    new_list, found = _remove_item_from_list(current, item)
+                    if found:
+                        set_clauses.append("skills = CAST(:skills AS json)")
+                        params["skills"] = json.dumps(new_list)
+                        existing["skills"] = new_list  # keep in sync for subsequent iterations
+                elif del_field == "certifications":
+                    current = _candidate_certification_sources(existing)
+                    new_list, found = _remove_item_from_list(current, item)
+                    if found:
+                        existing_raw["certifications"] = new_list
+                        raw_data_changed = True
+                elif del_field == "preferred_roles":
+                    current = existing_raw.get("preferred_roles") or []
+                    new_list, found = _remove_item_from_list(current, item)
+                    if found:
+                        existing_raw["preferred_roles"] = new_list
+                        raw_data_changed = True
+                        has_preference_payload = True
+                elif del_field == "work_experience":
+                    current = existing.get("work_experience") or []
+                    new_list, found = _remove_item_from_dict_list(current, item, ["title", "company"])
+                    if found:
+                        set_clauses.append("work_experience = CAST(:work_experience AS json)")
+                        params["work_experience"] = json.dumps(new_list)
+                        existing["work_experience"] = new_list
+                elif del_field == "education":
+                    current = existing.get("education") or []
+                    new_list, found = _remove_item_from_dict_list(current, item, ["degree", "institution"])
+                    if found:
+                        set_clauses.append("education = CAST(:education AS json)")
+                        params["education"] = json.dumps(new_list)
+                        existing["education"] = new_list
+                elif del_field == "_unknown":
+                    # Best-effort: try all list fields
+                    for try_field, try_col, try_match in [
+                        ("skills", "skills", None),
+                        ("certifications", None, None),
+                        ("preferred_roles", None, None),
+                    ]:
+                        if try_field == "skills":
+                            current = existing.get("skills") or []
+                            new_list, found = _remove_item_from_list(current, item)
+                            if found:
+                                set_clauses.append("skills = CAST(:skills AS json)")
+                                params["skills"] = json.dumps(new_list)
+                                existing["skills"] = new_list
+                                break
+                        elif try_field == "certifications":
+                            current = _candidate_certification_sources(existing)
+                            new_list, found = _remove_item_from_list(current, item)
+                            if found:
+                                existing_raw["certifications"] = new_list
+                                raw_data_changed = True
+                                break
+                        elif try_field == "preferred_roles":
+                            current = existing_raw.get("preferred_roles") or []
+                            new_list, found = _remove_item_from_list(current, item)
+                            if found:
+                                existing_raw["preferred_roles"] = new_list
+                                raw_data_changed = True
+                                has_preference_payload = True
+                                break
 
     if raw_data_changed:
         set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
@@ -4637,8 +4868,14 @@ async def chat(request: ChatRequest):
     clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
 
     # Persist updated window (includes assistant reply)
+    # Strip [PROFILE_QUESTION] instructions from persisted history — they are
+    # internal prompts and must not appear in the candidate's chat record.
     if request.candidate_id:
-        updated_window = combined + [{"role": "assistant", "content": clean_reply}]
+        clean_combined = [
+            m for m in combined
+            if not (m.get("role") == "user" and m.get("content", "").startswith("[PROFILE_QUESTION]"))
+        ]
+        updated_window = clean_combined + [{"role": "assistant", "content": clean_reply}]
         asyncio.ensure_future(_save_chat_window(request.candidate_id, request.session_id, updated_window))
 
     # Apply profile updates to PostgreSQL

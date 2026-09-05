@@ -76,6 +76,7 @@ export default function ChatHub({
   onSend,
   sending,
   quickActions,
+  onSuggestionClick,
   onMicClick,
 }) {
   const scrollRef = React.useRef(null);
@@ -136,7 +137,7 @@ export default function ChatHub({
           <button
             key={q}
             data-testid={`quick-action-${q.replace(/\s+/g, "-").toLowerCase()}`}
-            onClick={() => setInputValue(q)}
+            onClick={() => onSuggestionClick ? onSuggestionClick(q) : setInputValue(q)}
             className="text-[12px] px-3 py-1.5 rounded-full bg-white border border-black/[0.06] text-[#4A4A48] hover:border-black/[0.14] hover:text-[#1F1F1F] transition-colors font-normal"
           >
             {q}
