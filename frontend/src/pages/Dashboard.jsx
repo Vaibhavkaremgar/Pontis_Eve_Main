@@ -234,55 +234,30 @@ function Dashboard() {
         saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
       }
       const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
-      // Build freshProfile synchronously before setUserProfile so callers
-      // (e.g. mic-click) always receive the real backend state, not undefined.
+      // Use backend data as the authoritative source for all profile fields.
+      // List fields (skills, certifications, experience, education, preferred_roles)
+      // must NOT be merged with stale prev state — deletions would otherwise be
+      // re-added from the old in-memory snapshot.
       let freshProfile;
       setUserProfile((prev) => {
-        freshProfile = hydrateDisplayProfile(mergeProfilesForDisplay({
+        const backendFirst = {
           ...data,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
           isOpenToMatches: prev.isOpenToMatches,
-        }, {
-          ...prev,
-          candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
-          candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
-          isOpenToMatches: prev.isOpenToMatches,
-          name: prev.name,
-          email: prev.email,
-          phone: prev.phone,
-          headline: prev.headline,
-          location: prev.location,
-          bio: prev.bio,
-          experience: prev.experience,
-          education: prev.education,
-          keySkills: prev.keySkills,
-          experience_years: prev.experience_years,
-          availability: prev.availability,
-          preferred_roles: prev.preferred_roles,
-          certifications: prev.certifications,
-          additional_information: prev.additional_information,
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
-          profile_strength_percent: prev.profile_strength_percent,
-          profile_strength_label: prev.strength,
-        }));
+        };
+        freshProfile = hydrateDisplayProfile(normalizeProfileForDisplay(backendFirst));
         return freshProfile;
       });
-      // React batches the state update — freshProfile is assigned synchronously
-      // inside the setter callback above, so it is always defined here.
-      // For the mic-click resume path we also build it directly from backend data
-      // to guarantee voice_intake_resume is never stale.
-      const directFresh = hydrateDisplayProfile(mergeProfilesForDisplay(
-        {
-          ...data,
-          candidate_id: profileCandidateId,
-          candidateId: profileCandidateId,
-          avatar: hasPhotoUrl ? (data.photo_url ?? null) : undefined,
-          voice_intake_resume: data.voice_intake_resume ?? null,
-        },
-        { voice_intake_resume: data.voice_intake_resume ?? null }
-      ));
+      const directFresh = hydrateDisplayProfile(normalizeProfileForDisplay({
+        ...data,
+        candidate_id: profileCandidateId,
+        candidateId: profileCandidateId,
+        avatar: hasPhotoUrl ? (data.photo_url ?? null) : undefined,
+        voice_intake_resume: data.voice_intake_resume ?? null,
+      }));
       console.log(
         "[refreshProfile] voice_intake_resume from backend:",
         JSON.stringify(data.voice_intake_resume ?? null)

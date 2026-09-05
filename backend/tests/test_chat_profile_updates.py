@@ -550,3 +550,385 @@ class TestUnrelatedDataPreservation:
         new_certs, found = server._remove_item_from_list(certs, "Google Cloud Professional")
         assert found is False
         assert set(new_certs) == {"AWS Certified Developer", "PMP"}
+
+
+# ---------------------------------------------------------------------------
+# _merge_profile_updates
+# ---------------------------------------------------------------------------
+
+class TestMergeProfileUpdates:
+    def test_extra_fills_empty_base_field(self):
+        base = {"availability": ""}
+        extra = {"availability": "2 weeks notice"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["availability"] == "2 weeks notice"
+
+    def test_base_non_empty_field_not_overwritten(self):
+        base = {"availability": "immediate"}
+        extra = {"availability": "3 months"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["availability"] == "immediate"
+
+    def test_list_fields_merged_without_duplicates(self):
+        base = {"skills": ["Python"]}
+        extra = {"skills": ["Python", "Docker"]}
+        result = server._merge_profile_updates(base, extra)
+        assert result["skills"].count("Python") == 1
+        assert "Docker" in result["skills"]
+
+    def test_none_base_field_filled_by_extra(self):
+        base = {"location": None}
+        extra = {"location": "London"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["location"] == "London"
+
+    def test_profile_deletions_not_copied_from_extra(self):
+        base = {}
+        extra = {"profile_deletions": {"skills": ["FastAPI"]}, "location": "Berlin"}
+        result = server._merge_profile_updates(base, extra)
+        assert "profile_deletions" not in result
+        assert result["location"] == "Berlin"
+
+    def test_empty_extra_returns_base_unchanged(self):
+        base = {"availability": "immediate"}
+        result = server._merge_profile_updates(base, {})
+        assert result == base
+
+    def test_empty_base_gets_all_extra_fields(self):
+        extra = {"availability": "2 weeks", "location": "Berlin"}
+        result = server._merge_profile_updates({}, extra)
+        assert result["availability"] == "2 weeks"
+        assert result["location"] == "Berlin"
+
+
+# ---------------------------------------------------------------------------
+# Multi-field answer regression tests
+# (synchronous — test _sanitize_profile_updates + _merge_profile_updates
+#  to verify the pipeline that _extract_multi_field_updates_from_answer feeds into)
+# ---------------------------------------------------------------------------
+
+class TestMultiFieldAnswerRegression:
+    """
+    Regression tests: one candidate response answers 2+ suggested questions.
+    Verifies that both fields are extracted and saved, and that those questions
+    are not suggested again (getDynamicChatSuggestions equivalent: missing(p) is False).
+    """
+
+    def _simulate_multi_field_save(self, raw_extracted: dict) -> dict:
+        """Simulate the pipeline: sanitize raw LLM output -> merge into empty profile."""
+        sanitized = server._sanitize_profile_updates(raw_extracted)
+        return server._merge_profile_updates({}, sanitized)
+
+    def test_availability_and_salary_both_extracted(self):
+        """'I can start in 2 weeks and I'm targeting £60k–£80k' answers both questions."""
+        raw = {
+            "availability": "2 weeks notice",
+            "additional_information": "Targeting £60k–£80k salary",
+        }
+        result = self._simulate_multi_field_save(raw)
+        assert result.get("availability") == "2 weeks notice"
+        assert result.get("additional_information") == "Targeting £60k–£80k salary"
+
+    def test_location_and_preferred_roles_both_extracted(self):
+        """'I'm based in Berlin and looking for backend engineering roles' answers 2 questions."""
+        raw = {
+            "location": "Berlin",
+            "preferred_roles": ["Backend Engineer"],
+        }
+        result = self._simulate_multi_field_save(raw)
+        assert result.get("location") == "Berlin"
+        assert "Backend Engineer" in result.get("preferred_roles", [])
+
+    def test_skills_and_availability_both_extracted(self):
+        """'I know Python and FastAPI, and I'm available immediately' answers 2 questions."""
+        raw = {
+            "skills": ["Python", "FastAPI"],
+            "availability": "immediately",
+        }
+        result = self._simulate_multi_field_save(raw)
+        assert "Python" in result.get("skills", [])
+        assert "FastAPI" in result.get("skills", [])
+        assert result.get("availability") == "immediately"
+
+    def test_three_fields_extracted_from_one_answer(self):
+        """One answer covering location, availability, and preferred_roles."""
+        raw = {
+            "location": "London",
+            "availability": "1 month notice",
+            "preferred_roles": ["Data Engineer", "ML Engineer"],
+        }
+        result = self._simulate_multi_field_save(raw)
+        assert result.get("location") == "London"
+        assert result.get("availability") == "1 month notice"
+        assert set(result.get("preferred_roles", [])) >= {"Data Engineer", "ML Engineer"}
+
+    def test_answered_fields_not_suggested_again(self):
+        """After saving availability + preferred_roles, those questions must not appear in suggestions."""
+        from frontend_suggestion_check import suggestions_for_profile
+
+        profile_before = {
+            "headline": "",
+            "keySkills": [],
+            "experience": [],
+            "education": [],
+            "certifications": [],
+            "preferred_roles": [],
+            "location": "London",
+            "availability": "",
+            "bio": "",
+            "additional_information": "",
+        }
+        profile_after = dict(profile_before)
+        profile_after["availability"] = "2 weeks notice"
+        profile_after["preferred_roles"] = ["Backend Engineer"]
+
+        suggestions_before = suggestions_for_profile(profile_before)
+        suggestions_after = suggestions_for_profile(profile_after)
+
+        # availability question should be gone after saving
+        avail_q = "What's your availability to start?"
+        assert avail_q in suggestions_before
+        assert avail_q not in suggestions_after
+
+        # preferred_roles question should be gone after saving
+        roles_q = "What roles are you targeting?"
+        assert roles_q in suggestions_before
+        assert roles_q not in suggestions_after
+
+    def test_already_present_field_not_overwritten_by_multi_extract(self):
+        """If availability is already set, multi-field merge must not overwrite it."""
+        existing_updates = {"availability": "immediate"}
+        extra = {"availability": "3 months", "location": "Paris"}
+        result = server._merge_profile_updates(existing_updates, extra)
+        assert result["availability"] == "immediate"
+        assert result["location"] == "Paris"
+
+    def test_sanitize_removes_noise_from_multi_field_skills(self):
+        """Multi-field extraction noise is stripped before saving."""
+        raw = {
+            "skills": ["These are my skills", "Python", "Docker"],
+            "availability": "2 weeks",
+        }
+        result = self._simulate_multi_field_save(raw)
+        skills = result.get("skills", [])
+        assert "These are my skills" not in skills
+        assert "Python" in skills
+        assert "Docker" in skills
+        assert result.get("availability") == "2 weeks"
+
+
+# ---------------------------------------------------------------------------
+# _merge_profile_updates
+# ---------------------------------------------------------------------------
+
+class TestMergeProfileUpdates:
+    def test_extra_fills_empty_base_field(self):
+        base = {"availability": ""}
+        extra = {"availability": "2 weeks notice"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["availability"] == "2 weeks notice"
+
+    def test_base_non_empty_field_not_overwritten(self):
+        base = {"availability": "immediate"}
+        extra = {"availability": "3 months"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["availability"] == "immediate"
+
+    def test_list_fields_merged_without_duplicates(self):
+        base = {"skills": ["Python"]}
+        extra = {"skills": ["Python", "Docker"]}
+        result = server._merge_profile_updates(base, extra)
+        assert result["skills"].count("Python") == 1
+        assert "Docker" in result["skills"]
+
+    def test_none_base_field_filled_by_extra(self):
+        base = {"location": None}
+        extra = {"location": "London"}
+        result = server._merge_profile_updates(base, extra)
+        assert result["location"] == "London"
+
+    def test_profile_deletions_not_copied_from_extra(self):
+        base = {}
+        extra = {"profile_deletions": {"skills": ["FastAPI"]}, "location": "Berlin"}
+        result = server._merge_profile_updates(base, extra)
+        assert "profile_deletions" not in result
+        assert result["location"] == "Berlin"
+
+    def test_empty_extra_returns_base_unchanged(self):
+        base = {"availability": "immediate"}
+        result = server._merge_profile_updates(base, {})
+        assert result == base
+
+    def test_empty_base_gets_all_extra_fields(self):
+        extra = {"availability": "2 weeks", "location": "Berlin"}
+        result = server._merge_profile_updates({}, extra)
+        assert result["availability"] == "2 weeks"
+        assert result["location"] == "Berlin"
+
+
+# ---------------------------------------------------------------------------
+# Multi-field answer regression tests
+# ---------------------------------------------------------------------------
+
+# Mirror of chatSuggestions.js SUGGESTIONS so tests are self-contained.
+_SUGGESTION_CHECKS = [
+    ("What's your current job title and industry?", lambda p: not p.get("headline")),
+    ("What are your top skills?",                   lambda p: not p.get("keySkills")),
+    ("Can you walk me through your work experience?", lambda p: not p.get("experience")),
+    ("What's your highest level of education?",     lambda p: not p.get("education")),
+    ("Do you have any certifications?",             lambda p: not p.get("certifications")),
+    ("What roles are you targeting?",               lambda p: not p.get("preferred_roles")),
+    ("Where are you located?",                      lambda p: not p.get("location")),
+    ("What's your availability to start?",          lambda p: not p.get("availability")),
+    ("Tell me about yourself in a few sentences.",  lambda p: not p.get("bio")),
+    ("What salary range are you targeting?",        lambda p: not p.get("additional_information")),
+]
+
+
+def _missing_suggestions(profile: dict) -> list[str]:
+    """Return the suggestion questions for fields still missing in profile."""
+    return [q for q, missing_fn in _SUGGESTION_CHECKS if missing_fn(profile)]
+
+
+class TestMultiFieldAnswerRegression:
+    """
+    Regression: one candidate response answers 2+ suggested questions.
+    Both fields must be extracted/saved and those questions must not be suggested again.
+    """
+
+    def _pipeline(self, raw_extracted: dict) -> dict:
+        """Sanitize raw LLM output then merge into an empty updates dict."""
+        sanitized = server._sanitize_profile_updates(raw_extracted)
+        return server._merge_profile_updates({}, sanitized)
+
+    # --- extraction correctness ---
+
+    def test_availability_and_salary_both_extracted(self):
+        raw = {
+            "availability": "2 weeks notice",
+            "additional_information": "Targeting £60k–£80k salary",
+        }
+        result = self._pipeline(raw)
+        assert result.get("availability") == "2 weeks notice"
+        assert result.get("additional_information") == "Targeting £60k–£80k salary"
+
+    def test_location_and_preferred_roles_both_extracted(self):
+        raw = {
+            "location": "Berlin",
+            "preferred_roles": ["Backend Engineer"],
+        }
+        result = self._pipeline(raw)
+        assert result.get("location") == "Berlin"
+        assert "Backend Engineer" in result.get("preferred_roles", [])
+
+    def test_skills_and_availability_both_extracted(self):
+        raw = {
+            "skills": ["Python", "FastAPI"],
+            "availability": "immediately",
+        }
+        result = self._pipeline(raw)
+        assert "Python" in result.get("skills", [])
+        assert "FastAPI" in result.get("skills", [])
+        assert result.get("availability") == "immediately"
+
+    def test_three_fields_extracted_from_one_answer(self):
+        raw = {
+            "location": "London",
+            "availability": "1 month notice",
+            "preferred_roles": ["Data Engineer", "ML Engineer"],
+        }
+        result = self._pipeline(raw)
+        assert result.get("location") == "London"
+        assert result.get("availability") == "1 month notice"
+        assert set(result.get("preferred_roles", [])) >= {"Data Engineer", "ML Engineer"}
+
+    # --- suggestion suppression after saving ---
+
+    def test_availability_question_not_suggested_after_save(self):
+        profile_before = {
+            "headline": "Engineer", "keySkills": ["Python"], "experience": [{"title": "Dev"}],
+            "education": [{"degree": "BSc"}], "certifications": [], "preferred_roles": [],
+            "location": "London", "availability": "", "bio": "", "additional_information": "",
+        }
+        profile_after = {**profile_before, "availability": "2 weeks notice"}
+
+        assert "What's your availability to start?" in _missing_suggestions(profile_before)
+        assert "What's your availability to start?" not in _missing_suggestions(profile_after)
+
+    def test_preferred_roles_question_not_suggested_after_save(self):
+        profile_before = {
+            "headline": "Engineer", "keySkills": ["Python"], "experience": [{"title": "Dev"}],
+            "education": [{"degree": "BSc"}], "certifications": [], "preferred_roles": [],
+            "location": "London", "availability": "immediate", "bio": "", "additional_information": "",
+        }
+        profile_after = {**profile_before, "preferred_roles": ["Backend Engineer"]}
+
+        assert "What roles are you targeting?" in _missing_suggestions(profile_before)
+        assert "What roles are you targeting?" not in _missing_suggestions(profile_after)
+
+    def test_both_availability_and_roles_not_suggested_after_single_answer(self):
+        """Regression: one answer covers availability + preferred_roles — neither re-suggested."""
+        profile_before = {
+            "headline": "Engineer", "keySkills": ["Python"], "experience": [{"title": "Dev"}],
+            "education": [{"degree": "BSc"}], "certifications": [], "preferred_roles": [],
+            "location": "London", "availability": "", "bio": "", "additional_information": "",
+        }
+        # Simulate saving both fields from one multi-field extraction
+        raw = {"availability": "2 weeks", "preferred_roles": ["Backend Engineer"]}
+        saved = self._pipeline(raw)
+
+        profile_after = {**profile_before, **saved}
+
+        before_qs = _missing_suggestions(profile_before)
+        after_qs = _missing_suggestions(profile_after)
+
+        assert "What's your availability to start?" in before_qs
+        assert "What roles are you targeting?" in before_qs
+        assert "What's your availability to start?" not in after_qs
+        assert "What roles are you targeting?" not in after_qs
+
+    def test_salary_and_availability_not_suggested_after_single_answer(self):
+        """Regression: 'I can start in 2 weeks, targeting £70k' answers 2 questions."""
+        profile_before = {
+            "headline": "Engineer", "keySkills": ["Python"], "experience": [{"title": "Dev"}],
+            "education": [{"degree": "BSc"}], "certifications": [],
+            "preferred_roles": ["Backend Engineer"],
+            "location": "London", "availability": "", "bio": "Some bio", "additional_information": "",
+        }
+        raw = {"availability": "2 weeks", "additional_information": "Targeting £70k"}
+        saved = self._pipeline(raw)
+        profile_after = {**profile_before, **saved}
+
+        assert "What's your availability to start?" in _missing_suggestions(profile_before)
+        assert "What salary range are you targeting?" in _missing_suggestions(profile_before)
+        assert "What's your availability to start?" not in _missing_suggestions(profile_after)
+        assert "What salary range are you targeting?" not in _missing_suggestions(profile_after)
+
+    # --- merge safety ---
+
+    def test_already_present_field_not_overwritten_by_multi_extract(self):
+        existing = {"availability": "immediate"}
+        extra = {"availability": "3 months", "location": "Paris"}
+        result = server._merge_profile_updates(existing, extra)
+        assert result["availability"] == "immediate"
+        assert result["location"] == "Paris"
+
+    def test_sanitize_removes_noise_from_multi_field_skills(self):
+        raw = {
+            "skills": ["These are my skills", "Python", "Docker"],
+            "availability": "2 weeks",
+        }
+        result = self._pipeline(raw)
+        skills = result.get("skills", [])
+        assert "These are my skills" not in skills
+        assert "Python" in skills
+        assert "Docker" in skills
+        assert result.get("availability") == "2 weeks"
+
+    def test_unrelated_fields_not_affected_by_multi_extract(self):
+        """Saving availability must not touch skills or other fields."""
+        raw = {"availability": "immediate"}
+        result = self._pipeline(raw)
+        assert "skills" not in result
+        assert "preferred_roles" not in result
+        assert result.get("availability") == "immediate"

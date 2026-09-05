@@ -4388,6 +4388,82 @@ def _remove_item_from_dict_list(existing_list: list, item_to_remove: str, match_
     return new_list, found
 
 
+# System prompt for scanning a candidate answer against ALL missing profile fields.
+_MULTI_FIELD_EXTRACT_SYSTEM = """You are a recruitment data extractor.
+Given a candidate's message and a list of missing profile fields, extract any information
+that fills one or more of those fields.
+Return ONLY valid JSON with the exact keys below (omit keys where nothing was found):
+{
+  "current_role": "",
+  "location": "",
+  "bio": "",
+  "experience_years": null,
+  "skills": [],
+  "preferred_roles": [],
+  "availability": "",
+  "notice_period": "",
+  "certifications": [],
+  "additional_information": ""
+}
+Rules:
+- Only include a field if the candidate explicitly provided that information.
+- Do NOT invent or hallucinate.
+- skills and certifications must be plain name strings, not sentences.
+- preferred_roles must be job title strings.
+- experience_years must be a number or null."""
+
+
+async def _extract_multi_field_updates_from_answer(
+    candidate_message: str,
+    missing_fields: list[str],
+) -> dict:
+    """
+    Scan the candidate's answer against ALL currently missing profile fields and
+    return a sanitized profile_updates dict for every field that was answered.
+    Returns {} on failure or when nothing was found.
+    """
+    if not candidate_message or not missing_fields:
+        return {}
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": _MULTI_FIELD_EXTRACT_SYSTEM},
+                {"role": "user", "content": json.dumps({
+                    "candidate_message": candidate_message[:2000],
+                    "missing_fields": missing_fields,
+                })},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = json.loads(resp.choices[0].message.content or "{}")
+        return _sanitize_profile_updates(raw)
+    except Exception as e:
+        logger.warning("[chat-multi-field] extraction failed: %s", e)
+        return {}
+
+
+def _merge_profile_updates(base: dict, extra: dict) -> dict:
+    """Merge extra profile_updates into base without overwriting non-empty base values."""
+    if not extra:
+        return base
+    result = dict(base)
+    for field, value in extra.items():
+        if field == "profile_deletions":
+            continue
+        if field not in result or result[field] is None or result[field] == "" or result[field] == []:
+            result[field] = value
+        elif isinstance(result[field], list) and isinstance(value, list):
+            # Merge lists without duplicates (case-insensitive for strings)
+            seen = {str(x).lower() for x in result[field]}
+            for item in value:
+                if str(item).lower() not in seen:
+                    result[field].append(item)
+                    seen.add(str(item).lower())
+    return result
+
+
 async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
     """Validate and apply structured profile updates to PostgreSQL, merging lists.
     Also handles profile_deletions to remove specific items from profile sections.
@@ -4866,6 +4942,21 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
     clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
+
+    # Scan the candidate's answer against ALL missing fields, not just the one asked.
+    # This ensures a single answer that covers multiple questions saves all of them.
+    if request.candidate_id and missing_fields and last_user.content.strip():
+        # Skip [PROFILE_QUESTION] instructions — they are not candidate answers
+        candidate_text = last_user.content
+        if not candidate_text.startswith("[PROFILE_QUESTION]"):
+            try:
+                multi_updates = await _extract_multi_field_updates_from_answer(
+                    candidate_text, missing_fields
+                )
+                if multi_updates:
+                    profile_updates = _merge_profile_updates(profile_updates or {}, multi_updates) or None
+            except Exception as _e:
+                logger.warning("[chat-multi-field] merge failed: %s", _e)
 
     # Persist updated window (includes assistant reply)
     # Strip [PROFILE_QUESTION] instructions from persisted history — they are
