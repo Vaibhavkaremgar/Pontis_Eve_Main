@@ -59,6 +59,20 @@ function hydrateDisplayProfile(profile) {
   return hydrateProfileStrength(normalizeProfileForDisplay(profile));
 }
 
+function profilesAreEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mergeProfileUpdatesForDisplay(currentProfile, updates) {
+  if (!updates || typeof updates !== "object") return currentProfile;
+
+  const merged = hydrateDisplayProfile(
+    mergeProfilesForDisplay(currentProfile, updates)
+  );
+
+  return profilesAreEqual(currentProfile, merged) ? currentProfile : merged;
+}
+
 function ResizeHandle({ testId, subtle = false }) {
   return (
     <PanelResizeHandle
@@ -92,8 +106,17 @@ function Dashboard() {
       saveOnboardingState({ ...stored, newlyOnboarded: false });
       return "profile";
     }
-    return "new-jobs";
+    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities"];
+    const persisted = stored.activeTab;
+    // Chat/Voice center views always show Profile in the right panel
+    const rightPanelTab = (persisted && VALID_TABS.includes(persisted)) ? persisted : "profile";
+    return rightPanelTab;
   });
+
+  const setActiveTabPersisted = React.useCallback((tab) => {
+    setActiveTab(tab);
+    saveOnboardingState({ ...loadOnboardingState(), activeTab: tab });
+  }, []);
 
   const [userProfile, setUserProfile] = React.useState(() =>
     hydrateDisplayProfile(buildFallbackProfile(isOpenToMatches))
@@ -131,6 +154,7 @@ function Dashboard() {
   // Snapshot of the profile used to start VoiceIntake — always fetched fresh before mounting.
   const [voiceIntakeProfile, setVoiceIntakeProfile] = React.useState(null);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
+  const rightPanelTab = centerView === "swipe" ? activeTab : "profile";
 
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
@@ -168,8 +192,8 @@ function Dashboard() {
           profile_strength_label: data.profile_strength_label ?? data.strength,
         };
         const cachedProfile = stored.parsedProfile ?? buildFallbackProfile(isOpenToMatches);
-        setUserProfile((prev) =>
-          hydrateDisplayProfile(
+        setUserProfile((prev) => {
+          const next = hydrateDisplayProfile(
             mergeProfilesForDisplay(
               { ...backendProfile, isOpenToMatches: prev.isOpenToMatches },
               {
@@ -178,8 +202,9 @@ function Dashboard() {
                 voice_intake_resume: data.voice_intake_resume ?? cachedProfile.voice_intake_resume ?? null,
               }
             )
-          )
-        );
+          );
+          return profilesAreEqual(prev, next) ? prev : next;
+        });
         if (!footerIdentityRef.current.name && (backendProfile.name || backendProfile.email)) {
           const locked = { name: backendProfile.name || "", email: backendProfile.email || "" };
           footerIdentityRef.current = locked;
@@ -188,29 +213,32 @@ function Dashboard() {
       })
       .catch(() => {
         const parsed = stored.parsedProfile ?? {};
-        setUserProfile((prev) => hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(prev.isOpenToMatches), {
-          candidate_id: candidateId,
-          candidateId,
-          avatar: null,
-          isOpenToMatches: prev.isOpenToMatches,
-          name: parsed.name ?? "",
-          email: parsed.email ?? "",
-          phone: parsed.phone ?? "",
-          headline: parsed.headline ?? "",
-          location: parsed.location ?? "",
-          bio: parsed.bio ?? "",
-          experience: parsed.experience ?? [],
-          education: parsed.education ?? [],
-          keySkills: parsed.keySkills ?? [],
-          experience_years: parsed.experience_years ?? null,
-          availability: parsed.availability ?? "",
-          preferred_roles: parsed.preferred_roles ?? [],
-          certifications: parsed.certifications ?? [],
-          additional_information: parsed.additional_information ?? "",
-          voice_intake_resume: parsed.voice_intake_resume ?? null,
-          profile_strength_percent: parsed.profile_strength_percent ?? parsed.strengthPercent,
-          profile_strength_label: parsed.profile_strength_label ?? parsed.strength,
-        })));
+        setUserProfile((prev) => {
+          const next = hydrateDisplayProfile(mergeProfilesForDisplay(buildFallbackProfile(prev.isOpenToMatches), {
+            candidate_id: candidateId,
+            candidateId,
+            avatar: null,
+            isOpenToMatches: prev.isOpenToMatches,
+            name: parsed.name ?? "",
+            email: parsed.email ?? "",
+            phone: parsed.phone ?? "",
+            headline: parsed.headline ?? "",
+            location: parsed.location ?? "",
+            bio: parsed.bio ?? "",
+            experience: parsed.experience ?? [],
+            education: parsed.education ?? [],
+            keySkills: parsed.keySkills ?? [],
+            experience_years: parsed.experience_years ?? null,
+            availability: parsed.availability ?? "",
+            preferred_roles: parsed.preferred_roles ?? [],
+            certifications: parsed.certifications ?? [],
+            additional_information: parsed.additional_information ?? "",
+            voice_intake_resume: parsed.voice_intake_resume ?? null,
+            profile_strength_percent: parsed.profile_strength_percent ?? parsed.strengthPercent,
+            profile_strength_label: parsed.profile_strength_label ?? parsed.strength,
+          }));
+          return profilesAreEqual(prev, next) ? prev : next;
+        });
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidateId]); // isOpenToMatches intentionally excluded — toggle state is preserved via prev
@@ -249,7 +277,7 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
         };
         freshProfile = hydrateDisplayProfile(normalizeProfileForDisplay(backendFirst));
-        return freshProfile;
+        return profilesAreEqual(prev, freshProfile) ? prev : freshProfile;
       });
       const directFresh = hydrateDisplayProfile(normalizeProfileForDisplay({
         ...data,
@@ -419,7 +447,11 @@ function Dashboard() {
       } else {
         toast.error("Eve didn't respond. Try again?");
       }
-      if (res?.data?.profile_updates && candidateId) {
+      const profileUpdates = res?.data?.profile || res?.data?.profile_updates || null;
+      if (profileUpdates) {
+        setUserProfile((prev) => mergeProfileUpdatesForDisplay(prev, profileUpdates));
+      }
+      if (profileUpdates && candidateId) {
         await refreshProfile();
       }
     } catch (err) {
@@ -544,7 +576,7 @@ function Dashboard() {
       <div className="shrink-0 flex items-center justify-end px-5 py-2 border-b border-black/[0.05]">
         <button
           data-testid="header-bell-btn"
-          onClick={() => setActiveTab("opportunities")}
+          onClick={() => setActiveTabPersisted("opportunities")}
           className="relative p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
           aria-label="Notifications"
         >
@@ -597,6 +629,7 @@ function Dashboard() {
                 onClick={() => {
                   setShowWeakProfilePopup(false);
                   userChoseCenterViewRef.current = true;
+                  setCenterView("swipe");
                 }}
                 className="flex-1 bg-black/[0.05] text-[#1F1F1F] text-[13px] font-medium rounded-full py-2.5 hover:bg-black/[0.09] transition-colors"
               >
@@ -611,7 +644,7 @@ function Dashboard() {
         <Panel id="left-panel" order={1} defaultSize={18} minSize={12} maxSize={28} className="h-full">
           <Sidebar
             activeTab={activeTab}
-            setActiveTab={setActiveTab}
+            setActiveTab={setActiveTabPersisted}
             userProfile={userProfile}
             footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
             jobsCount={availableJobs.filter((j) => !j.viewed).length}
@@ -664,11 +697,8 @@ function Dashboard() {
               candidateProfile={voiceIntakeProfile || userProfile}
               onComplete={(result) => {
                 if (result?.profile || result?.profile_updates) {
-                  setUserProfile((prev) =>
-                    hydrateDisplayProfile(
-                      mergeProfilesForDisplay(prev, result.profile || result.profile_updates || {})
-                    )
-                  );
+                  const updatePayload = result.profile || result.profile_updates || {};
+                  setUserProfile((prev) => mergeProfileUpdatesForDisplay(prev, updatePayload));
                 }
                 // Always route to chat immediately; the voiceIntakeCenterView effect
                 // will override to "swipe" if the backend confirms completed.
@@ -736,7 +766,7 @@ function Dashboard() {
 
         <Panel id="right-panel" order={3} defaultSize={50} minSize={30} className="h-full">
           <LivingProfile
-            activeTab={activeTab}
+            activeTab={rightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}
             documents={documents}

@@ -23,11 +23,27 @@ jest.mock("react-router-dom", () => ({
 
 jest.mock("../../components/Sidebar", () => () => <div data-testid="sidebar" />);
 let mockChatHubOnMicClick = null;
-jest.mock("../../components/ChatHub", () => ({ chats = [], onMicClick }) => (
+jest.mock("../../components/ChatHub", () => (props) => (
   <div data-testid="chat-hub">
-    {chats[0]?.content || ""}
-    {onMicClick && (
-      <button data-testid="chat-mic-btn" onClick={onMicClick}>Mic</button>
+    <div data-testid="chat-feed">
+      {(props.chats || []).map((chat) => (
+        <div key={chat.id} data-testid={`chat-message-${chat.id}`}>
+          {chat.content}
+        </div>
+      ))}
+    </div>
+    <input
+      data-testid="chat-text-input"
+      value={props.inputValue || ""}
+      onChange={(e) => props.setInputValue?.(e.target.value)}
+    />
+    <button data-testid="chat-send-btn" onClick={(e) => props.onSend?.(e)}>
+      send
+    </button>
+    {props.onMicClick && (
+      <button data-testid="chat-mic-btn" onClick={props.onMicClick}>
+        Mic
+      </button>
     )}
   </div>
 ));
@@ -166,6 +182,12 @@ async function waitForCondition(predicate, attempts = 20) {
     if (predicate()) return true;
   }
   throw new Error("Timed out waiting for condition");
+}
+
+function setInputValue(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 describe("Dashboard voice intake routing", () => {

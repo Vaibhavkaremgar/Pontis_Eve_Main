@@ -471,4 +471,27 @@ describe("mergeProfilesForDisplay", () => {
 
     expect(twice).toEqual(once);
   });
+
+  it("keeps existing profile values and does not duplicate already-known updates", () => {
+    const base = {
+      name: "Test Candidate",
+      headline: "Product Manager",
+      keySkills: ["Product", "Strategy"],
+      preferred_roles: ["Product Manager"],
+      additional_information: "Enjoys building products",
+    };
+    const updates = {
+      keySkills: ["Product", "React"],
+      preferred_roles: ["Product Manager", "Senior Product Manager"],
+      additional_information: "Enjoys building products",
+    };
+
+    const merged = mergeProfilesForDisplay(base, updates);
+
+    expect(merged.name).toBe("Test Candidate");
+    expect(merged.headline).toBe("Product Manager");
+    expect(merged.keySkills).toEqual(["Product", "Strategy", "React"]);
+    expect(merged.preferred_roles).toEqual(["Product Manager", "Senior Product Manager"]);
+    expect(merged.additional_information).toBe("Enjoys building products");
+  });
 });

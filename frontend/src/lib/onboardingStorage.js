@@ -55,6 +55,7 @@ export function saveOnboardingState(state) {
       isOpenToMatches: state.isOpenToMatches ?? true,
       linkedInAuthenticated: state.linkedInAuthenticated ?? false,
       linkedInProfile: state.linkedInProfile ?? null,
+      activeTab: state.activeTab ?? null,
     };
     localStorage.setItem(KEY, JSON.stringify(slim));
   } catch {
