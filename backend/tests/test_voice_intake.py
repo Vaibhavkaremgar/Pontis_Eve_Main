@@ -279,6 +279,45 @@ class TestTranscript:
         assert len(vir_after.get("completed_turns") or []) == 1
         assert vir_after.get("next_question") == "What are your key skills?"
 
+    def test_progress_persists_interrupted_state_even_without_candidate_speech(self):
+        """If Eve asks a question and the candidate hangs up immediately, the unanswered question must persist."""
+        import sys
+        import os
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from server import _build_voice_intake_resume_from_notes
+
+        current_question = "What are your key skills?"
+        voice_notes = [
+            {"role": "assistant", "text": f"Hi there, I'm Eve. Let's pick up your profile. {current_question}"},
+        ]
+
+        resume = _build_voice_intake_resume_from_notes(voice_notes, "")
+        assert resume["status"] == "in_progress"
+        assert resume["progress"] == 0
+        assert resume.get("completed_turns") == []
+        assert resume["current_question"] == current_question
+        assert resume.get("has_open_question") is True
+
+        existing_resume = {
+            "status": "in_progress",
+            "progress": 2,
+            "completed_turns": [
+                {"question": "Tell me about your background.", "answer": "I build APIs."},
+                {"question": "What are your key skills?", "answer": "Python, FastAPI."},
+            ],
+            "current_question": current_question,
+            "next_question": current_question,
+            "known_topics": ["background_experience", "skills_technologies"],
+            "missing_topics": ["target_role"],
+        }
+        resumed = _build_voice_intake_resume_from_notes(voice_notes, "", existing_resume)
+        assert resumed["status"] == "in_progress"
+        assert resumed["progress"] == 2
+        assert resumed["completed_turns"] == existing_resume["completed_turns"]
+        assert resumed["current_question"] == current_question
+        assert resumed.get("has_open_question") is True
+
     def test_progress_ignores_setup_yes_and_binds_first_real_question_to_candidate_intro(self):
         """A setup 'Yes' must not be paired with a later intake question."""
         cid = _create_candidate("Progress Setup Yes")

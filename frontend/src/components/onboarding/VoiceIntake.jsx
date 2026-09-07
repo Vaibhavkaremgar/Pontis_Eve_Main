@@ -214,11 +214,34 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     if (callState !== VAPI_STATES.PROCESSING) return;
     if (submitting) return;
 
+    const persistInterruptedState = async () => {
+      if (!candidateId || transcript.length === 0) {
+        onComplete({ status: "no_interaction" });
+        return;
+      }
+
+      try {
+        await axios.post(`${API}/voice/candidate-intake/progress`, {
+          transcript: buildTranscriptText(transcript),
+          voice_notes: transcript.map((turn) => ({
+            role: turn.role,
+            text: turn.text,
+            final: turn.final !== false,
+          })),
+          candidate_id: candidateId,
+        });
+      } catch (err) {
+        console.warn("[voice-intake] interrupted-state save failed", err);
+      }
+
+      onComplete({ status: "no_interaction" });
+    };
+
     const hasCandidateSpeech = transcript.some((t) => t.role === "user" && t.text?.trim());
     if (!hasCandidateSpeech) {
-      // No candidate interaction — route directly to Chat with Eve
-      console.log("[voice-intake] no candidate speech, routing to chat");
-      onComplete({ status: "no_interaction" });
+      // The candidate hung up before answering, so persist Eve's last question
+      // and the interrupted state before we navigate back to chat.
+      persistInterruptedState();
       return;
     }
 

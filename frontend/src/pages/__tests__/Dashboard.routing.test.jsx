@@ -199,6 +199,7 @@ describe("Dashboard voice intake routing", () => {
     lastLivingProfileProps = null;
     mockVoiceIntakeCompletionResult = null;
     mockVoiceIntakeOnComplete = null;
+    capturedVoiceIntakeCandidateProfile = null;
     mockChatHubOnMicClick = null;
     saveOnboardingState({
       candidateId: "cand-123",
@@ -612,6 +613,124 @@ describe("Voice Intake completion/routing regression tests", () => {
     expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
     expect(renderResult.container.querySelector('[data-testid="voice-intake"]')).toBeNull();
     expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("no candidate speech save keeps the unanswered question available through Continue with Eve and mic resume", async () => {
+    jest.useFakeTimers();
+    const interruptedResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: currentQuestion,
+      next_question: currentQuestion,
+      progress: 0,
+      completed_turns: [],
+      known_topics: [],
+      missing_topics: ["background_experience"],
+    };
+
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: interruptedResume,
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => {
+      jest.advanceTimersByTime(900);
+    });
+
+    const popupChatBtn = await waitForSelector(renderResult.container, '[data-testid="weak-profile-chat-btn"]');
+    act(() => {
+      popupChatBtn.click();
+    });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "no_interaction" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.status).toBe("in_progress");
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.current_question).toBe(currentQuestion);
+    jest.useRealTimers();
+  });
+
+  it("no candidate speech save keeps the unanswered question available through Maybe Later -> Jobs -> Chat", async () => {
+    jest.useFakeTimers();
+    const interruptedResume = {
+      status: "in_progress",
+      has_open_question: true,
+      current_question: currentQuestion,
+      next_question: currentQuestion,
+      progress: 0,
+      completed_turns: [],
+      known_topics: [],
+      missing_topics: ["background_experience"],
+    };
+
+    saveOnboardingState({ candidateId: "cand-123", voiceIntakeCompleted: false });
+    mockDashboardRequests([
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: null,
+      }),
+      makeProfile({
+        profile_strength_percent: 60,
+        profile_strength_label: "Developing",
+        voice_intake_resume: interruptedResume,
+      }),
+    ]);
+
+    renderResult = renderDashboard();
+
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => {
+      jest.advanceTimersByTime(900);
+    });
+
+    const dismissBtn = await waitForSelector(renderResult.container, '[data-testid="weak-profile-dismiss-btn"]');
+    act(() => {
+      dismissBtn.click();
+    });
+
+    expect(renderResult.container.querySelector('[data-testid="jobs-deck"]')).toBeTruthy();
+
+    act(() => {
+      Array.from(renderResult.container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("Chat with Eve")
+      )?.click();
+    });
+
+    await act(async () => {
+      mockVoiceIntakeOnComplete?.({ status: "no_interaction" });
+      await Promise.resolve();
+    });
+
+    expect(await waitForSelector(renderResult.container, '[data-testid="chat-hub"]')).toBeTruthy();
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-mic-btn"]').click();
+    });
+
+    await waitForSelector(renderResult.container, '[data-testid="voice-intake"]');
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.status).toBe("in_progress");
+    expect(capturedVoiceIntakeCandidateProfile?.voice_intake_resume?.current_question).toBe(currentQuestion);
+    jest.useRealTimers();
   });
 
   it("call ended with 0 answers → normal Chat with Eve UI (no voice UI)", async () => {

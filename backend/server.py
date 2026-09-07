@@ -3776,11 +3776,13 @@ BEHAVIOR:
 - Only include profile_updates when the candidate actually provides new information.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
 - Do NOT overwrite fields that already have good data unless the candidate is correcting them.
-- DELETION: When the candidate asks to remove/delete a specific item from their profile (e.g. "remove FastAPI from my skills", "delete my AWS cert"), include a "profile_deletions" key inside profile_updates with the field and item to remove:
+- DELETION: When the candidate asks to remove/delete a specific item from their profile (e.g. "remove FastAPI from my skills", "delete my AWS cert", "I no longer want Hyderabad as my preferred location"), include a "profile_deletions" key inside profile_updates with the field and item to remove:
   <<<PROFILE_UPDATES>>>
   {{"profile_updates": {{"profile_deletions": {{"skills": ["FastAPI"]}}}}}}
   <<<END_UPDATES>>>
-  Supported deletion fields: skills, certifications, preferred_roles, work_experience, education.
+  Supported deletion fields: skills, certifications, preferred_roles, work_experience, education, projects, preferred_locations.
+  If the item does not exist in the profile, say so — do NOT add it.
+  If the request is ambiguous (multiple items could match), ask a clarification question instead of deleting.
 
 JOB RECOMMENDATIONS — STRICT RULES:
 - NEVER invent, fabricate, or hallucinate job titles, company names, salaries, benefits, job descriptions, or hiring status.
@@ -4008,7 +4010,7 @@ def _sanitize_profile_updates(updates: dict) -> dict:
 
 # Patterns that signal a deletion intent in natural language.
 _DELETION_PATTERNS = re.compile(
-    r"\b(?:remove|delete|drop|take\s+out|get\s+rid\s+of)\b",
+    r"\b(?:remove|delete|drop|take\s+out|get\s+rid\s+of|no\s+longer\s+(?:want|have|need)|don'?t\s+(?:want|have)\s+(?:this|that|it|my)|i\s+don'?t\s+have\s+(?:this|that|it)\s+anymore)\b",
     re.IGNORECASE,
 )
 
@@ -4028,22 +4030,49 @@ _DELETION_SECTION_MAP = {
     "job": "work_experience",
     "education": "education",
     "degree": "education",
+    "master": "education",
+    "bachelor": "education",
     "project": "projects",
     "projects": "projects",
+    "location": "preferred_locations",
+    "preferred location": "preferred_locations",
+    "preferred locations": "preferred_locations",
 }
+
+
+# Section keywords used in "delete my <item> <section>" pattern
+_SECTION_KEYWORDS = (
+    "certification", "cert", "degree", "master", "bachelor",
+    "skill", "experience", "project", "role", "location",
+)
+
+
+def _resolve_section_field(section_raw: str) -> Optional[str]:
+    """Map a raw section string to a profile field name."""
+    s = section_raw.strip().lower().rstrip("s")
+    field = _DELETION_SECTION_MAP.get(s) or _DELETION_SECTION_MAP.get(s + "s")
+    if field:
+        return field
+    for key, val in _DELETION_SECTION_MAP.items():
+        if s.startswith(key) or key.startswith(s):
+            return val
+    return None
 
 
 def _detect_deletion_intent(message: str) -> Optional[dict]:
     """
     Detect natural-language deletion requests such as:
       "remove FastAPI from my skills"
-      "delete AWS cert from my certifications"
+      "delete my Java certification"
+      "I no longer want Hyderabad as my preferred location"
+      "delete my master's degree"
+      "I no longer have the AWS certification"
     Returns {"field": str, "item": str} or None.
     """
     if not isinstance(message, str) or not _DELETION_PATTERNS.search(message):
         return None
 
-    # Pattern: remove/delete <item> from (my) <section>
+    # Pattern 1: remove/delete <item> from (my) <section>
     m = re.search(
         r"\b(?:remove|delete|drop|take\s+out|get\s+rid\s+of)\s+(?P<item>.+?)\s+from\s+(?:my\s+)?(?P<section>[\w\s]+?)(?:[.!?;]|$)",
         message,
@@ -4051,18 +4080,60 @@ def _detect_deletion_intent(message: str) -> Optional[dict]:
     )
     if m:
         item = m.group("item").strip().strip('"\'')
-        section_raw = m.group("section").strip().lower().rstrip("s")
-        # Try exact then prefix match
-        field = _DELETION_SECTION_MAP.get(section_raw) or _DELETION_SECTION_MAP.get(section_raw + "s")
-        if not field:
-            for key, val in _DELETION_SECTION_MAP.items():
-                if section_raw.startswith(key) or key.startswith(section_raw):
-                    field = val
-                    break
+        field = _resolve_section_field(m.group("section"))
         if field and item:
             return {"field": field, "item": item}
 
-    # Pattern: remove/delete <item> (no explicit section — infer from context)
+    # Pattern 2: "I no longer want <item> as my (preferred) <section>"
+    m_no_longer_as = re.search(
+        r"\bno\s+longer\s+(?:want|have|need)\s+(?P<item>.+?)\s+as\s+(?:my\s+)?(?:preferred\s+)?(?P<section>[\w\s]+?)(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m_no_longer_as:
+        item = m_no_longer_as.group("item").strip().strip('"\'')
+        field = _resolve_section_field(m_no_longer_as.group("section"))
+        if field and item:
+            return {"field": field, "item": item}
+
+    # Pattern 3: "I no longer have/want/need (the) <item> <section_keyword>"
+    section_kw_alt = "|".join(_SECTION_KEYWORDS)
+    m_no_longer_kw = re.search(
+        rf"\bno\s+longer\s+(?:want|have|need)\s+(?:the\s+)?(?P<item>[\w\s.+#-]{{2,60}}?)\s+(?P<section>{section_kw_alt})s?(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m_no_longer_kw:
+        item = m_no_longer_kw.group("item").strip().strip('"\'')
+        field = _resolve_section_field(m_no_longer_kw.group("section"))
+        if field and item:
+            return {"field": field, "item": item}
+    # Also handle "no longer have" with no explicit section (item only)
+    m_no_longer_bare = re.search(
+        r"\bno\s+longer\s+(?:want|have|need)\s+(?:the\s+)?(?P<item>[\w\s.+#-]{2,80})(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m_no_longer_bare:
+        item = m_no_longer_bare.group("item").strip().strip('"\'')
+        if item:
+            return {"field": None, "item": item}
+
+    # Pattern 4: "delete/remove my <item> <section_keyword>" e.g. "delete my Java certification"
+    section_kw = "|".join(_SECTION_KEYWORDS)
+    # Allow apostrophes in item (e.g. "master's degree")
+    m_my_item_section = re.search(
+        rf"\b(?:remove|delete|drop)\s+my\s+(?P<item>[\w\s.+#'\u2019-]{{2,60}}?)\s+(?P<section>{section_kw})s?(?:[.!?;]|$)",
+        message,
+        re.IGNORECASE,
+    )
+    if m_my_item_section:
+        item = m_my_item_section.group("item").strip().strip('"\'')
+        field = _resolve_section_field(m_my_item_section.group("section"))
+        if field and item:
+            return {"field": field, "item": item}
+
+    # Pattern 5: remove/delete <item> (no explicit section — field unknown)
     m2 = re.search(
         r"\b(?:remove|delete|drop)\s+(?P<item>[\w\s.+#-]{2,60})(?:[.!?;]|$)",
         message,
@@ -4350,6 +4421,7 @@ VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "certifications",
+    "projects", "preferred_locations",
     "profile_deletions",
 }
 
@@ -4615,12 +4687,30 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                         set_clauses.append("education = CAST(:education AS json)")
                         params["education"] = json.dumps(new_list)
                         existing["education"] = new_list
+                elif del_field == "projects":
+                    current = existing_raw.get("projects") or []
+                    if current and isinstance(current[0], dict):
+                        new_list, found = _remove_item_from_dict_list(current, item, ["name", "title", "description"])
+                    else:
+                        new_list, found = _remove_item_from_list(current, item)
+                    if found:
+                        existing_raw["projects"] = new_list
+                        raw_data_changed = True
+                elif del_field == "preferred_locations":
+                    current = existing_raw.get("preferred_locations") or existing_raw.get("location_preferences") or []
+                    new_list, found = _remove_item_from_list(current, item)
+                    if found:
+                        existing_raw["preferred_locations"] = new_list
+                        existing_raw["location_preferences"] = new_list
+                        raw_data_changed = True
                 elif del_field == "_unknown":
                     # Best-effort: try all list fields
                     for try_field, try_col, try_match in [
                         ("skills", "skills", None),
                         ("certifications", None, None),
                         ("preferred_roles", None, None),
+                        ("projects", None, None),
+                        ("preferred_locations", None, None),
                     ]:
                         if try_field == "skills":
                             current = existing.get("skills") or []
@@ -4644,6 +4734,24 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                                 existing_raw["preferred_roles"] = new_list
                                 raw_data_changed = True
                                 has_preference_payload = True
+                                break
+                        elif try_field == "projects":
+                            current = existing_raw.get("projects") or []
+                            if current and isinstance(current[0], dict):
+                                new_list, found = _remove_item_from_dict_list(current, item, ["name", "title", "description"])
+                            else:
+                                new_list, found = _remove_item_from_list(current, item)
+                            if found:
+                                existing_raw["projects"] = new_list
+                                raw_data_changed = True
+                                break
+                        elif try_field == "preferred_locations":
+                            current = existing_raw.get("preferred_locations") or existing_raw.get("location_preferences") or []
+                            new_list, found = _remove_item_from_list(current, item)
+                            if found:
+                                existing_raw["preferred_locations"] = new_list
+                                existing_raw["location_preferences"] = new_list
+                                raw_data_changed = True
                                 break
 
     if raw_data_changed:
