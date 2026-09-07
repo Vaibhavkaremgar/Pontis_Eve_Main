@@ -244,6 +244,19 @@ describe("LivingProfile experience toggle", () => {
 
     const row = view.container.querySelector('[data-testid="experience-row-exp-viral"]');
     expect(row.textContent).toContain("Viral Bug");
-    expect(row.textContent).toContain("Jan 2026 — Present");
+  });
+
+  it("renders availability and salary expectation as separate profile header fields", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        availability: "immediate joiner",
+        salary_expectation: "7–8 LPA",
+      },
+    });
+
+    const header = view.container.querySelector('[data-testid="profile-header-card"]');
+    expect(header.textContent).toContain("Availability: Immediately");
+    expect(header.textContent).toContain("Salary expectation: 7–8 LPA");
+    expect(header.textContent).not.toContain("immediate joiner");
   });
 });

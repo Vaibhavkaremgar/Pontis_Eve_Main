@@ -341,11 +341,18 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
               )}
               <OpenToMatchesBadge isOpen={profile.isOpenToMatches} onToggle={onToggleOpenToMatches} />
             </div>
-            {profile.availability && (
-              <p className="mt-2 text-[12px] text-[#2E7538] font-normal">
-                Available: {profile.availability}
-              </p>
-            )}
+            <div className="mt-2 space-y-1">
+              {profile.availability && (
+                <p className="text-[12px] text-[#2E7538] font-normal">
+                  Availability: {profile.availability}
+                </p>
+              )}
+              {profile.salary_expectation && (
+                <p className="text-[12px] text-[#7B5C17] font-normal">
+                  Salary expectation: {profile.salary_expectation}
+                </p>
+              )}
+            </div>
           </div>
           <ProfilePhotoUpload user={profile} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} />
         </div>

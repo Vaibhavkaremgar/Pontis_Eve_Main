@@ -37,6 +37,8 @@ const EXPERIENCE_MONTHS = new Map([
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MS_PER_YEAR = 365.25 * MS_PER_DAY;
 
+const IMMEDIATE_JOINER_PATTERN = /\b(?:immediate\s+joiner|i(?:'m| am)?\s+an?\s+immediate\s+joiner)\b/i;
+
 function normalizeText(value) {
   if (value === null || value === undefined) return "";
   return String(value).replace(/\s+/g, " ").trim();
@@ -44,6 +46,13 @@ function normalizeText(value) {
 
 function normalizeKey(value) {
   return normalizeText(value).toLowerCase();
+}
+
+function normalizeAvailabilityValue(value) {
+  const cleaned = normalizeText(value);
+  if (!cleaned) return "";
+  if (IMMEDIATE_JOINER_PATTERN.test(cleaned)) return "Immediately";
+  return cleaned;
 }
 
 function relaxedCertificationKey(value) {
@@ -799,6 +808,11 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
     ...resumeRaw,
     ...voiceRaw,
   };
+  mergedRaw.availability = normalizeAvailabilityValue(mergedRaw.availability);
+  mergedRaw.salary_expectation = pickFirstNonEmptyValue(
+    normalizeText(resumeRaw.salary_expectation) || normalizeText(resume.salary_expectation),
+    normalizeText(voiceRaw.salary_expectation) || normalizeText(voice.salary_expectation)
+  );
 
   const certifications = normalizeCertifications([
     ...collectProfileList(resume, ["certifications"]),
@@ -861,7 +875,11 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
   merged.bio = pickFirstNonEmptyValue(resume.bio, voice.bio);
   merged.summary = pickFirstNonEmptyValue(resume.summary, voice.summary);
   merged.experience_years = pickFirstNonEmptyValue(resume.experience_years, voice.experience_years);
-  merged.availability = pickFirstNonEmptyValue(resume.availability, voice.availability);
+  merged.availability = normalizeAvailabilityValue(pickFirstNonEmptyValue(resume.availability, voice.availability));
+  merged.salary_expectation = pickFirstNonEmptyValue(
+    normalizeText(resume.salary_expectation) || normalizeText(resumeRaw.salary_expectation),
+    normalizeText(voice.salary_expectation) || normalizeText(voiceRaw.salary_expectation)
+  );
   merged.additional_information = pickFirstNonEmptyValue(
     resume.additional_information,
     voice.additional_information
@@ -872,6 +890,7 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
 }
 
 export function normalizeProfileForDisplay(profile = {}) {
+  const raw = readRawData(profile);
   const certifications = normalizeCertifications(profile.certifications ?? []);
   const keySkills = normalizeSkills(profile.keySkills ?? profile.skills ?? [], certifications);
   const experience = dedupeExperienceForDisplay(
@@ -882,6 +901,8 @@ export function normalizeProfileForDisplay(profile = {}) {
 
   return {
     ...profile,
+    availability: normalizeAvailabilityValue(profile.availability ?? raw.availability),
+    salary_expectation: pickFirstNonEmptyValue(profile.salary_expectation, raw.salary_expectation),
     keySkills,
     certifications,
     experience,

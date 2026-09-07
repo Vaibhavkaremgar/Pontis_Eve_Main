@@ -812,6 +812,24 @@ class TestMultiFieldAnswerRegression:
         assert result.get("availability") == "2 weeks notice"
         assert result.get("additional_information") == "Targeting £60k–£80k salary"
 
+    def test_immediate_joiner_normalizes_without_touching_salary(self):
+        raw = {
+            "availability": "I am an immediate joiner",
+            "salary_expectation": "7–8 LPA",
+        }
+        result = self._pipeline(raw)
+        assert result.get("availability") == "Immediately"
+        assert result.get("salary_expectation") == "7–8 LPA"
+
+    def test_combined_answer_extracts_availability_and_salary(self):
+        _, updates = server._extract_profile_updates(
+            "",
+            candidate_message="I am an immediate joiner and I am expecting 7-8 LPA",
+        )
+        assert updates is not None
+        assert updates.get("availability") == "Immediately"
+        assert updates.get("salary_expectation") == "7-8 LPA"
+
     def test_location_and_preferred_roles_both_extracted(self):
         raw = {
             "location": "Berlin",

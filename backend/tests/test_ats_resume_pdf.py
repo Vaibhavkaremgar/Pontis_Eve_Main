@@ -355,3 +355,112 @@ def test_candidate_profile_pdf_skills_removes_noisy():
     assert "some more skills python" not in lower
     assert "voice intake" not in lower
     assert "resume processing" not in lower
+
+
+# ---------------------------------------------------------------------------
+# 19. No green ATS badge / banner in PDF
+# ---------------------------------------------------------------------------
+def test_ats_pdf_no_green_ats_badge():
+    pdf = asyncio.run(_build_pdf(_make_profile()))
+    text = _extract_pdf_text(pdf).lower()
+    assert "ats-tested" not in text
+    assert "built to parse" not in text
+
+
+# ---------------------------------------------------------------------------
+# 20. No avatar / initials badge (e.g. "SV") in PDF
+# ---------------------------------------------------------------------------
+def test_ats_pdf_no_avatar_initials():
+    profile = _make_profile({"name": "Sai Varma"})
+    pdf = asyncio.run(_build_pdf(profile))
+    text = _extract_pdf_text(pdf)
+    # Full name must appear; bare initials "SV" must NOT appear as a standalone token
+    assert "Sai Varma" in text
+    # "SV" should not appear as a standalone word (avatar/badge)
+    import re as _re
+    assert not _re.search(r"\bSV\b", text), "Avatar initials 'SV' must not appear in PDF"
+
+
+# ---------------------------------------------------------------------------
+# 21. No profile meter / progress bar text in PDF
+# ---------------------------------------------------------------------------
+def test_ats_pdf_no_profile_meter():
+    pdf = asyncio.run(_build_pdf(_make_profile()))
+    text = _extract_pdf_text(pdf).lower()
+    for phrase in ("profile strength", "profile meter", "profile score", "% complete", "completion"):
+        assert phrase not in text, f"UI element '{phrase}' must not appear in PDF"
+
+
+# ---------------------------------------------------------------------------
+# 22. No UI/decorative elements (download button, badges, cards)
+# ---------------------------------------------------------------------------
+def test_ats_pdf_no_ui_decorative_elements():
+    pdf = asyncio.run(_build_pdf(_make_profile()))
+    text = _extract_pdf_text(pdf).lower()
+    for phrase in ("download pdf", "profile card", "ats badge", "profile meter"):
+        assert phrase not in text, f"UI element '{phrase}' must not appear in PDF"
+
+
+# ---------------------------------------------------------------------------
+# 23. Raw ISO dates are formatted as 'Mon YYYY' not '2023-11-01'
+# ---------------------------------------------------------------------------
+def test_ats_pdf_iso_dates_formatted():
+    profile = _make_profile({
+        "experience": [
+            {
+                "title": "Software Engineer",
+                "company": "Deepija Telecom",
+                "start_date": "2023-11-01",
+                "end_date": "2024-10-09",
+                "dates": "",
+                "description": "Built backend services.",
+            }
+        ]
+    })
+    pdf = asyncio.run(_build_pdf(profile))
+    text = _extract_pdf_text(pdf)
+    # Raw ISO dates must NOT appear
+    assert "2023-11-01" not in text
+    assert "2024-10-09" not in text
+    # Human-readable format must appear
+    assert "Nov 2023" in text
+    assert "Oct 2024" in text
+
+
+# ---------------------------------------------------------------------------
+# 24. _format_pdf_date unit tests
+# ---------------------------------------------------------------------------
+def test_format_pdf_date_iso():
+    assert server._format_pdf_date("2023-11-01") == "Nov 2023"
+    assert server._format_pdf_date("2024-10-09") == "Oct 2024"
+    assert server._format_pdf_date("2018-06-15") == "Jun 2018"
+
+
+def test_format_pdf_date_passthrough():
+    assert server._format_pdf_date("Present") == "Present"
+    assert server._format_pdf_date("2022 - Present") == "2022 - Present"
+    assert server._format_pdf_date("Nov 2023") == "Nov 2023"
+    assert server._format_pdf_date("") == ""
+
+
+# ---------------------------------------------------------------------------
+# 25. _format_pdf_date_range builds correct range from start/end_date fields
+# ---------------------------------------------------------------------------
+def test_format_pdf_date_range_iso_fields():
+    item = {"start_date": "2023-11-01", "end_date": "2024-10-09", "dates": ""}
+    result = server._format_pdf_date_range(item)
+    assert "Nov 2023" in result
+    assert "Oct 2024" in result
+
+
+def test_format_pdf_date_range_present():
+    item = {"start_date": "2023-11-01", "end_date": "Present", "dates": ""}
+    result = server._format_pdf_date_range(item)
+    assert "Nov 2023" in result
+    assert "Present" in result
+
+
+def test_format_pdf_date_range_prefers_human_dates_field():
+    item = {"start_date": "2023-11-01", "end_date": "2024-10-09", "dates": "Nov 2023 - Oct 2024"}
+    result = server._format_pdf_date_range(item)
+    assert result == "Nov 2023 - Oct 2024"

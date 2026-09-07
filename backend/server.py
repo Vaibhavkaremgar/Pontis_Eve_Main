@@ -531,7 +531,8 @@ def _normalize_for_frontend(c: dict) -> dict:
         "keySkills": key_skills,
         "experience": experience,
         "education": education,
-        "availability": raw_data.get("availability", ""),
+        "availability": _normalize_availability_value(raw_data.get("availability", "")) or raw_data.get("availability", ""),
+        "salary_expectation": raw_data.get("salary_expectation", ""),
         "preferred_roles": raw_data.get("preferred_roles") or [],
         "certifications": certifications,
         "additional_information": raw_data.get("additional_information", ""),
@@ -697,6 +698,55 @@ def _ats_clean_description(description: str) -> list[str]:
     return bullets
 
 
+def _format_pdf_date(value: Any) -> str:
+    """Format a date value for display in the resume PDF.
+
+    Converts raw ISO dates (2023-11-01) or timestamps to 'Nov 2023' format.
+    Passes through already-human-readable strings (e.g. 'Present', '2022 - Present').
+    """
+    text = _pdf_safe_text(value).strip()
+    if not text:
+        return ""
+    # Already human-readable (contains letters or slash-separated years)
+    if re.search(r"[A-Za-z]", text):
+        return text
+    # ISO date: YYYY-MM-DD or YYYY/MM/DD
+    m = re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", text)
+    if m:
+        try:
+            dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+            return dt.strftime("%b %Y")
+        except ValueError:
+            pass
+    # YYYY-MM only
+    m2 = re.match(r"^(\d{4})[/-](\d{1,2})$", text)
+    if m2:
+        try:
+            dt = datetime(int(m2.group(1)), int(m2.group(2)), 1, tzinfo=timezone.utc)
+            return dt.strftime("%b %Y")
+        except ValueError:
+            pass
+    return text
+
+
+def _format_pdf_date_range(item: dict) -> str:
+    """Build a human-readable date range string for an experience/education item."""
+    # Prefer the pre-built 'dates' field if it looks human-readable
+    dates = _pdf_safe_text(item.get("dates") or item.get("duration") or "")
+    if dates and re.search(r"[A-Za-z]", dates):
+        return dates
+    # Build from start_date / end_date
+    start = _format_pdf_date(item.get("start_date") or item.get("startDate") or "")
+    end_raw = item.get("end_date") or item.get("endDate") or ""
+    end = "Present" if _is_open_ended_experience_value(end_raw) else _format_pdf_date(end_raw)
+    if start and end:
+        return f"{start} - {end}"
+    if start:
+        return start
+    # Fall back to raw dates field
+    return dates
+
+
 def _candidate_profile_header(profile: dict) -> list[Paragraph]:
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -850,7 +900,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
             job_title = _pdf_safe_text(item.get("title"))
             company = _pdf_safe_text(item.get("company"))
             location = _pdf_safe_text(item.get("location"))
-            dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
+            dates = _format_pdf_date_range(item)
             if not job_title and not company:
                 continue
             # Meta line: Company | Location | Dates
@@ -875,7 +925,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
                 continue
             degree = _pdf_safe_text(item.get("degree"))
             institution = _pdf_safe_text(item.get("institution"))
-            dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
+            dates = _format_pdf_date_range(item)
             if not degree and not institution:
                 continue
             block = [p(degree or institution, job_title_style)]
@@ -961,7 +1011,7 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
             job_title = _pdf_safe_text(item.get("title"))
             company = _pdf_safe_text(item.get("company"))
             location = _pdf_safe_text(item.get("location"))
-            dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
+            dates = _format_pdf_date_range(item)
             if not job_title and not company:
                 continue
             add(job_title or company, size=10, bold=True, after=1)
@@ -982,7 +1032,7 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
                 continue
             degree = _pdf_safe_text(item.get("degree"))
             institution = _pdf_safe_text(item.get("institution"))
-            dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
+            dates = _format_pdf_date_range(item)
             if not degree and not institution:
                 continue
             add(degree or institution, size=10, bold=True, after=1)
@@ -2201,6 +2251,7 @@ async def _llm_analyze_intake(
         "summary": candidate_profile.get("summary") or "",
         "preferred_roles": candidate_profile.get("preferred_roles") or [],
         "availability": candidate_profile.get("availability") or "",
+        "salary_expectation": candidate_profile.get("salary_expectation") or raw_data.get("salary_expectation") or "",
     }
 
     context = {
@@ -4054,6 +4105,18 @@ def _sanitize_profile_updates(updates: dict) -> dict:
                 sanitized[field] = float(value)
             except (TypeError, ValueError):
                 pass
+        elif field in ("availability", "notice_period"):
+            if not isinstance(value, str):
+                continue
+            normalized = _normalize_availability_value(value)
+            if normalized:
+                sanitized[field] = normalized
+        elif field == "salary_expectation":
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            if cleaned:
+                sanitized[field] = cleaned
         elif value is not None:
             sanitized[field] = value
     return sanitized
@@ -4301,6 +4364,24 @@ def _extract_first_match(text: str, patterns: list[str]) -> Optional[str]:
     return None
 
 
+_IMMEDIATE_JOINER_PATTERN = re.compile(
+    r"\b(?:immediate\s+joiner|i(?:'m| am)?\s+an?\s+immediate\s+joiner)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_availability_value(value: Any) -> str:
+    """Normalize known availability phrases while preserving specific notice periods."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join(value.split()).strip()
+    if not cleaned:
+        return ""
+    if _IMMEDIATE_JOINER_PATTERN.search(cleaned):
+        return "Immediately"
+    return cleaned
+
+
 def _infer_profile_updates_from_message(message: str) -> dict:
     """
     Deterministically infer explicit profile updates from the candidate's message.
@@ -4345,15 +4426,26 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     availability = _extract_first_match(
         text,
         [
+            r"\b(?:i(?:'m| am)?\s+an?\s+)?immediate\s+joiner\b",
             r"\b(?:i(?:'m| am)?\s+)?(?:available|can join|can start|start)\s+(?P<value>immediately|right away|now|today|within\b.+?)(?:[.!?;]|$)",
             r"\b(?:i(?:'m| am)?\s+)?(?:available immediately|can join immediately|can start immediately)\b",
             r"\bnotice period\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         ],
     )
     if availability:
-        availability = availability.strip()
+        availability = _normalize_availability_value(availability)
         updates["availability"] = availability
         updates["notice_period"] = availability
+
+    salary_expectation = _extract_first_match(
+        text,
+        [
+            r"\b(?:salary expectation|expected salary|salary range|compensation expectation)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:i(?:'m| am)?\s+(?:expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)|expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)\s+(?P<value>(?:[₹$€£]\s*)?\d[\d,]*(?:\s*(?:[-–—]|to)\s*(?:[₹$€£]\s*)?\d[\d,]*)?(?:\s*(?:k|lpa|pa|per annum|annual(?:ly)?|year(?:ly)?|yr|month(?:ly)?|lac|lakhs?|crore|crores))?)(?:[.!?;]|$)",
+        ],
+    )
+    if salary_expectation:
+        updates["salary_expectation"] = salary_expectation.strip()
 
     current_role = _extract_first_match(
         text,
@@ -4471,7 +4563,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
 VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
-    "preferred_roles", "availability", "notice_period", "certifications",
+    "preferred_roles", "availability", "notice_period", "salary_expectation", "certifications",
     "projects", "preferred_locations",
     "profile_deletions",
 }
@@ -4575,6 +4667,18 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
     for field, value in extra.items():
         if field == "profile_deletions":
             continue
+        if field in ("availability", "notice_period"):
+            if not isinstance(value, str):
+                continue
+            value = _normalize_availability_value(value)
+            if not value:
+                continue
+        elif field == "salary_expectation":
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if not value:
+                continue
         if field not in result or result[field] is None or result[field] == "" or result[field] == []:
             result[field] = value
         elif isinstance(result[field], list) and isinstance(value, list):
@@ -4679,11 +4783,21 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
             if not isinstance(value, str):
                 continue
             has_preference_payload = True
-            availability_value = value.strip()
+            availability_value = _normalize_availability_value(value)
             if not availability_value:
                 continue
             if existing_raw.get("availability") != availability_value:
                 existing_raw["availability"] = availability_value
+                raw_data_changed = True
+        elif field == "salary_expectation":
+            if not isinstance(value, str):
+                continue
+            salary_value = value.strip()
+            if not salary_value:
+                continue
+            has_preference_payload = True
+            if existing_raw.get("salary_expectation") != salary_value:
+                existing_raw["salary_expectation"] = salary_value
                 raw_data_changed = True
         else:
             new_value = str(value)
@@ -5973,7 +6087,9 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     raw_data = dict(existing_raw)
 
     if voice.get("availability"):
-        raw_data["availability"] = voice["availability"]
+        raw_data["availability"] = _normalize_availability_value(voice["availability"]) or str(voice["availability"]).strip()
+    if voice.get("salary_expectation"):
+        raw_data["salary_expectation"] = str(voice["salary_expectation"]).strip()
     if voice.get("preferred_roles"):
         existing_pr = raw_data.get("preferred_roles") or []
         seen_pr = {r.lower() for r in existing_pr}
