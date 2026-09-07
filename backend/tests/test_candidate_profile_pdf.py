@@ -89,11 +89,11 @@ def test_candidate_profile_download_renders_clean_pdf_without_candidate_id_or_ex
     assert "Additional Information" not in text
     assert "Should not appear in the PDF." not in text
 
-    assert "Summary" in text
-    assert "Skills" in text
-    assert "Certifications" in text
-    assert "Experience" in text
-    assert "Education" in text
+    assert "SUMMARY" in text.upper()
+    assert "SKILL" in text.upper()
+    assert "CERTIFICATION" in text.upper()
+    assert "EXPERIENCE" in text.upper()
+    assert "EDUCATION" in text.upper()
 
 
 def test_candidate_profile_download_paginates_large_profiles(monkeypatch):
@@ -151,7 +151,7 @@ def test_candidate_profile_download_paginates_large_profiles(monkeypatch):
     assert "Preferred roles" not in text
     assert "Jordan Smith" in text
     assert "Principal Product Designer 1" in text
-    assert "Education" in text
+    assert "EDUCATION" in text.upper()
 
 
 def test_candidate_profile_download_excludes_project_features_from_skills(monkeypatch):
@@ -195,7 +195,8 @@ def test_candidate_profile_download_excludes_project_features_from_skills(monkey
     assert "resume processing" in text_lower
     assert "python" in text_lower
 
-    skills_section = text_lower.split("skills", 1)[1].split("certifications", 1)[0]
+    # Skills section: split on "technical skills" heading, end before "professional experience"
+    skills_section = text_lower.split("technical skills", 1)[1].split("professional experience", 1)[0]
     assert "voice intake" not in skills_section
     assert "resume processing" not in skills_section
     assert "python" in skills_section

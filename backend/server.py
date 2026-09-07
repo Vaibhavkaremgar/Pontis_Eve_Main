@@ -651,14 +651,50 @@ def _candidate_profile_social_links(profile: dict) -> list[tuple[str, str]]:
     return links
 
 
-def _candidate_profile_pdf_skills(profile: dict) -> list[Any]:
-    excluded_skill_labels = {"voice intake", "resume processing"}
+# Noisy/conversational skill entries that must never appear in the resume PDF.
+_NOISY_SKILL_PATTERNS = re.compile(
+    r"^(?:some\s+more\s+skills?|more\s+skills?|additional\s+skills?|other\s+skills?|skills?\s+include|i\s+(?:also\s+)?(?:know|have|use)|voice\s+intake|resume\s+processing)\b",
+    re.IGNORECASE,
+)
+
+
+def _candidate_profile_pdf_skills(profile: dict) -> list[str]:
+    """Return deduplicated, cleaned skills for the ATS resume PDF."""
     raw_skills = profile.get("keySkills") or profile.get("skills") or []
-    return [
-        skill
-        for skill in raw_skills
-        if _pdf_safe_text(skill).strip().lower() not in excluded_skill_labels
-    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for skill in raw_skills:
+        text = _pdf_safe_text(skill).strip()
+        if not text:
+            continue
+        if _NOISY_SKILL_PATTERNS.match(text):
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _ats_clean_description(description: str) -> list[str]:
+    """Split a description into deduplicated bullet sentences for ATS resume output."""
+    if not description:
+        return []
+    # Split on sentence boundaries
+    raw_sentences = re.split(r"(?<=[.!?])\s+", description.strip())
+    seen: set[str] = set()
+    bullets: list[str] = []
+    for sentence in raw_sentences:
+        cleaned = sentence.strip().strip(".")
+        if not cleaned:
+            continue
+        key = re.sub(r"\s+", " ", cleaned.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(cleaned)
+    return bullets
 
 
 def _candidate_profile_header(profile: dict) -> list[Paragraph]:
@@ -715,39 +751,50 @@ def _candidate_profile_header(profile: dict) -> list[Paragraph]:
 
 
 def _pdf_story_from_profile(profile: dict) -> list:
+    """Build an ATS-friendly single-column resume story for ReportLab."""
     styles = getSampleStyleSheet()
+    # Section heading: bold, uppercase-style, with a thin rule via spaceBefore
     section_style = ParagraphStyle(
-        "CandidateProfileSection",
+        "ATSSection",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=13,
-        leading=16,
-        textColor=colors.HexColor("#1F1F1F"),
-        spaceBefore=16,
-        spaceAfter=8,
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor("#000000"),
+        spaceBefore=14,
+        spaceAfter=4,
+        borderPadding=(0, 0, 2, 0),
     )
     body_style = ParagraphStyle(
-        "CandidateProfileBody",
+        "ATSBody",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=10,
         leading=14,
-        textColor=colors.HexColor("#2B2B2B"),
+        textColor=colors.HexColor("#1A1A1A"),
     )
-    small_style = ParagraphStyle(
-        "CandidateProfileSmall",
-        parent=styles["BodyText"],
+    job_title_style = ParagraphStyle(
+        "ATSJobTitle",
+        parent=body_style,
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=13,
+        spaceAfter=1,
+    )
+    meta_style = ParagraphStyle(
+        "ATSMeta",
+        parent=body_style,
         fontName="Helvetica",
         fontSize=9,
         leading=12,
-        textColor=colors.HexColor("#6A6A68"),
+        textColor=colors.HexColor("#444444"),
+        spaceAfter=3,
     )
     bullet_style = ParagraphStyle(
-        "CandidateProfileBullet",
+        "ATSBullet",
         parent=body_style,
-        leftIndent=12,
+        leftIndent=14,
         firstLineIndent=0,
-        bulletIndent=0,
         spaceAfter=2,
     )
 
@@ -757,16 +804,15 @@ def _pdf_story_from_profile(profile: dict) -> list:
             clean = " "
         return Paragraph(html.escape(clean).replace("\n", "<br/>"), style)
 
-    def bullet_items(items: list[Any]) -> list:
-        cleaned_items = [_pdf_safe_text(item) for item in items]
-        cleaned_items = [item for item in cleaned_items if item]
-        if not cleaned_items:
+    def bullet_list(items: list[str]) -> list:
+        cleaned = [_pdf_safe_text(i) for i in items if _pdf_safe_text(i)]
+        if not cleaned:
             return []
-        return [ 
+        return [
             ListFlowable(
-                [ListItem(p(item, bullet_style), leftIndent=6) for item in cleaned_items],
+                [ListItem(p(i, bullet_style), leftIndent=6) for i in cleaned],
                 bulletType="bullet",
-                leftIndent=12,
+                leftIndent=14,
                 bulletFontName="Helvetica",
                 bulletFontSize=8,
                 bulletOffsetY=2,
@@ -779,74 +825,71 @@ def _pdf_story_from_profile(profile: dict) -> list:
     def add_section(title: str, body: list) -> None:
         if not body:
             return
-        story.append(p(title, section_style))
+        story.append(p(title.upper(), section_style))
         story.extend(body)
-        story.append(Spacer(1, 0.14 * inch))
+        story.append(Spacer(1, 0.08 * inch))
 
+    # --- Summary ---
     summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
     if summary:
-        add_section("Summary", [p(summary)])
+        add_section("Professional Summary", [p(summary)])
 
+    # --- Technical Skills (comma-separated, deduplicated) ---
     skills = _candidate_profile_pdf_skills(profile)
     if skills:
-        add_section("Skills", bullet_items(skills))
+        skills_line = ", ".join(skills)
+        add_section("Technical Skills", [p(skills_line)])
 
-    certifications = profile.get("certifications") or []
-    if certifications:
-        add_section("Certifications", bullet_items(certifications))
-
+    # --- Professional Experience ---
     experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
     if experience:
-        exp_blocks = []
+        exp_blocks: list = []
         for item in experience:
             if not isinstance(item, dict):
                 continue
-            title_bits = [
-                _pdf_safe_text(item.get("title")),
-                _pdf_safe_text(item.get("company")),
-            ]
-            title_text = " at ".join([bit for bit in title_bits if bit])
-            if not title_text:
-                continue
-            block = [p(title_text, ParagraphStyle(
-                "CandidateProfileExperienceTitle",
-                parent=body_style,
-                fontName="Helvetica-Bold",
-                spaceAfter=2,
-            ))]
+            job_title = _pdf_safe_text(item.get("title"))
+            company = _pdf_safe_text(item.get("company"))
+            location = _pdf_safe_text(item.get("location"))
             dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
-            if dates:
-                block.append(p(dates, small_style))
+            if not job_title and not company:
+                continue
+            # Meta line: Company | Location | Dates
+            meta_parts = [part for part in [company, location, dates] if part]
+            block: list = [p(job_title, job_title_style)]
+            if meta_parts:
+                block.append(p(" | ".join(meta_parts), meta_style))
             description = _pdf_safe_text(item.get("description") or item.get("summary"))
-            if description:
-                block.append(p(description))
+            bullets = _ats_clean_description(description)
+            if bullets:
+                block.extend(bullet_list(bullets))
             exp_blocks.append(KeepTogether(block))
-        add_section("Experience", exp_blocks)
+            exp_blocks.append(Spacer(1, 0.06 * inch))
+        add_section("Professional Experience", exp_blocks)
 
+    # --- Education ---
     education = profile.get("education") or []
     if education:
-        edu_blocks = []
+        edu_blocks: list = []
         for item in education:
             if not isinstance(item, dict):
                 continue
-            title_bits = [
-                _pdf_safe_text(item.get("degree")),
-                _pdf_safe_text(item.get("institution")),
-            ]
-            title_text = " at ".join([bit for bit in title_bits if bit])
-            if not title_text:
-                continue
-            block = [p(title_text, ParagraphStyle(
-                "CandidateProfileEducationTitle",
-                parent=body_style,
-                fontName="Helvetica-Bold",
-                spaceAfter=2,
-            ))]
+            degree = _pdf_safe_text(item.get("degree"))
+            institution = _pdf_safe_text(item.get("institution"))
             dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
-            if dates:
-                block.append(p(dates, small_style))
+            if not degree and not institution:
+                continue
+            block = [p(degree or institution, job_title_style)]
+            meta_parts = [part for part in [institution if degree else "", dates] if part]
+            if meta_parts:
+                block.append(p(" | ".join(meta_parts), meta_style))
             edu_blocks.append(KeepTogether(block))
+            edu_blocks.append(Spacer(1, 0.04 * inch))
         add_section("Education", edu_blocks)
+
+    # --- Certifications ---
+    certifications = profile.get("certifications") or []
+    if certifications:
+        add_section("Certifications", bullet_list([_pdf_safe_text(c) for c in certifications if _pdf_safe_text(c)]))
 
     return story
 
@@ -880,82 +923,79 @@ def _build_candidate_profile_pdf(profile: dict) -> bytes:
 
 
 def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
+    """Build ATS-friendly text blocks for the fallback (non-ReportLab) PDF renderer."""
     blocks: list[dict] = []
 
     def add(text: Any, *, size: int = 10, bold: bool = False, indent: int = 0, after: float = 0.0) -> None:
         clean = _pdf_safe_text(text)
         if clean:
-            blocks.append({
-                "text": clean,
-                "size": size,
-                "bold": bold,
-                "indent": indent,
-                "after": after,
-            })
+            blocks.append({"text": clean, "size": size, "bold": bold, "indent": indent, "after": after})
 
-    add(profile.get("name") or "Candidate Profile", size=20, bold=True, after=6)
+    add(profile.get("name") or "Resume", size=20, bold=True, after=4)
 
     contact_bits = [profile.get("location"), profile.get("email"), profile.get("phone")]
     contact_line = " | ".join(_pdf_safe_text(bit) for bit in contact_bits if _pdf_safe_text(bit))
     if contact_line:
-        add(contact_line, size=10, after=4)
+        add(contact_line, size=10, after=3)
 
     social_links = _candidate_profile_social_links(profile)
     if social_links:
-        add(" | ".join(f"{label}: {url}" for label, url in social_links), size=9, after=6)
+        add(" | ".join(f"{label}: {url}" for label, url in social_links), size=9, after=5)
 
     summary = _pdf_safe_text(profile.get("bio") or profile.get("summary"))
     if summary:
-        add("Summary", size=13, bold=True, after=2)
+        add("PROFESSIONAL SUMMARY", size=11, bold=True, after=2)
         add(summary, size=10, after=4)
 
     skills = _candidate_profile_pdf_skills(profile)
     if skills:
-        add("Skills", size=13, bold=True, after=2)
-        for skill in skills:
-            add(f"- {_pdf_safe_text(skill)}", size=10, indent=12, after=1)
-        blocks.append({"blank": True, "after": 4})
-
-    certifications = profile.get("certifications") or []
-    if certifications:
-        add("Certifications", size=13, bold=True, after=2)
-        for cert in certifications:
-            add(f"- {_pdf_safe_text(cert)}", size=10, indent=12, after=1)
-        blocks.append({"blank": True, "after": 4})
+        add("TECHNICAL SKILLS", size=11, bold=True, after=2)
+        add(", ".join(skills), size=10, after=4)
 
     experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
     if experience:
-        add("Experience", size=13, bold=True, after=2)
+        add("PROFESSIONAL EXPERIENCE", size=11, bold=True, after=2)
         for item in experience:
             if not isinstance(item, dict):
                 continue
-            title_bits = [_pdf_safe_text(item.get("title")), _pdf_safe_text(item.get("company"))]
-            title_text = " at ".join([bit for bit in title_bits if bit])
-            if not title_text:
-                continue
-            add(title_text, size=10, bold=True, after=1)
+            job_title = _pdf_safe_text(item.get("title"))
+            company = _pdf_safe_text(item.get("company"))
+            location = _pdf_safe_text(item.get("location"))
             dates = _pdf_safe_text(item.get("dates") or item.get("duration") or item.get("start_date"))
-            if dates:
-                add(dates, size=9, after=1)
+            if not job_title and not company:
+                continue
+            add(job_title or company, size=10, bold=True, after=1)
+            meta_parts = [part for part in [company, location, dates] if part]
+            if meta_parts:
+                add(" | ".join(meta_parts), size=9, after=1)
             description = _pdf_safe_text(item.get("description") or item.get("summary"))
-            if description:
-                add(description, size=10, indent=12, after=2)
-        blocks.append({"blank": True, "after": 4})
+            for bullet in _ats_clean_description(description):
+                add(f"- {bullet}", size=10, indent=12, after=1)
+            blocks.append({"blank": True, "after": 3})
+        blocks.append({"blank": True, "after": 2})
 
     education = profile.get("education") or []
     if education:
-        add("Education", size=13, bold=True, after=2)
+        add("EDUCATION", size=11, bold=True, after=2)
         for item in education:
             if not isinstance(item, dict):
                 continue
-            title_bits = [_pdf_safe_text(item.get("degree")), _pdf_safe_text(item.get("institution"))]
-            title_text = " at ".join([bit for bit in title_bits if bit])
-            if not title_text:
-                continue
-            add(title_text, size=10, bold=True, after=1)
+            degree = _pdf_safe_text(item.get("degree"))
+            institution = _pdf_safe_text(item.get("institution"))
             dates = _pdf_safe_text(item.get("dates") or item.get("start_date"))
-            if dates:
-                add(dates, size=9, after=2)
+            if not degree and not institution:
+                continue
+            add(degree or institution, size=10, bold=True, after=1)
+            meta_parts = [part for part in [institution if degree else "", dates] if part]
+            if meta_parts:
+                add(" | ".join(meta_parts), size=9, after=2)
+        blocks.append({"blank": True, "after": 2})
+
+    certifications = profile.get("certifications") or []
+    if certifications:
+        add("CERTIFICATIONS", size=11, bold=True, after=2)
+        for cert in certifications:
+            add(f"- {_pdf_safe_text(cert)}", size=10, indent=12, after=1)
         blocks.append({"blank": True, "after": 4})
 
     return blocks
