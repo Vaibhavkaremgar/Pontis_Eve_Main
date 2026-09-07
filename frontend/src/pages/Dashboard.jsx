@@ -448,10 +448,11 @@ function Dashboard() {
         toast.error("Eve didn't respond. Try again?");
       }
       const profileUpdates = res?.data?.profile || res?.data?.profile_updates || null;
-      if (profileUpdates) {
+      const hasDeletions = profileUpdates && typeof profileUpdates === "object" && profileUpdates.profile_deletions;
+      if (profileUpdates && !hasDeletions) {
         setUserProfile((prev) => mergeProfileUpdatesForDisplay(prev, profileUpdates));
       }
-      if (profileUpdates && candidateId) {
+      if ((profileUpdates || hasDeletions) && candidateId) {
         await refreshProfile();
       }
     } catch (err) {

@@ -3929,6 +3929,14 @@ _CONVERSATIONAL_LIST_PREFIXES = re.compile(
 )
 
 
+# Single-word conversational fillers that must never be saved as structured list items.
+_CONVERSATIONAL_FILLER_WORDS: frozenset[str] = frozenset({
+    "any", "some", "yes", "no", "yeah", "yep", "nope", "sure", "okay", "ok",
+    "both", "all", "none", "few", "many", "several", "various", "other",
+    "these", "those", "this", "that", "them", "they", "it",
+})
+
+
 def _sanitize_structured_list_items(items: list) -> list:
     """
     Remove conversational noise phrases from a list of strings.
@@ -3943,6 +3951,9 @@ def _sanitize_structured_list_items(items: list) -> list:
             continue
         stripped = item.strip()
         if not stripped:
+            continue
+        # Drop bare conversational filler words (e.g. "any", "yes", "some")
+        if stripped.lower() in _CONVERSATIONAL_FILLER_WORDS:
             continue
         # Drop items that match conversational prefix patterns
         if _CONVERSATIONAL_LIST_PREFIXES.match(stripped):
@@ -4662,8 +4673,15 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                         existing["skills"] = new_list  # keep in sync for subsequent iterations
                 elif del_field == "certifications":
                     current = _candidate_certification_sources(existing)
+                    # Also check raw list in case the item was stored before normalization
+                    raw_current = list(existing_raw.get("certifications") or [])
                     new_list, found = _remove_item_from_list(current, item)
-                    if found:
+                    if not found:
+                        raw_current, found = _remove_item_from_list(raw_current, item)
+                        if found:
+                            existing_raw["certifications"] = raw_current
+                            raw_data_changed = True
+                    else:
                         existing_raw["certifications"] = new_list
                         raw_data_changed = True
                 elif del_field == "preferred_roles":
@@ -5287,6 +5305,9 @@ def _normalize_certifications(certifications: Any) -> list[str]:
     for cert in certifications:
         cleaned = _normalize_profile_text(cert)
         if not cleaned:
+            continue
+        # Drop bare conversational filler words (e.g. "any", "yes", "some")
+        if cleaned.lower() in _CONVERSATIONAL_FILLER_WORDS:
             continue
         strict_key = _normalize_profile_key(cleaned)
         relaxed_key = _certification_relaxed_key(cleaned)
