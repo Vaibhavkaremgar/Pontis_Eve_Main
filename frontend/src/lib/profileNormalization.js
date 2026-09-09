@@ -149,35 +149,16 @@ function formatExperienceDateLabel(value) {
   if (yearOnly) return yearOnly[1];
 
   const yearMonth = text.match(/^(\d{4})[-/.](\d{1,2})$/);
-  if (yearMonth) {
-    const date = new Date(Date.UTC(Number(yearMonth[1]), Number(yearMonth[2]) - 1, 1));
-    return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
-  }
+  if (yearMonth) return yearMonth[1];
 
   const monthYear = text.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
-  if (monthYear) {
-    const month = EXPERIENCE_MONTHS.get(monthYear[1].toLowerCase());
-    if (month != null) {
-      const date = new Date(Date.UTC(Number(monthYear[2]), month, 1));
-      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
-    }
-  }
+  if (monthYear && EXPERIENCE_MONTHS.has(monthYear[1].toLowerCase())) return monthYear[2];
 
   const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if (iso) {
-    const date = new Date(Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])));
-    if (!Number.isNaN(date.getTime())) {
-      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
-    }
-  }
+  if (iso) return iso[1];
 
   const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
-  if (dayFirst) {
-    const date = new Date(Date.UTC(Number(dayFirst[3]), Number(dayFirst[2]) - 1, Number(dayFirst[1])));
-    if (!Number.isNaN(date.getTime())) {
-      return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(date);
-    }
-  }
+  if (dayFirst) return dayFirst[3];
 
   return text;
 }

@@ -4576,7 +4576,7 @@ VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "salary_expectation", "certifications",
-    "projects", "preferred_locations",
+    "projects", "preferred_locations", "additional_information",
     "profile_deletions",
 }
 
@@ -4843,6 +4843,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         set_clauses.append("skills = CAST(:skills AS json)")
                         params["skills"] = json.dumps(new_list)
                         existing["skills"] = new_list  # keep in sync for subsequent iterations
+                        applied_deletions.setdefault("skills", []).append(item)
                 elif del_field == "certifications":
                     current = _candidate_certification_sources(existing)
                     raw_current = list(existing_raw.get("certifications") or [])
@@ -4867,6 +4868,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         existing_raw["preferred_roles"] = new_list
                         raw_data_changed = True
                         has_preference_payload = True
+                        applied_deletions.setdefault("preferred_roles", []).append(item)
                 elif del_field == "work_experience":
                     current = existing.get("work_experience") or []
                     new_list, found = _remove_item_from_dict_list(current, item, ["title", "company"])
@@ -4874,6 +4876,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         set_clauses.append("work_experience = CAST(:work_experience AS json)")
                         params["work_experience"] = json.dumps(new_list)
                         existing["work_experience"] = new_list
+                        applied_deletions.setdefault("work_experience", []).append(item)
                 elif del_field == "education":
                     current = existing.get("education") or []
                     new_list, found = _remove_item_from_dict_list(current, item, ["degree", "institution"])
@@ -4881,6 +4884,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         set_clauses.append("education = CAST(:education AS json)")
                         params["education"] = json.dumps(new_list)
                         existing["education"] = new_list
+                        applied_deletions.setdefault("education", []).append(item)
                 elif del_field == "projects":
                     current = existing_raw.get("projects") or []
                     if current and isinstance(current[0], dict):
@@ -4890,6 +4894,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                     if found:
                         existing_raw["projects"] = new_list
                         raw_data_changed = True
+                        applied_deletions.setdefault("projects", []).append(item)
                 elif del_field == "preferred_locations":
                     current = existing_raw.get("preferred_locations") or existing_raw.get("location_preferences") or []
                     new_list, found = _remove_item_from_list(current, item)
@@ -4897,6 +4902,38 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         existing_raw["preferred_locations"] = new_list
                         existing_raw["location_preferences"] = new_list
                         raw_data_changed = True
+                        applied_deletions.setdefault("preferred_locations", []).append(item)
+                elif del_field in ("headline", "current_role"):
+                    if not current_role_set:
+                        set_clauses.append('"current_role" = :current_role')
+                        params["current_role"] = ""
+                        current_role_set = True
+                    applied_deletions.setdefault(del_field, []).append(item)
+                elif del_field == "bio":
+                    set_clauses.append("summary = :bio")
+                    params["bio"] = ""
+                    applied_deletions.setdefault("bio", []).append(item)
+                elif del_field == "location":
+                    set_clauses.append("location = :location")
+                    params["location"] = ""
+                    applied_deletions.setdefault("location", []).append(item)
+                elif del_field == "salary_expectation":
+                    existing_raw["salary_expectation"] = ""
+                    raw_data_changed = True
+                    applied_deletions.setdefault("salary_expectation", []).append(item)
+                elif del_field in ("availability", "notice_period"):
+                    existing_raw["availability"] = ""
+                    raw_data_changed = True
+                    has_preference_payload = True
+                    applied_deletions.setdefault(del_field, []).append(item)
+                elif del_field == "additional_information":
+                    existing_raw["additional_information"] = ""
+                    raw_data_changed = True
+                    applied_deletions.setdefault("additional_information", []).append(item)
+                elif del_field == "experience_years":
+                    set_clauses.append("experience_years = :experience_years")
+                    params["experience_years"] = None
+                    applied_deletions.setdefault("experience_years", []).append(item)
                 elif del_field == "_unknown":
                     # Best-effort: try all list fields
                     for try_field, try_col, try_match in [

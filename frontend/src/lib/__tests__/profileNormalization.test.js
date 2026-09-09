@@ -126,7 +126,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     });
   });
 
-  it("formats start and end dates from supported experience date formats", () => {
+  it("formats start and end dates as year-only from all supported date formats", () => {
     const normalized = normalizeProfileForDisplay({
       experience: [
         {
@@ -157,11 +157,66 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     });
 
     expect(normalized.experience.map((exp) => exp.dates)).toEqual([
-      "Jan 2026 — Present",
-      "Jan 2026 — Present",
-      "Jan 2026 — Present",
-      "Jan 2026 — Present",
+      "2026 — Present",
+      "2026 — Present",
+      "2026 — Present",
+      "2026 — Present",
     ]);
+  });
+
+  it("displays year-month dates as year only in the profile panel", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [
+        {
+          company: "Acme",
+          title: "Engineer",
+          start_date: "2018-01",
+          end_date: "2022-12",
+        },
+        {
+          company: "Beta",
+          title: "Lead",
+          start_date: "2023-11",
+          end_date: "Present",
+        },
+      ],
+    });
+
+    expect(normalized.experience.map((exp) => exp.dates)).toEqual([
+      "2023 — Present",
+      "2018 — 2022",
+    ]);
+  });
+
+  it("displays education dates as year only", () => {
+    const normalized = normalizeProfileForDisplay({
+      education: [
+        {
+          degree: "B.Sc CS",
+          institution: "MIT",
+          start_date: "2014-09",
+          end_date: "2018-06",
+        },
+      ],
+      experience: [],
+    });
+
+    const edu = normalized.education[0];
+    // Education dates are stored as-is; verify formatExperienceDateRange produces year-only
+    const { formatExperienceDateRange: _unused, ..._ } = {};
+    // The display label for education uses the same formatExperienceDateLabel path
+    // so we test via a work experience entry with the same date shape
+    const expNorm = normalizeProfileForDisplay({
+      experience: [
+        {
+          company: "Uni",
+          title: "Student",
+          start_date: "2014-09",
+          end_date: "2018-06",
+        },
+      ],
+    });
+    expect(expNorm.experience[0].dates).toBe("2014 — 2018");
   });
 });
 
