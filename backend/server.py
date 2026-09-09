@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -462,18 +462,28 @@ def _build_career_gap_vapi_vars(profile: dict) -> dict:
     }
 
 
+def _truncate_date_to_month(value) -> str:
+    """Return YYYY-MM from a YYYY-MM-DD string; pass other values through."""
+    text = str(value).strip() if value is not None else ""
+    m = re.match(r"^(\d{4}-\d{2})-\d{2}$", text)
+    return m.group(1) if m else text
+
+
 def _normalize_for_frontend(c: dict) -> dict:
     """Map DB candidate row → Eve frontend profile shape."""
     work_exp = _sort_experience_for_display(c.get("work_experience") or [])
     experience = []
     for i, w in enumerate(work_exp):
-        dates = " — ".join(filter(None, [w.get("start_date"), w.get("end_date") or "Present"]))
+        _sd = _truncate_date_to_month(w.get("start_date") or w.get("startDate") or "")
+        _ed_raw = w.get("end_date") or w.get("endDate") or ""
+        _ed = _truncate_date_to_month(_ed_raw) if _ed_raw else ""
+        dates = " — ".join(filter(None, [_sd, _ed or "Present"]))
         experience.append({
             "id": w.get("id", f"exp-{i}"),
             "title": w.get("title", ""),
             "company": w.get("company", ""),
-            "start_date": w.get("start_date") or w.get("startDate") or "",
-            "end_date": w.get("end_date") or w.get("endDate") or "",
+            "start_date": _sd,
+            "end_date": _ed,
             "dates": dates,
             "description": w.get("description", ""),
         })
@@ -481,8 +491,8 @@ def _normalize_for_frontend(c: dict) -> dict:
     for i, w in enumerate(work_exp):
         if i >= len(experience):
             break
-        experience[i]["start_date"] = w.get("start_date") or w.get("startDate") or ""
-        experience[i]["end_date"] = w.get("end_date") or w.get("endDate") or ""
+        experience[i]["start_date"] = _truncate_date_to_month(w.get("start_date") or w.get("startDate") or "")
+        experience[i]["end_date"] = _truncate_date_to_month(w.get("end_date") or w.get("endDate") or "")
         if not experience[i].get("dates"):
             start_date = experience[i]["start_date"]
             end_date = experience[i]["end_date"] or ("Present" if start_date else "")
@@ -491,7 +501,9 @@ def _normalize_for_frontend(c: dict) -> dict:
     edu_raw = c.get("education") or []
     education = []
     for i, e in enumerate(edu_raw):
-        dates = " — ".join(filter(None, [e.get("start_date"), e.get("end_date", "")]))
+        _esd = _truncate_date_to_month(e.get("start_date") or "")
+        _eed = _truncate_date_to_month(e.get("end_date") or "")
+        dates = " — ".join(filter(None, [_esd, _eed]))
         education.append({
             "id": e.get("id", f"edu-{i}"),
             "degree": e.get("degree", ""),
@@ -4802,6 +4814,9 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             if existing_raw.get("salary_expectation") != salary_value:
                 existing_raw["salary_expectation"] = salary_value
                 raw_data_changed = True
+        elif field == "profile_deletions":
+            # Handled separately below; must not be added to SQL SET clauses.
+            continue
         else:
             new_value = str(value)
             if field == "location":
@@ -5272,9 +5287,8 @@ async def chat(request: ChatRequest):
                 profile_updates = None
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
         except Exception as e:
-            logger.warning("Profile update failed: %s", e)
-            if (profile_updates.get("profile_deletions") or {}):
-                clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
+            logger.exception("Profile update failed: %s", e)
+            clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
             profile_updates = None
 
     if request.candidate_id:
