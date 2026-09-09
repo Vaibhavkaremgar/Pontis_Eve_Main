@@ -432,8 +432,13 @@ function Dashboard() {
   const sessionIdRef = React.useRef(
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
+  // Ignore a late response from an older request if a newer chat turn was
+  // submitted before it completed. This prevents an old Eve reply being shown
+  // under the newest candidate message.
+  const latestChatTurnRef = React.useRef(0);
+  const chatMessageSequenceRef = React.useRef(0);
 
-  const _sendToEve = React.useCallback(async (historyPayload, currentChats) => {
+  const _sendToEve = React.useCallback(async (historyPayload, turnId) => {
     setSending(true);
     try {
       const res = await axios.post(`${API}/chat`, {
@@ -441,11 +446,12 @@ function Dashboard() {
         session_id: sessionIdRef.current,
         candidate_id: candidateId,
       });
+      if (turnId !== latestChatTurnRef.current) return;
       const reply = res?.data?.reply?.trim();
       if (reply) {
         setChats((prev) => [
           ...prev,
-          { id: `e-${Date.now()}`, sender: "eve", content: reply },
+          { id: `e-${Date.now()}-${++chatMessageSequenceRef.current}`, sender: "eve", content: reply },
         ]);
       } else {
         toast.error("Eve didn't respond. Try again?");
@@ -462,7 +468,7 @@ function Dashboard() {
       console.error("chat error", err);
       toast.error("Couldn't reach Eve right now.");
     } finally {
-      setSending(false);
+      if (turnId === latestChatTurnRef.current) setSending(false);
     }
   }, [candidateId, refreshProfile]);
 
@@ -471,7 +477,7 @@ function Dashboard() {
     const text = inputValue.trim();
     if (!text || sending) return;
 
-    const userMsg = { id: `u-${Date.now()}`, sender: "user", content: text };
+    const userMsg = { id: `u-${Date.now()}-${++chatMessageSequenceRef.current}`, sender: "user", content: text };
     const nextChats = [...chats, userMsg];
     setChats(nextChats);
     setInputValue("");
@@ -482,7 +488,9 @@ function Dashboard() {
         role: c.sender === "user" ? "user" : "assistant",
         content: c.content,
       }));
-    await _sendToEve(historyPayload, nextChats);
+    const turnId = latestChatTurnRef.current + 1;
+    latestChatTurnRef.current = turnId;
+    await _sendToEve(historyPayload, turnId);
   };
 
   // Suggestion chips act as profile-improvement prompts: Eve asks the candidate
@@ -499,7 +507,9 @@ function Dashboard() {
         })),
       { role: "user", content: instruction },
     ];
-    await _sendToEve(historyPayload, chats);
+    const turnId = latestChatTurnRef.current + 1;
+    latestChatTurnRef.current = turnId;
+    await _sendToEve(historyPayload, turnId);
   }, [sending, chats, _sendToEve]);
 
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {

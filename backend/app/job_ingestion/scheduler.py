@@ -67,30 +67,9 @@ async def sync_jobs() -> None:
         skipped = 0
         failed = 0
 
-        # Collect existing ats_job_ids for this ats_type in one query
-        ats_type_val = (jobs[0].get("ats_type") or "").strip().lower() if jobs else ""
-        ats_ids = [str(j.get("ats_job_id") or "") for j in jobs if j.get("ats_job_id")]
-        existing_ids: set = set()
-        if ats_ids and ats_type_val:
-            async with SessionLocal() as db:
-                placeholders = ", ".join(f":aid_{i}" for i in range(len(ats_ids)))
-                params = {f"aid_{i}": v for i, v in enumerate(ats_ids)}
-                params["ats_type"] = ats_type_val
-                result = await db.execute(
-                    text(f"""
-                        SELECT ats_job_id FROM job_descriptions
-                        WHERE ats_type = :ats_type AND ats_job_id IN ({placeholders})
-                    """),
-                    params,
-                )
-                existing_ids = {str(r[0]) for r in result.fetchall()}
-
         async with SessionLocal() as db:
             for job in jobs:
                 job_ats_id = str(job.get("ats_job_id") or "")
-                if job_ats_id and job_ats_id in existing_ids:
-                    skipped += 1
-                    continue
                 try:
                     await upsert_ats_job(db, job)
                     inserted += 1

@@ -4691,13 +4691,13 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
     return result
 
 
-async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
+async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
     """Validate and apply structured profile updates to PostgreSQL, merging lists.
     Also handles profile_deletions to remove specific items from profile sections.
     """
     safe = {k: v for k, v in updates.items() if k in VALID_UPDATE_FIELDS and v is not None}
     if not safe:
-        return
+        return {"updated": False, "deleted": {}}
 
     # Fetch existing candidate row for merging lists
     existing = await _get_candidate_row(candidate_id)
@@ -4707,6 +4707,9 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
     params: dict = {"cid": candidate_id}
     current_role_set = False
     raw_data_changed = False
+    parsed_resume = _parse_raw_data(existing.get("parsed_resume_json"))
+    parsed_resume_changed = False
+    applied_deletions: dict[str, list[str]] = {}
     has_preference_payload = False
 
     for field, value in safe.items():
@@ -4827,17 +4830,21 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                         existing["skills"] = new_list  # keep in sync for subsequent iterations
                 elif del_field == "certifications":
                     current = _candidate_certification_sources(existing)
-                    # Also check raw list in case the item was stored before normalization
                     raw_current = list(existing_raw.get("certifications") or [])
                     new_list, found = _remove_item_from_list(current, item)
-                    if not found:
-                        raw_current, found = _remove_item_from_list(raw_current, item)
-                        if found:
-                            existing_raw["certifications"] = raw_current
-                            raw_data_changed = True
-                    else:
-                        existing_raw["certifications"] = new_list
+                    raw_new, raw_found = _remove_item_from_list(raw_current, item)
+                    parsed_current = list(parsed_resume.get("certifications") or [])
+                    parsed_new, parsed_found = _remove_item_from_list(parsed_current, item)
+                    # Certifications may have originated from either raw_data or the
+                    # parsed-resume snapshot.  Remove from both; otherwise the stale
+                    # snapshot is merged back into the profile on refresh.
+                    if found or raw_found or parsed_found:
+                        existing_raw["certifications"] = raw_new if raw_found else new_list
                         raw_data_changed = True
+                        if parsed_found:
+                            parsed_resume["certifications"] = parsed_new
+                            parsed_resume_changed = True
+                        applied_deletions.setdefault("certifications", []).append(item)
                 elif del_field == "preferred_roles":
                     current = existing_raw.get("preferred_roles") or []
                     new_list, found = _remove_item_from_list(current, item)
@@ -4898,6 +4905,12 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                             if found:
                                 existing_raw["certifications"] = new_list
                                 raw_data_changed = True
+                                parsed_current = list(parsed_resume.get("certifications") or [])
+                                parsed_new, parsed_found = _remove_item_from_list(parsed_current, item)
+                                if parsed_found:
+                                    parsed_resume["certifications"] = parsed_new
+                                    parsed_resume_changed = True
+                                applied_deletions.setdefault("certifications", []).append(item)
                                 break
                         elif try_field == "preferred_roles":
                             current = existing_raw.get("preferred_roles") or []
@@ -4930,9 +4943,14 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
         set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
         params["raw_data"] = json.dumps(existing_raw)
 
-    if not set_clauses and not has_preference_payload:
-        return
+    if parsed_resume_changed:
+        set_clauses.append("parsed_resume_json = CAST(:parsed_resume_json AS jsonb)")
+        params["parsed_resume_json"] = json.dumps(parsed_resume)
 
+    if not set_clauses and not has_preference_payload:
+        return {"updated": False, "deleted": {}}
+
+    persisted = False
     if set_clauses:
         set_clauses.append("updated_at = now()")
         set_clauses.append("updated_by_source = 'eve_chat'")
@@ -4943,6 +4961,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                 params,
             )
             await db.commit()
+        persisted = True
 
     preferred_roles = _normalize_preferred_roles(existing_raw.get("preferred_roles") or [])
     availability_value = (existing_raw.get("availability") or "").strip()
@@ -4954,6 +4973,8 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> None:
                 "availability": availability_value,
             },
         )
+
+    return {"updated": persisted or has_preference_payload, "deleted": applied_deletions}
 
 
 _JOB_SEARCH_PHRASES = (
@@ -5238,24 +5259,22 @@ async def chat(request: ChatRequest):
             except Exception as _e:
                 logger.warning("[chat-multi-field] merge failed: %s", _e)
 
-    # Persist updated window (includes assistant reply)
-    # Strip [PROFILE_QUESTION] instructions from persisted history — they are
-    # internal prompts and must not appear in the candidate's chat record.
-    if request.candidate_id:
-        clean_combined = [
-            m for m in combined
-            if not (m.get("role") == "user" and m.get("content", "").startswith("[PROFILE_QUESTION]"))
-        ]
-        updated_window = clean_combined + [{"role": "assistant", "content": clean_reply}]
-        asyncio.ensure_future(_save_chat_window(request.candidate_id, request.session_id, updated_window))
-
     # Apply profile updates to PostgreSQL
     if profile_updates and request.candidate_id:
         try:
-            await _apply_profile_updates(request.candidate_id, profile_updates)
+            apply_result = await _apply_profile_updates(request.candidate_id, profile_updates)
+            requested_deletions = profile_updates.get("profile_deletions") or {}
+            applied_deletions = apply_result.get("deleted") or {}
+            if requested_deletions and not applied_deletions:
+                # The LLM writes its reply before persistence. Do not tell the
+                # candidate an item was removed unless the database changed.
+                clean_reply = "I couldn't find that item in your saved profile, so no change was made."
+                profile_updates = None
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
         except Exception as e:
             logger.warning("Profile update failed: %s", e)
+            if (profile_updates.get("profile_deletions") or {}):
+                clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
             profile_updates = None
 
     if request.candidate_id:
@@ -5263,6 +5282,20 @@ async def chat(request: ChatRequest):
             await _advance_voice_intake_from_chat(request.candidate_id, last_user.content)
         except Exception as e:
             logger.warning("Chat voice intake advance failed: %s", e)
+
+    # Persist the exact completed turn synchronously.  Deferred saves could
+    # finish out of order and let a later request load/replay a stale assistant
+    # response as the current conversation state.
+    if request.candidate_id:
+        clean_combined = [
+            m for m in combined
+            if not (m.get("role") == "user" and m.get("content", "").startswith("[PROFILE_QUESTION]"))
+        ]
+        updated_window = clean_combined + [{"role": "assistant", "content": clean_reply}]
+        try:
+            await _save_chat_window(request.candidate_id, request.session_id, updated_window)
+        except Exception as e:
+            logger.warning("Chat history persistence failed for candidate %s: %s", request.candidate_id, e)
 
     return ChatResponse(
         reply=clean_reply,

@@ -25,6 +25,11 @@ jest.mock("../../components/onboarding/VoiceIntake", () => (props) => {
 });
 jest.mock("../../components/ChatHub", () => (props) => (
   <div data-testid="chat-hub">
+    <div data-testid="chat-transcript">
+      {(props.chats || []).map((chat) => (
+        <div key={chat.id} data-sender={chat.sender}>{chat.content}</div>
+      ))}
+    </div>
     <input
       data-testid="chat-text-input"
       value={props.inputValue || ""}
@@ -294,5 +299,63 @@ describe("Dashboard chat flow regressions", () => {
       "React",
       "Leadership",
     ]);
+  });
+
+  it("persists a certification deletion and refreshes the right profile panel from backend data", async () => {
+    mockRequests([
+      makeProfile({ certifications: ["AWS Certificate", "PMP"] }),
+      makeProfile({ certifications: ["PMP"] }),
+    ]);
+    axios.post.mockResolvedValue({
+      data: {
+        reply: "AWS Certificate has been removed.",
+        profile_updates: { profile_deletions: { certifications: ["AWS Certificate"] } },
+      },
+    });
+
+    renderResult = renderDashboard();
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+    act(() => {
+      Array.from(renderResult.container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("Chat with Eve")
+      )?.click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    act(() => {
+      setInputValue(renderResult.container.querySelector('[data-testid="chat-text-input"]'), "Remove AWS Certificate from Certifications");
+      renderResult.container.querySelector('[data-testid="chat-send-btn"]').click();
+    });
+
+    await waitForCondition(() => lastLivingProfileProps?.userProfile?.certifications?.length === 1);
+    expect(lastLivingProfileProps.userProfile.certifications).toEqual(["PMP"]);
+    expect(axios.get.mock.calls.some(([url]) => url.includes("/candidate/cand-123/profile"))).toBe(true);
+  });
+
+  it("renders a fresh Eve reply for a new salary message instead of replaying the prior reply", async () => {
+    mockRequests([makeProfile(), makeProfile({ salary_expectation: "7-10 LPA" })]);
+    axios.post
+      .mockResolvedValueOnce({ data: { reply: "AWS Certificate has been removed.", profile_updates: null } })
+      .mockResolvedValueOnce({ data: { reply: "I've noted your expected salary of 7-10 LPA.", profile_updates: { salary_expectation: "7-10 LPA" } } });
+
+    renderResult = renderDashboard();
+    await waitForSelector(renderResult.container, '[data-testid="jobs-deck"]');
+    act(() => { jest.advanceTimersByTime(900); });
+    act(() => {
+      Array.from(renderResult.container.querySelectorAll("button")).find((b) => b.textContent?.includes("Chat with Eve"))?.click();
+    });
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+    const input = renderResult.container.querySelector('[data-testid="chat-text-input"]');
+    const send = renderResult.container.querySelector('[data-testid="chat-send-btn"]');
+
+    act(() => { setInputValue(input, "Remove AWS Certificate from Certifications"); send.click(); });
+    await waitForCondition(() => renderResult.container.textContent.includes("AWS Certificate has been removed."));
+    act(() => { setInputValue(input, "I am expecting 7-10 LPA"); send.click(); });
+    await waitForCondition(() => renderResult.container.textContent.includes("I've noted your expected salary of 7-10 LPA."));
+
+    const secondRequest = axios.post.mock.calls[1][1];
+    expect(secondRequest.messages.at(-1)).toEqual({ role: "user", content: "I am expecting 7-10 LPA" });
+    expect(renderResult.container.querySelector('[data-testid="chat-transcript"]').textContent).toContain("7-10 LPA");
   });
 });

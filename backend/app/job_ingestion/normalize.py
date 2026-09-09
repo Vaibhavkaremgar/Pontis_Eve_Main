@@ -71,7 +71,11 @@ def normalize_lever(
 
         "salary_range": None,
 
-        "job_url": job.get("hostedUrl"),
+        "job_url": (
+            job.get("urls", {}).get("show")
+            or job.get("hostedUrl")
+            or job.get("urls", {}).get("apply")
+        ),
 
         "ats_type": "lever",
     }
@@ -108,7 +112,7 @@ def normalize_ashby(
 
         "salary_range": None,
 
-        "job_url": job.get("jobUrl"),
+        "job_url": job.get("jobUrl") or job.get("applyUrl"),
 
         "ats_type": "ashby",
     }

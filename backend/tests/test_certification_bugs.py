@@ -88,6 +88,8 @@ def _run_apply(candidate_state, updates):
                     candidate_state["education"] = json.loads(params["education"])
                 if "raw_data" in params:
                     candidate_state["raw_data"] = json.loads(params["raw_data"])
+                if "parsed_resume_json" in params:
+                    candidate_state["parsed_resume_json"] = json.loads(params["parsed_resume_json"])
                 return FakeResult()
             if "INSERT INTO candidate_preferences" in sql or "UPDATE candidate_preferences" in sql:
                 return FakeResult()
@@ -273,6 +275,21 @@ class TestBug2CertificationDeletion:
         assert "any" not in [c.lower() for c in certs]
         assert any("java full stack" in c.lower() for c in certs)
         assert any("aws certificate" in c.lower() for c in certs)
+
+    def test_delete_aws_certificate_persists_across_raw_and_resume_sources_then_refresh(self):
+        """A dashboard refresh must not revive a cert from parsed_resume_json."""
+        state = _make_candidate(
+            certifications=["AWS Certificate", "PMP"],
+            parsed_resume_json={"certifications": ["AWS Certificate", "PMP"]},
+        )
+        _run_apply(state, {"profile_deletions": {"certifications": ["AWS Certificate"]}})
+
+        assert "aws certificate" not in [c.lower() for c in _get_certs(state)]
+        assert "aws certificate" not in [
+            c.lower() for c in state["parsed_resume_json"]["certifications"]
+        ]
+        refreshed = server._normalize_for_frontend(state)
+        assert refreshed["certifications"] == ["PMP"]
 
     def test_sanitize_prevents_any_being_added_in_first_place(self):
         """End-to-end: LLM emits 'any' + real certs; sanitize strips 'any' before apply."""

@@ -4,8 +4,6 @@ from typing import Any
 from sqlalchemy import text
 
 from ats_agency_service import get_or_create_ats_agency
-from app.job_ingestion.embedding_service import generate_job_embedding
-from app.job_ingestion.qdrant_service import ensure_collection, upsert_job_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +27,54 @@ async def upsert_ats_job(
 
     if not ats_job_id:
         raise ValueError("ATS job is missing ats_job_id")
+
+    # Check whether this ATS job already exists.
+    result = await db.execute(
+        text("""
+            SELECT id, job_url
+            FROM job_descriptions
+            WHERE ats_type = :ats_type
+              AND ats_job_id = :ats_job_id
+            LIMIT 1
+        """),
+        {
+            "ats_type": ats_type,
+            "ats_job_id": ats_job_id,
+        },
+    )
+
+    existing = result.first()
+
+    if existing:
+        job_id = existing[0]
+        existing_job_url = existing[1]
+        incoming_job_url = job.get("job_url")
+
+        if existing_job_url is None and incoming_job_url is not None:
+            await db.execute(
+                text("""
+                    UPDATE job_descriptions
+                    SET job_url = :job_url,
+                        updated_at = NOW(),
+                        last_synced_at = NOW()
+                    WHERE id = :id
+                """),
+                {
+                    "id": job_id,
+                    "job_url": incoming_job_url,
+                },
+            )
+            await db.commit()
+            logger.debug(
+                "[job-scheduler] Filled missing job_url for existing job ats_type=%s ats_job_id=%s db_id=%s",
+                ats_type, ats_job_id, job_id,
+            )
+        else:
+            logger.debug(
+                "[job-scheduler] Existing job unchanged ats_type=%s ats_job_id=%s db_id=%s",
+                ats_type, ats_job_id, job_id,
+            )
+        return str(job_id)
 
     # Get the default system agency for this ATS.
     agency_id = await get_or_create_ats_agency(
@@ -58,31 +104,6 @@ async def upsert_ats_job(
             f"company_name={job.get('company_name')!r}, ats_type={ats_type!r}"
         )
     company_registry_id = cr_row[0]
-
-    # Check whether this ATS job already exists.
-    result = await db.execute(
-        text("""
-            SELECT id
-            FROM job_descriptions
-            WHERE ats_type = :ats_type
-              AND ats_job_id = :ats_job_id
-            LIMIT 1
-        """),
-        {
-            "ats_type": ats_type,
-            "ats_job_id": ats_job_id,
-        },
-    )
-
-    existing = result.first()
-
-    if existing:
-        job_id = existing[0]
-        logger.debug(
-            "[job-scheduler] Skipping existing job ats_type=%s ats_job_id=%s db_id=%s",
-            ats_type, ats_job_id, job_id,
-        )
-        return str(job_id)
 
     # New ATS job.
     result = await db.execute(
@@ -168,6 +189,9 @@ async def upsert_ats_job(
     await db.commit()
 
     try:
+        from app.job_ingestion.embedding_service import generate_job_embedding
+        from app.job_ingestion.qdrant_service import ensure_collection, upsert_job_embedding
+
         ensure_collection()
         upsert_job_embedding(str(new_id), generate_job_embedding(job), job)
     except Exception as exc:
