@@ -3883,7 +3883,10 @@ BEHAVIOR:
   <<<PROFILE_UPDATES>>>
   {{"profile_updates": {{"profile_deletions": {{"skills": ["FastAPI"]}}}}}}
   <<<END_UPDATES>>>
-  Supported deletion fields: skills, certifications, preferred_roles, work_experience, education, projects, preferred_locations.
+  Supported deletion fields: skills, certifications, preferred_roles, work_experience, education, projects, preferred_locations, additional_information.
+  When the candidate explicitly says an item is "from Additional Information", use
+  ONLY `additional_information` as the deletion target. Never delete a
+  certification merely because the requested phrase contains "certificate".
   If the item does not exist in the profile, say so — do NOT add it.
   If the request is ambiguous (multiple items could match), ask a clarification question instead of deleting.
 
@@ -4163,6 +4166,8 @@ _DELETION_SECTION_MAP = {
     "location": "preferred_locations",
     "preferred location": "preferred_locations",
     "preferred locations": "preferred_locations",
+    "additional information": "additional_information",
+    "additional info": "additional_information",
 }
 
 
@@ -4208,7 +4213,13 @@ def _detect_deletion_intent(message: str) -> Optional[dict]:
         item = m.group("item").strip().strip('"\'')
         field = _resolve_section_field(m.group("section"))
         if field and item:
-            return {"field": field, "item": item}
+            deletion = {"field": field, "item": item}
+            # Additional Information is free-form text, so a single request can
+            # name several phrases. Split them before persistence while keeping
+            # the original item for backwards-compatible intent consumers.
+            if field == "additional_information":
+                deletion["items"] = _split_update_list(item)
+            return deletion
 
     # Pattern 2: "I no longer want <item> as my (preferred) <section>"
     m_no_longer_as = re.search(
@@ -4280,19 +4291,27 @@ def _apply_deletion_to_profile_updates(updates: dict, deletion: dict) -> dict:
     if not deletion or not deletion.get("item"):
         return updates
     result = dict(updates)
-    existing_deletions = result.get("profile_deletions") or {}
+    existing_deletions = dict(result.get("profile_deletions") or {})
     field = deletion.get("field")
-    item = deletion["item"]
+    items = deletion.get("items") or [deletion["item"]]
+    # A user-specified Additional Information target is authoritative. The LLM
+    # may otherwise infer a certifications deletion from words in the item.
+    if field == "additional_information":
+        existing_deletions = {
+            "additional_information": existing_deletions.get("additional_information") or []
+        }
     if field:
         bucket = existing_deletions.get(field) or []
-        if item not in bucket:
-            bucket.append(item)
+        for item in items:
+            if item not in bucket:
+                bucket.append(item)
         existing_deletions[field] = bucket
     else:
         # Unknown field — store under "_unknown" for best-effort matching
         bucket = existing_deletions.get("_unknown") or []
-        if item not in bucket:
-            bucket.append(item)
+        for item in items:
+            if item not in bucket:
+                bucket.append(item)
         existing_deletions["_unknown"] = bucket
     result["profile_deletions"] = existing_deletions
     return result
@@ -4751,6 +4770,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
     parsed_resume = _parse_raw_data(existing.get("parsed_resume_json"))
     parsed_resume_changed = False
     applied_deletions: dict[str, list[str]] = {}
+    not_found_deletions: dict[str, list[str]] = {}
     has_preference_payload = False
 
     for field, value in safe.items():
@@ -4963,6 +4983,10 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                         existing_raw["additional_information"] = updated_text
                         raw_data_changed = True
                         applied_deletions.setdefault("additional_information", []).append(item)
+                    else:
+                        # This field is explicitly scoped: do not fall back to
+                        # certifications, skills, or any other profile section.
+                        not_found_deletions.setdefault("additional_information", []).append(item)
                 elif del_field == "experience_years":
                     set_clauses.append("experience_years = :experience_years")
                     params["experience_years"] = None
@@ -5033,7 +5057,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
         params["parsed_resume_json"] = json.dumps(parsed_resume)
 
     if not set_clauses and not has_preference_payload:
-        return {"updated": False, "deleted": {}}
+        return {"updated": False, "deleted": {}, "not_found": not_found_deletions}
 
     persisted = False
     if set_clauses:
@@ -5059,7 +5083,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             },
         )
 
-    return {"updated": persisted or has_preference_payload, "deleted": applied_deletions}
+    return {
+        "updated": persisted or has_preference_payload,
+        "deleted": applied_deletions,
+        "not_found": not_found_deletions,
+    }
 
 
 _JOB_SEARCH_PHRASES = (
@@ -5350,11 +5378,26 @@ async def chat(request: ChatRequest):
             apply_result = await _apply_profile_updates(request.candidate_id, profile_updates)
             requested_deletions = profile_updates.get("profile_deletions") or {}
             applied_deletions = apply_result.get("deleted") or {}
+            not_found_deletions = apply_result.get("not_found") or {}
             if requested_deletions and not applied_deletions:
                 # The LLM writes its reply before persistence. Do not tell the
                 # candidate an item was removed unless the database changed.
-                clean_reply = "I couldn't find that item in your saved profile, so no change was made."
+                missing_additional = not_found_deletions.get("additional_information") or []
+                if missing_additional:
+                    clean_reply = (
+                        "I couldn't find "
+                        f"{', '.join(missing_additional)} in your Additional Information, "
+                        "so no change was made."
+                    )
+                else:
+                    clean_reply = "I couldn't find that item in your saved profile, so no change was made."
                 profile_updates = None
+            elif not_found_deletions.get("additional_information"):
+                missing = ", ".join(not_found_deletions["additional_information"])
+                clean_reply = (
+                    f"{clean_reply.rstrip()} I couldn't find {missing} in your "
+                    "Additional Information, so it was left unchanged."
+                )
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
         except Exception as e:
             logger.exception("Profile update failed: %s", e)

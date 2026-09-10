@@ -416,6 +416,57 @@ class TestRemoveNonExistentItem:
 
 
 # ---------------------------------------------------------------------------
+# Additional Information removals stay scoped to raw_data
+# ---------------------------------------------------------------------------
+
+class TestRemoveAdditionalInformation:
+    def test_multiple_phrases_are_removed_only_from_additional_information(self):
+        state = _make_candidate()
+        state["raw_data"].update({
+            "additional_information": (
+                "Java Full-Stack; AWS Certificate; Open-source contributor"
+            ),
+            "unrelated_metadata": {"source": "resume"},
+        })
+        original_certifications = list(state["raw_data"]["certifications"])
+
+        _, updates = server._extract_profile_updates(
+            "Removed.",
+            candidate_message=(
+                "Remove Java full stack and AWS certificate from Additional information"
+            ),
+        )
+
+        assert updates is not None
+        assert updates["profile_deletions"] == {
+            "additional_information": ["Java full stack", "AWS certificate"]
+        }
+
+        _run_apply(state, updates)
+
+        additional = state["raw_data"]["additional_information"].lower()
+        assert "java" not in additional
+        assert "aws certificate" not in additional
+        assert "open-source contributor" in additional
+        assert state["raw_data"]["certifications"] == original_certifications
+        assert state["raw_data"]["unrelated_metadata"] == {"source": "resume"}
+
+    def test_explicit_additional_information_target_overrides_llm_certification_guess(self):
+        _, updates = server._extract_profile_updates(
+            '''Removed.
+<<<PROFILE_UPDATES>>>
+{"profile_updates": {"profile_deletions": {"certifications": ["AWS certificate"]}}}
+<<<END_UPDATES>>>''',
+            candidate_message="Remove AWS certificate from Additional Information",
+        )
+
+        assert updates is not None
+        assert updates["profile_deletions"] == {
+            "additional_information": ["AWS certificate"]
+        }
+
+
+# ---------------------------------------------------------------------------
 # 8. Ambiguous removal request — clarification, not deletion
 # ---------------------------------------------------------------------------
 
