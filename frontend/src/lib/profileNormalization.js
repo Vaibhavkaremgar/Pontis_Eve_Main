@@ -34,8 +34,7 @@ const EXPERIENCE_MONTHS = new Map([
   ["dec", 11], ["december", 11],
 ]);
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const MS_PER_YEAR = 365.25 * MS_PER_DAY;
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const IMMEDIATE_JOINER_PATTERN = /\b(?:immediate\s+joiner|i(?:'m| am)?\s+an?\s+immediate\s+joiner)\b/i;
 
@@ -51,6 +50,23 @@ export function formatExperienceYears(value) {
   if (!Number.isFinite(years) || years < 0) return "";
   const rounded = Math.round(years * 10) / 10;
   return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : rounded.toFixed(1);
+}
+
+// Work history is stored and displayed at month precision.  Converting the
+// calculated value to months here keeps the profile header and bio readable
+// without losing a partial year to decimal rounding.
+export function formatExperienceDuration(value) {
+  const years = Number(value);
+  if (!Number.isFinite(years) || years < 0) return "";
+
+  const totalMonths = Math.round(years * 12);
+  if (totalMonths <= 0) return "";
+  const wholeYears = Math.floor(totalMonths / 12);
+  const months = totalMonths % 12;
+  const parts = [];
+  if (wholeYears) parts.push(`${wholeYears} year${wholeYears === 1 ? "" : "s"}`);
+  if (months) parts.push(`${months} month${months === 1 ? "" : "s"}`);
+  return parts.join(" ") || "0 months";
 }
 
 function normalizeKey(value) {
@@ -553,7 +569,13 @@ function formatWorkExperienceDateLabel(value) {
   const timestamp = parseExperienceDate(text, "start");
   if (timestamp === null) return "";
   const date = new Date(timestamp);
-  return `${String(date.getUTCMonth() + 1).padStart(2, "0")} ${String(date.getUTCFullYear()).slice(-2)}`;
+  return `${MONTH_LABELS[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
+function formatWorkExperienceMonth(timestamp) {
+  if (timestamp === null || timestamp === undefined) return "";
+  const date = new Date(timestamp);
+  return `${MONTH_LABELS[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
 function formatWorkExperienceDateRange(exp) {
@@ -574,7 +596,7 @@ function formatWorkExperienceDateRange(exp) {
   const startLabel = formatWorkExperienceDateLabel(start);
   const endLabel = formatWorkExperienceDateLabel(end);
   if (!startLabel || startLabel === "Present") return endLabel === "Present" ? "Present" : "";
-  return `${startLabel} - ${endLabel || "Present"}`;
+  return `${startLabel} – ${endLabel || "Present"}`;
 }
 
 function dedupeExperienceDescription(value) {
@@ -582,7 +604,7 @@ function dedupeExperienceDescription(value) {
   if (!text) return "";
 
   const seen = new Set();
-  return text
+  const uniqueFragments = text
     .split(/(?<=[.!?])\s+|\n+/)
     .map((fragment) => normalizeText(fragment).replace(/\s+([.!?])/g, "$1"))
     .filter((fragment) => {
@@ -593,6 +615,20 @@ function dedupeExperienceDescription(value) {
       return true;
     })
     .join(" ");
+
+  // Resume parsers occasionally repeat a whole description without sentence
+  // punctuation (for example, a duplicated Python Developer responsibility).
+  // Collapse an exact repeated half in addition to repeated sentences.
+  const words = uniqueFragments.split(/\s+/).filter(Boolean);
+  if (words.length >= 4 && words.length % 2 === 0) {
+    const midpoint = words.length / 2;
+    const left = words.slice(0, midpoint).join(" ");
+    const right = words.slice(midpoint).join(" ");
+    if (normalizeKey(left).replace(/[^\w\s]+/g, "") === normalizeKey(right).replace(/[^\w\s]+/g, "")) {
+      return left;
+    }
+  }
+  return uniqueFragments;
 }
 
 function dedupeExperienceDescriptionForRecord(value, exp) {
@@ -630,22 +666,36 @@ export function calculateExperienceYears(experience) {
 
   if (intervals.length === 0) return 0;
 
-  let mergedMilliseconds = 0;
-  let [currentStart, currentEnd] = intervals[0];
+  // Use calendar months rather than day counts.  The profile intentionally
+  // displays month-only dates, so a Jan 2024–Mar 2025 role is 15 months,
+  // irrespective of the number of days in the intervening calendar years.
+  const asMonth = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.getUTCFullYear() * 12 + date.getUTCMonth();
+  };
+  const monthIntervals = intervals
+    // Completed-role end dates are interval boundaries, while an active role
+    // extends through the current month. This avoids counting an extra month
+    // for ranges such as Jan 1–Jan 1.
+    .map(([start, end]) => [asMonth(start), asMonth(Math.max(start, end - 1))])
+    .sort((a, b) => a[0] - b[0]);
 
-  for (let i = 1; i < intervals.length; i += 1) {
-    const [start, end] = intervals[i];
-    if (start <= currentEnd) {
+  let mergedMonths = 0;
+  let [currentStart, currentEnd] = monthIntervals[0];
+
+  for (let i = 1; i < monthIntervals.length; i += 1) {
+    const [start, end] = monthIntervals[i];
+    if (start <= currentEnd + 1) {
       currentEnd = Math.max(currentEnd, end);
     } else {
-      mergedMilliseconds += currentEnd - currentStart;
+      mergedMonths += currentEnd - currentStart + 1;
       currentStart = start;
       currentEnd = end;
     }
   }
 
-  mergedMilliseconds += currentEnd - currentStart;
-  return Math.max(0, mergedMilliseconds / MS_PER_YEAR);
+  mergedMonths += currentEnd - currentStart + 1;
+  return Math.max(0, mergedMonths / 12);
 }
 
 function normalizeExperienceRecord(exp) {
@@ -677,6 +727,15 @@ function normalizeExperienceRecord(exp) {
   const formattedDates = formatWorkExperienceDateRange(normalized);
   if (formattedDates) {
     normalized.dates = formattedDates;
+  }
+  const window = parseExperienceWindow(normalized);
+  if (window.start !== null) {
+    normalized.start_date = formatWorkExperienceMonth(window.start);
+  }
+  if (window.openEnded) {
+    normalized.end_date = "Present";
+  } else if (window.end !== null) {
+    normalized.end_date = formatWorkExperienceMonth(Math.max(window.start ?? window.end, window.end - 1));
   }
   return normalized;
 }

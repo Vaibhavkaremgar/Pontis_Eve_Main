@@ -60,7 +60,7 @@ describe("candidate Bio", () => {
       ],
     });
 
-    expect(bio).toContain("2.1 years");
+    expect(bio).toMatch(/2 years \d+ months/);
     expect(bio).toContain("Python Developer at Viral Bug");
     expect(bio).not.toContain("currently works as Software Engineer at Deepija Telecom Private Limited");
   });

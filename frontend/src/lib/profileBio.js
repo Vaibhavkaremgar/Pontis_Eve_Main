@@ -1,4 +1,4 @@
-import { formatExperienceYears, normalizeProfileForDisplay } from "./profileNormalization";
+import { formatExperienceDuration, normalizeProfileForDisplay } from "./profileNormalization";
 
 function text(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -48,7 +48,7 @@ export function buildProfileBio(profile) {
   const latest = candidate.experience?.[0] || {};
   const role = text(candidate.current_role || candidate.headline || latest.title);
   const company = text(candidate.current_company || latest.company);
-  const years = formatExperienceYears(candidate.experience_years);
+  const experienceDuration = formatExperienceDuration(candidate.experience_years);
   const skills = uniqueValues(candidate.keySkills || candidate.skills || [], 4);
   const focus = uniqueValues(candidate.preferred_roles || [], 3)
     .filter((item) => key(item) !== key(role));
@@ -58,16 +58,16 @@ export function buildProfileBio(profile) {
     .find((job) => job && key(job) !== key(currentJob));
   const sentences = [];
 
-  if (currentJob && years) {
+  if (currentJob && experienceDuration) {
     sentences.push(role
-      ? `Currently ${articleFor(role)} ${currentJob}, with ${years} year${Number(years) === 1 ? "" : "s"} of professional experience.`
-      : `Currently at ${company}, with ${years} year${Number(years) === 1 ? "" : "s"} of professional experience.`);
+      ? `Currently ${articleFor(role)} ${currentJob}, with ${experienceDuration} of professional experience.`
+      : `Currently at ${company}, with ${experienceDuration} of professional experience.`);
   } else if (currentJob && role) {
     sentences.push(`Currently ${articleFor(role)} ${currentJob}.`);
   } else if (currentJob) {
     sentences.push(`Currently at ${company}.`);
-  } else if (years) {
-    sentences.push(`Professional with ${years} year${Number(years) === 1 ? "" : "s"} of experience.`);
+  } else if (experienceDuration) {
+    sentences.push(`Professional with ${experienceDuration} of experience.`);
   }
 
   if (priorJob && skills.length) {

@@ -3,7 +3,7 @@ import axios from "axios";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
 import { JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
-import { formatExperienceYears, normalizeProfileForDisplay } from "../lib/profileNormalization";
+import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -282,9 +282,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
                   {profile.location}
                 </span>
               )}
-              {experienceCount > 0 && formatExperienceYears(profile.experience_years) && (
+              {experienceCount > 0 && formatExperienceDuration(profile.experience_years) && (
                 <span className="text-[12px] text-[#4A4A48] font-normal">
-                  {formatExperienceYears(profile.experience_years)} yr{Number(formatExperienceYears(profile.experience_years)) === 1 ? "" : "s"} exp
+                  {formatExperienceDuration(profile.experience_years)} exp
                 </span>
               )}
               <OpenToMatchesBadge isOpen={profile.isOpenToMatches} onToggle={onToggleOpenToMatches} />

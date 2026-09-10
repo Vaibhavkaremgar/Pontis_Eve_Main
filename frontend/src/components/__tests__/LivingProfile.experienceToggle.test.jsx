@@ -227,8 +227,8 @@ describe("LivingProfile experience toggle", () => {
     });
 
     const header = view.container.querySelector('[data-testid="profile-header-card"]');
-    expect(header.textContent).toContain("2.1 yrs exp");
-    expect(header.textContent).not.toContain("0.6 yrs exp");
+    expect(header.textContent).toContain("2 years 1 month exp");
+    expect(header.textContent).not.toContain("0.6");
   });
 
   it("renders updated experience dates from the profile API", () => {

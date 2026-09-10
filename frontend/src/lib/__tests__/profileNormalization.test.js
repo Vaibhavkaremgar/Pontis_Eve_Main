@@ -1,5 +1,6 @@
 import {
   calculateExperienceYears,
+  formatExperienceDuration,
   mergeProfilesForDisplay,
   normalizeProfileForDisplay,
 } from "../profileNormalization";
@@ -221,7 +222,7 @@ describe("calculateExperienceYears", () => {
       { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
     ]);
 
-    expect(years).toBeCloseTo(2.00, 2);
+    expect(years).toBeCloseTo(2.08, 2);
   });
 
   it("sums multiple non-overlapping jobs", () => {
@@ -249,7 +250,7 @@ describe("calculateExperienceYears", () => {
       { start_date: "2025-08-01", end_date: "Present" },
     ]);
 
-    expect(years).toBeCloseTo(1.07, 2);
+    expect(years).toBeCloseTo(1.08, 2);
   });
 
   it("uses the updated start date when calculating total experience", () => {
@@ -257,7 +258,7 @@ describe("calculateExperienceYears", () => {
       { company: "Viral Bug", title: "Python Developer", start_date: "January 2026", end_date: "Present" },
     ]);
 
-    expect(years).toBeCloseTo(0.65, 1);
+    expect(years).toBeCloseTo(0.67, 1);
   });
 
   it("handles missing or invalid dates safely", () => {
@@ -280,12 +281,32 @@ describe("calculateExperienceYears", () => {
       ],
     });
 
-    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
-    expect(normalized.experience_years).toBeCloseTo(2.07, 2);
+    expect(normalized.calculatedExperienceYears).toBeCloseTo(2.08, 2);
+    expect(normalized.experience_years).toBeCloseTo(2.08, 2);
   });
 });
 
 describe("work experience dashboard normalization", () => {
+  it("normalizes Python Developer dates and removes a repeated description", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [{
+        company: "Acme",
+        title: "Python Developer",
+        start_date: "2024-01-15",
+        end_date: "2025-03-20",
+        description: "Built Python APIs with FastAPI Built Python APIs with FastAPI",
+      }],
+    });
+
+    expect(normalized.experience[0]).toMatchObject({
+      start_date: "Jan 2024",
+      end_date: "Mar 2025",
+      dates: "Jan 2024 – Mar 2025",
+      description: "Built Python APIs with FastAPI",
+    });
+    expect(formatExperienceDuration(normalized.experience_years)).toBe("1 year 3 months");
+  });
+
   it("deduplicates identical same-employer entries and repeated description boilerplate", () => {
     const normalized = normalizeProfileForDisplay({
       experience: [
@@ -316,7 +337,7 @@ describe("work experience dashboard normalization", () => {
 
     expect(normalized.experience).toHaveLength(2);
     expect(normalized.experience.find((entry) => entry.company.toLowerCase() === "dpj telecom")).toMatchObject({
-      dates: "06 24 - 05 25",
+      dates: "Jun 2024 – May 2025",
       description: "Built internal tools.",
     });
     expect(normalized.experience.map((entry) => entry.company)).toContain("Viral Bug");
@@ -332,7 +353,7 @@ describe("work experience dashboard normalization", () => {
     expect(normalized.experience_years).not.toBe(0.6);
   });
 
-  it("renders current and historic work dates as MM YY", () => {
+  it("renders current and historic work dates as MMM YYYY", () => {
     const normalized = normalizeProfileForDisplay({
       experience: [
         { company: "Viral Bug", title: "Engineer", start_date: "2025-06", end_date: "Present" },
@@ -341,8 +362,8 @@ describe("work experience dashboard normalization", () => {
     });
 
     expect(normalized.experience.map((entry) => entry.dates)).toEqual([
-      "06 25 - Present",
-      "06 24 - 05 25",
+      "Jun 2025 – Present",
+      "Jun 2024 – May 2025",
     ]);
   });
 });
@@ -486,7 +507,7 @@ describe("mergeProfilesForDisplay", () => {
     expect(merged.experience[0]).toMatchObject({
       title: "Python Backend Developer",
       company: "Acme",
-      start_date: "2022-01-01",
+      start_date: "Jan 2022",
       end_date: "Present",
     });
     expect(merged.experience[0].description).toContain("Built APIs");
