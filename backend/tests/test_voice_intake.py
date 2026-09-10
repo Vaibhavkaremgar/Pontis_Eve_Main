@@ -603,6 +603,81 @@ class TestProfileMerge:
 
 
 class TestVoiceIntakePersistenceRegression:
+    def test_new_candidate_progress_saves_with_verified_candidate_id(self, monkeypatch):
+        """A parsed, new candidate without availability can persist /progress."""
+        import sys, os
+        from types import SimpleNamespace
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        candidate_id = "new-candidate-progress"
+        candidate = {
+            "id": candidate_id,
+            "name": "New Candidate",
+            "email": "new@example.com",
+            "raw_data": {"certifications": []},
+            "skills": [],
+            "work_experience": [],
+            "education": [],
+            "summary": "",
+            "current_role": "",
+            "current_company": "",
+            "location": "",
+            "experience_years": None,
+        }
+        saved = {}
+
+        async def fake_get_candidate_row(received_candidate_id):
+            assert received_candidate_id == candidate_id
+            return candidate
+
+        async def fake_save_resume(received_candidate_id, resume):
+            saved["resume_candidate_id"] = received_candidate_id
+            saved["resume"] = resume
+
+        async def fake_persist(received_candidate_id, received_candidate, voice_data, resume):
+            saved["persist_candidate_id"] = received_candidate_id
+            saved["persist_candidate"] = received_candidate
+            saved["voice_data"] = voice_data
+            saved["persisted_resume"] = resume
+            return received_candidate
+
+        async def fake_extract_voice_info(transcript):
+            return {}
+
+        class FakeCompletions:
+            async def create(self, *args, **kwargs):
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content='{"known_topics": [], "missing_topics": ["target_role"], "completed": false}'))]
+                )
+
+        monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+        monkeypatch.setattr(server, "_save_voice_intake_resume", fake_save_resume)
+        monkeypatch.setattr(server, "_persist_voice_intake_profile_state", fake_persist)
+        monkeypatch.setattr(server, "_extract_voice_info", fake_extract_voice_info)
+        monkeypatch.setattr(
+            server,
+            "openai_client",
+            SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())),
+        )
+
+        response = asyncio.run(
+            server.candidate_voice_intake_progress(
+                server.VoiceCandidateIntakeProgressRequest(
+                    candidate_id=candidate_id,
+                    transcript="Candidate: I am looking for a backend role.",
+                )
+            )
+        )
+
+        assert response["status"] == "saved"
+        assert response["candidate_id"] == candidate_id
+        assert saved["resume_candidate_id"] == candidate_id
+        assert saved["persist_candidate_id"] == candidate_id
+        assert saved["persist_candidate"] is candidate
+        assert saved["persisted_resume"] == response["voice_intake_resume"]
+
     def test_persistence_helper_writes_preferences_and_voice_intake_state(self, monkeypatch):
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

@@ -2246,6 +2246,7 @@ async def _llm_analyze_intake(
     partial_answer: str = "",
 ) -> dict:
     """Ask the LLM to determine what's known, what's missing, and what to ask next."""
+    raw_data = _parse_raw_data(candidate_profile.get("raw_data"))
     profile_summary = {
         "name": candidate_profile.get("name") or candidate_profile.get("name"),
         "current_role": candidate_profile.get("current_role") or candidate_profile.get("headline"),
