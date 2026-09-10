@@ -657,3 +657,48 @@ class TestRegressionEducationAndNewJob:
 
         assert merged_once[0]["description"] == description
         assert merged_twice == merged_once
+
+    def test_repeated_saves_canonicalize_persisted_duplicate_job_and_descriptions(self):
+        """A duplicate already persisted by an earlier save is repaired, not retained."""
+        from server import _merge_work_experience
+
+        repeated = "Built APIs. Owned deployments. Built APIs."
+        persisted = [
+            {
+                "title": "Backend Engineer",
+                "company": "Acme",
+                "start_date": "2022",
+                "end_date": "2024",
+                "description": repeated,
+            },
+            {
+                "title": "Backend Engineer",
+                "company": "Acme",
+                "start_date": "January 2022",
+                "end_date": "June 2024",
+                "description": "Owned deployments; Improved observability; Owned deployments;",
+            },
+            {
+                "title": "Backend Engineer",
+                "company": "OtherCo",
+                "start_date": "2022",
+                "end_date": "2024",
+                "description": "Built APIs.",
+            },
+        ]
+        incoming = [{
+            "title": "Backend Engineer",
+            "company": "Acme",
+            "description": "Built APIs. Improved observability.",
+        }]
+
+        merged_once = _merge_work_experience(persisted, incoming)
+        merged_twice = _merge_work_experience(merged_once, incoming)
+
+        assert len(merged_once) == 2
+        acme = next(entry for entry in merged_once if entry["company"] == "Acme")
+        assert acme["title"] == "Backend Engineer"
+        assert acme["start_date"] == "2022"
+        assert acme["end_date"] == "2024"
+        assert acme["description"] == "Built APIs. Owned deployments. Improved observability;"
+        assert merged_twice == merged_once

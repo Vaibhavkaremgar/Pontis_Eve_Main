@@ -360,12 +360,61 @@ describe("buildSummary", () => {
     });
 
     expect(summary.map((item) => item.label)).toEqual([
+      "Summary",
       "Current role",
       "Skills",
       "Additional information",
     ]);
     expect(summary.find((item) => item.label === "Looking for")).toBeUndefined();
     expect(summary.find((item) => item.label === "Certifications")).toBeUndefined();
+  });
+
+  it("adds a data-grounded Summary section after Voice Intake", () => {
+    const summary = buildSummary({
+      voice_intake_summary_source: {
+        current_role: "Python Developer",
+        current_company: "Viral Bug",
+        preferred_roles: ["Backend Developer"],
+        voice_intake_resume: {
+          completed_turns: [
+            { question: "What are your current responsibilities?", answer: "I build payment APIs for the checkout team." },
+          ],
+        },
+      },
+    });
+
+    expect(summary.find((item) => item.label === "Summary")?.value).toBe(
+      "Python Developer at Viral Bug I build payment APIs for the checkout team. Looking for Backend Developer."
+    );
+  });
+
+  it("uses Voice Intake current role and company over stale resume values", () => {
+    const summary = buildSummary({
+      current_role: "Software Engineer",
+      current_company: "Deepija Telecom",
+      voice_intake_summary_source: {
+        current_role: "Python Developer",
+        current_company: "Viral Bug",
+      },
+    });
+
+    expect(summary.find((item) => item.label === "Current role")?.value).toBe("Python Developer at Viral Bug");
+  });
+
+  it("does not render responsibility phrases as skills", () => {
+    const summary = buildSummary({
+      keySkills: ["Python", "data integration, debugging, testing, clean code, REST API development"],
+      voice_intake_summary_source: {
+        voice_intake_resume: {
+          completed_turns: [
+            { question: "What are your current responsibilities?", answer: "I handle data integration, debugging, testing, clean code, and REST API development." },
+          ],
+        },
+      },
+    });
+
+    expect(summary.find((item) => item.label === "Skills")?.value).toBe("Python");
+    expect(summary.find((item) => item.label === "Current role")?.detail).toContain("data integration");
   });
 });
 

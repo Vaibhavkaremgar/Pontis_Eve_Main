@@ -5816,14 +5816,19 @@ def _experience_entries_compatible(existing: dict, new_item: dict) -> bool:
     if not existing_has_dates or not new_has_dates:
         return True
 
+    if existing_start is not None and existing_end is not None and new_start is not None and new_end is not None:
+        return not (existing_end < new_start or new_end < existing_start)
+
+    # Resume parsers and Voice Intake often report the same range at different
+    # precision (for example, "2022 - 2024" versus "Jan 2022 - Jun 2024").
+    # Do not require the normalized timestamps to be byte-for-byte equal when
+    # the two complete ranges overlap.  For partial ranges, a conflicting known
+    # boundary still represents a distinct stint at the same employer/role.
     if existing_start is not None and new_start is not None and existing_start != new_start:
         return False
 
     if existing_end is not None and new_end is not None and existing_end != new_end:
         return False
-
-    if existing_start is not None and existing_end is not None and new_start is not None and new_end is not None:
-        return not (existing_end < new_start or new_end < existing_start)
 
     return True
 
@@ -5888,7 +5893,10 @@ def _dedupe_experience_description(value: Any) -> str:
 
     deduped: list[str] = []
     seen: set[str] = set()
-    for fragment in re.split(r"(?<=[.!?])\s+|\n+", text_value):
+    # Accept both normal prose and parser/LLM concatenation without whitespace
+    # after the sentence terminator.  Newline bullets are handled separately so
+    # distinct responsibilities remain distinct while repeats are removed.
+    for fragment in re.split(r"(?<=[.!?;])\s*|\n+|(?:^|\s)[•*-]\s+", text_value):
         cleaned = re.sub(r"\s+([.!?])", r"\1", _normalize_profile_text(fragment))
         key = re.sub(r"[^\w\s]+", " ", cleaned.lower())
         key = re.sub(r"\s+", " ", key).strip()
@@ -5953,12 +5961,13 @@ def _merge_experience_field(target: dict, source: dict, field: str) -> None:
 
 
 def _merge_work_experience(existing: list, new_items: list) -> list:
-    """Merge work experience lists with stable idempotent date synthesis."""
-    if not new_items:
-        return existing
-
-    merged = [dict(e) for e in existing if isinstance(e, dict)]
-    for item in new_items:
+    """Canonicalize and merge work history without re-appending saved jobs."""
+    # Process the persisted records as well as the incoming records through the
+    # same matcher.  Previously this copied ``existing`` verbatim and only
+    # deduplicated against ``new_items``; once a duplicate reached storage, later
+    # Voice Intake/profile saves preserved it forever.
+    merged: list[dict] = []
+    for item in [*(existing or []), *(new_items or [])]:
         if not isinstance(item, dict):
             continue
 
