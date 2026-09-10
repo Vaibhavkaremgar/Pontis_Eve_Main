@@ -201,7 +201,7 @@ describe("LivingProfile experience toggle", () => {
     ]);
   });
 
-  it("shows the calculated experience in the profile header instead of the stored value", () => {
+  it("shows the persisted experience value in the profile header", () => {
     view = renderLivingProfile({
       userProfile: {
         experience_years: 0.6,
@@ -223,8 +223,8 @@ describe("LivingProfile experience toggle", () => {
     });
 
     const header = view.container.querySelector('[data-testid="profile-header-card"]');
-    expect(header.textContent).toContain("2.1 yrs exp");
-    expect(header.textContent).not.toContain("0.6 yrs exp");
+    expect(header.textContent).toContain("0.6 yrs exp");
+    expect(header.textContent).not.toContain("2.1 yrs exp");
   });
 
   it("renders updated experience dates from the profile API", () => {

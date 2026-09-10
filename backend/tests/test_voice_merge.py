@@ -644,3 +644,16 @@ class TestRegressionEducationAndNewJob:
         assert merged[0]["end_date"] == "Present"
         assert "internal automation" in merged[0]["description"].lower()
         assert "production python services" in merged[0]["description"].lower()
+
+    def test_repeated_work_description_fragments_are_removed_idempotently(self):
+        from server import _merge_work_experience
+
+        description = "Built a SaaS product using Python, FastAPI, REST API, and PostgreSQL."
+        existing = [{"title": "Python Developer", "company": "Viral Bug", "description": f"{description} {description}"}]
+        incoming = [{"title": "Python Developer", "company": "Viral Bug", "description": description}]
+
+        merged_once = _merge_work_experience(existing, incoming)
+        merged_twice = _merge_work_experience(merged_once, incoming)
+
+        assert merged_once[0]["description"] == description
+        assert merged_twice == merged_once

@@ -1,4 +1,4 @@
-import { normalizeProfileForDisplay } from "./profileNormalization";
+import { formatExperienceYears, normalizeProfileForDisplay } from "./profileNormalization";
 
 function sentence(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
@@ -6,10 +6,9 @@ function sentence(value) {
 }
 
 function readableYears(value) {
-  const years = Number(value);
-  if (!Number.isFinite(years) || years <= 0) return "";
-  const rounded = Math.round(years * 10) / 10;
-  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} year${rounded === 1 ? "" : "s"}`;
+  const normalized = formatExperienceYears(value);
+  if (!normalized || Number(normalized) <= 0) return "";
+  return `${normalized} year${Number(normalized) === 1 ? "" : "s"}`;
 }
 
 function articleFor(value) {
@@ -34,9 +33,9 @@ export function buildCandidateNarrative(profile) {
   const name = String(candidate.name || "").trim();
   const latest = candidate.experience?.[0] || {};
   const previous = candidate.experience?.[1] || {};
-  const role = String(candidate.headline || candidate.current_role || latest.title || "").trim();
+  const role = String(candidate.current_role || candidate.headline || latest.title || "").trim();
   const company = String(candidate.current_company || latest.company || "").trim();
-  const years = readableYears(candidate.experience_years || candidate.calculatedExperienceYears);
+  const years = readableYears(candidate.experience_years);
   const targetRoles = (candidate.preferred_roles || []).filter(Boolean).slice(0, 3);
   const subject = name || "This candidate";
   const sentences = [];

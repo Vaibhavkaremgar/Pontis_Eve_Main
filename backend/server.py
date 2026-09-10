@@ -5880,6 +5880,25 @@ def _synthesized_experience_dates(entry: dict) -> str:
     return " Ã¢â‚¬â€ ".join(filter(None, [start_label, end_label or "Present"]))
 
 
+def _dedupe_experience_description(value: Any) -> str:
+    """Normalize whitespace and retain each repeated description fragment once."""
+    text_value = _normalize_profile_text(value)
+    if not text_value:
+        return ""
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for fragment in re.split(r"(?<=[.!?])\s+|\n+", text_value):
+        cleaned = re.sub(r"\s+([.!?])", r"\1", _normalize_profile_text(fragment))
+        key = re.sub(r"[^\w\s]+", " ", cleaned.lower())
+        key = re.sub(r"\s+", " ", key).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cleaned)
+    return " ".join(deduped)
+
+
 def _merge_experience_field(target: dict, source: dict, field: str) -> None:
     existing_value = _normalize_profile_text(target.get(field))
     new_value = _normalize_profile_text(source.get(field))
@@ -5926,8 +5945,11 @@ def _merge_experience_field(target: dict, source: dict, field: str) -> None:
             target[field] = new_value
         return
 
-    if field in {"description", "summary"} and new_value.lower() not in existing_value.lower():
-        target[field] = f"{existing_value} {new_value}".strip()
+    if field in {"description", "summary"}:
+        if _normalize_profile_key(existing_value) == _normalize_profile_key(new_value):
+            target[field] = _dedupe_experience_description(existing_value)
+            return
+        target[field] = _dedupe_experience_description(f"{existing_value} {new_value}")
 
 
 def _merge_work_experience(existing: list, new_items: list) -> list:
@@ -5978,6 +6000,10 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
         if derived_dates:
             target["dates"] = derived_dates
 
+    for entry in merged:
+        for field in ("description", "summary"):
+            if field in entry:
+                entry[field] = _dedupe_experience_description(entry[field])
     return merged
 
 

@@ -53,6 +53,24 @@ describe("candidate Bio and Summary", () => {
     expect(sentences(bio)).toHaveLength(3);
   });
 
+  it("uses the persisted experience and explicit current role/company in the Bio", () => {
+    const bio = generateBio({
+      ...completedProfile,
+      experience_years: 0.6,
+      headline: "Software Engineer",
+      current_role: "Python Developer",
+      current_company: "Viral Bug",
+      experience: [
+        { id: "viral", title: "Python Developer", company: "Viral Bug" },
+        { id: "deepija", title: "Software Engineer", company: "Deepija Telecom Private Limited" },
+      ],
+    });
+
+    expect(bio).toContain("0.6 years");
+    expect(bio).toContain("Python Developer at Viral Bug");
+    expect(bio).not.toContain("currently works as Software Engineer at Deepija Telecom Private Limited");
+  });
+
   it("keeps the onboarding Summary identical to the Bio and regenerates it from saved updates", () => {
     const initialBio = generateBio(completedProfile);
     const initialSummary = buildSummary(completedProfile);

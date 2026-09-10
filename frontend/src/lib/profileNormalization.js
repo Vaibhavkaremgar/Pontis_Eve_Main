@@ -44,6 +44,15 @@ function normalizeText(value) {
   return String(value).replace(/\s+/g, " ").trim();
 }
 
+// Profile experience_years is the persisted source of truth. Keep its display
+// normalization in one place so the header and Bio cannot diverge.
+export function formatExperienceYears(value) {
+  const years = Number(value);
+  if (!Number.isFinite(years) || years < 0) return "";
+  const rounded = Math.round(years * 10) / 10;
+  return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : rounded.toFixed(1);
+}
+
 function normalizeKey(value) {
   return normalizeText(value).toLowerCase();
 }
@@ -533,6 +542,24 @@ function mergeExperienceFields(target, source) {
   return merged;
 }
 
+function dedupeExperienceDescription(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+
+  const seen = new Set();
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((fragment) => normalizeText(fragment).replace(/\s+([.!?])/g, "$1"))
+    .filter((fragment) => {
+      if (!fragment) return false;
+      const key = normalizeKey(fragment).replace(/[^\w\s]+/g, " ").replace(/\s+/g, " ").trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(" ");
+}
+
 function synthesizeExperienceDates(exp) {
   if (!exp || typeof exp !== "object") return "";
   const startLabel = normalizeText(exp.start_date ?? exp.startDate ?? "");
@@ -587,6 +614,11 @@ function normalizeExperienceRecord(exp) {
   ].forEach((field) => {
     if (typeof normalized[field] === "string") {
       normalized[field] = normalizeText(normalized[field]);
+    }
+  });
+  ["description", "summary"].forEach((field) => {
+    if (typeof normalized[field] === "string") {
+      normalized[field] = dedupeExperienceDescription(normalized[field]);
     }
   });
   const formattedDates = formatExperienceDateRange(normalized);
