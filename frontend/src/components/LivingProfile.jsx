@@ -410,7 +410,7 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
 
       {/* Skills */}
       <div>
-        <SectionLabel>Verified skills</SectionLabel>
+        <SectionLabel>Skills</SectionLabel>
         {profile.keySkills?.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {profile.keySkills.map((sk) => (

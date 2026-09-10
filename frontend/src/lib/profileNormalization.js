@@ -712,7 +712,10 @@ function normalizeEducation(education) {
     merged.push({ ...entry });
   });
 
-  return merged;
+  return merged.map((entry) => {
+    const formatted = formatExperienceDateRange(entry);
+    return formatted ? { ...entry, dates: formatted } : entry;
+  });
 }
 
 function skillShouldBeFiltered(skillText, certText) {

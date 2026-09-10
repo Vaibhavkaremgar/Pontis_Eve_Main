@@ -201,22 +201,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
       experience: [],
     });
 
-    const edu = normalized.education[0];
-    // Education dates are stored as-is; verify formatExperienceDateRange produces year-only
-    const { formatExperienceDateRange: _unused, ..._ } = {};
-    // The display label for education uses the same formatExperienceDateLabel path
-    // so we test via a work experience entry with the same date shape
-    const expNorm = normalizeProfileForDisplay({
-      experience: [
-        {
-          company: "Uni",
-          title: "Student",
-          start_date: "2014-09",
-          end_date: "2018-06",
-        },
-      ],
-    });
-    expect(expNorm.experience[0].dates).toBe("2014 — 2018");
+    expect(normalized.education[0].dates).toBe("2014 — 2018");
   });
 });
 
