@@ -775,6 +775,10 @@ export default function Onboarding() {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const { candidate_id, candidate_token, ...profile } = res.data;
+      // Keep the persisted ID with the parsed profile as well as React/storage
+      // state. VoiceIntake uses this as a safe handoff while the new-candidate
+      // state update is settling.
+      const profileWithCandidateId = candidate_id ? { ...profile, candidate_id } : profile;
       console.log("Resume parsing candidate_id:", candidate_id);
       // Immediately persist the new candidate_id to storage before any state update
       // so Dashboard always reads the correct ID even if it mounts before the effect runs
@@ -799,7 +803,7 @@ export default function Onboarding() {
       }
       // Verify email + phone against parsed resume before advancing
       const loginEmail = loadOnboardingState().linkedInProfile?.email;
-      const vErrors = checkVerificationErrors(loginEmail, phone.formatted, profile);
+      const vErrors = checkVerificationErrors(loginEmail, phone.formatted, profileWithCandidateId);
       setVerificationErrors(vErrors);
       if (vErrors.length > 0) {
         // Stay on step 2 — do not save mismatched profile or advance
@@ -807,7 +811,7 @@ export default function Onboarding() {
         setParsedProfile(null);
         return false;
       }
-      setParsedProfile(profile);
+      setParsedProfile(profileWithCandidateId);
       setParsingReady(true);
     } catch (err) {
       console.error("resume parse failed", err);

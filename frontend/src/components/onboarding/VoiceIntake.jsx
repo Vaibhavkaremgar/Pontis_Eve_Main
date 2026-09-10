@@ -16,8 +16,17 @@ const API = `${BACKEND_URL}/api`;
 const PUBLIC_KEY = process.env.REACT_APP_VAPI_PUBLIC_KEY;
 const ASSISTANT_ID = process.env.REACT_APP_EVE_VAPI_ASSISTANT_ID;
 
+// Resume parsing creates the candidate before this step and returns its ID in
+// the parsed profile.  During the first onboarding render, React state can
+// briefly lag that response, so retain the profile ID as the authoritative
+// fallback.  Existing candidates continue to use the explicit prop.
+export function resolveVoiceIntakeCandidateId(candidateId, candidateProfile) {
+  return candidateId || candidateProfile?.candidate_id || candidateProfile?.candidateId || candidateProfile?.id || "";
+}
+
 export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, candidateProfile }) {
   const p = candidateProfile || {};
+  const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, p);
   const mostRecentExp = Array.isArray(p.experience) && p.experience.length > 0 ? p.experience[0] : null;
   const skills = Array.isArray(p.keySkills) && p.keySkills.length > 0
     ? p.keySkills.slice(0, 15).join(", ")
@@ -44,7 +53,7 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
   const overrides = {
     variableValues: {
       candidate_name: p.name || firstName || "",
-      candidate_id: candidateId || "",
+      candidate_id: resolvedCandidateId,
       candidate_email: p.email || "",
       candidate_phone: p.phone || "",
       candidate_location: p.location || "",
@@ -70,7 +79,7 @@ export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, can
       career_gap_context: p.career_gap_context || "",
     },
     metadata: {
-      candidateId: candidateId || "",
+      candidateId: resolvedCandidateId,
       source: "eve_candidate_voice_intake",
     },
   };
@@ -147,6 +156,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
   const progressTimerRef = React.useRef(null);
+  const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, candidateProfile);
 
   // Debug: confirm candidateProfile is populated at mount time
   React.useEffect(() => {
@@ -155,9 +165,9 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     console.log("[voice-intake][DEBUG] current_company present:", !!candidateProfile?.current_company, "len:", (candidateProfile?.current_company || "").length);
     console.log("[voice-intake][DEBUG] experience entries:", candidateProfile?.experience?.length ?? 0);
     console.log("[voice-intake][DEBUG] skills entries:", candidateProfile?.keySkills?.length ?? 0);
-    console.log("[voice-intake][DEBUG] candidateId present:", !!candidateId);
+    console.log("[voice-intake][DEBUG] candidateId present:", !!resolvedCandidateId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [candidateProfile, candidateId, resolvedCandidateId]);
 
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
   const persistProgress = React.useCallback((turns) => {
@@ -169,8 +179,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   }, []);
 
   const assistantOverrides = React.useMemo(
-    () => buildVoiceIntakeAssistantOverrides({ firstName, candidateId, candidateProfile }),
-    [firstName, candidateId, candidateProfile]
+    () => buildVoiceIntakeAssistantOverrides({ firstName, candidateId: resolvedCandidateId, candidateProfile }),
+    [firstName, resolvedCandidateId, candidateProfile]
   );
 
   const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
@@ -182,7 +192,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   // Persist progress whenever transcript grows
   React.useEffect(() => {
     if (transcript.length > 0) persistProgress(transcript);
-    if (!candidateId || transcript.length === 0) return undefined;
+    if (!resolvedCandidateId || transcript.length === 0) return undefined;
 
     if (progressTimerRef.current) {
       clearTimeout(progressTimerRef.current);
@@ -195,7 +205,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         text: turn.text,
         final: turn.final !== false,
       })),
-      candidate_id: candidateId,
+      candidate_id: resolvedCandidateId,
     };
 
     progressTimerRef.current = setTimeout(() => {
@@ -207,7 +217,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         clearTimeout(progressTimerRef.current);
       }
     };
-  }, [transcript, persistProgress, candidateId]);
+  }, [transcript, persistProgress, resolvedCandidateId]);
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {
@@ -215,7 +225,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     if (submitting) return;
 
     const persistInterruptedState = async () => {
-      if (!candidateId || transcript.length === 0) {
+      if (!resolvedCandidateId || transcript.length === 0) {
         onComplete({ status: "no_interaction" });
         return;
       }
@@ -228,7 +238,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
             text: turn.text,
             final: turn.final !== false,
           })),
-          candidate_id: candidateId,
+          candidate_id: resolvedCandidateId,
         });
       } catch (err) {
         console.warn("[voice-intake] interrupted-state save failed", err);
@@ -258,7 +268,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       .post(`${API}/voice/candidate-intake`, {
         transcript: transcriptText,
         voice_notes: transcript.map((t) => ({ role: t.role, text: t.text })),
-        candidate_id: candidateId,
+        candidate_id: resolvedCandidateId,
       })
       .then((res) => {
         console.log("[voice-intake] navigating to summary");

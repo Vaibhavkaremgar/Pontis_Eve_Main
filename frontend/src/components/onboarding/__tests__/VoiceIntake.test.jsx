@@ -1,4 +1,31 @@
-import { buildVoiceIntakeAssistantOverrides } from "../VoiceIntake";
+import {
+  buildVoiceIntakeAssistantOverrides,
+  resolveVoiceIntakeCandidateId,
+} from "../VoiceIntake";
+
+describe("new-candidate identity handoff", () => {
+  it("uses the candidate ID returned with the newly parsed profile when prop state is not ready", () => {
+    const candidateProfile = { candidate_id: "new-candidate-id", name: "New Candidate" };
+
+    expect(resolveVoiceIntakeCandidateId(null, candidateProfile)).toBe("new-candidate-id");
+
+    const overrides = buildVoiceIntakeAssistantOverrides({
+      firstName: "New",
+      candidateId: null,
+      candidateProfile,
+    });
+
+    // This is the ID sent to VAPI and subsequently used by the save request.
+    expect(overrides.variableValues.candidate_id).toBe("new-candidate-id");
+    expect(overrides.metadata.candidateId).toBe("new-candidate-id");
+  });
+
+  it("keeps an existing candidate's explicit ID authoritative", () => {
+    expect(resolveVoiceIntakeCandidateId("existing-candidate-id", {
+      candidate_id: "new-candidate-id",
+    })).toBe("existing-candidate-id");
+  });
+});
 
 describe("VoiceIntake resume behavior", () => {
   it("passes in_progress resume state so VAPI resumes from the saved question", () => {
