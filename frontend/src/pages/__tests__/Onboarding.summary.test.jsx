@@ -1,6 +1,7 @@
 import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
+import axios from "axios";
 
 import Onboarding, { buildSummary, checkVerificationErrors } from "../Onboarding";
 import { mergeProfilesForDisplay } from "../../lib/profileNormalization";
@@ -99,13 +100,10 @@ describe("Onboarding voice intake summary", () => {
     const summary = await waitForElement(renderResult.container, '[data-testid="onboarding-summary-list"]');
     expect(renderResult.container.querySelector('[data-testid="onboarding-step-5"]')).toBeTruthy();
     expect(summary.textContent).toContain("Product Manager");
-    expect(summary.textContent).toContain("New York, NY");
     expect(summary.textContent).toContain("Product, Strategy, Leadership");
     expect(summary.textContent).toContain("AWS Certified Solutions Architect - Associate");
-    expect(summary.textContent).toContain("Senior Product Manager");
     expect(summary.textContent).toContain("VoiceCo");
-    expect(summary.textContent).toContain("Present");
-    expect(summary.textContent).toContain("MIT");
+    expect(summary.textContent).toContain("I enjoy building teams.");
     expect(mockNavigate).not.toHaveBeenCalled();
 
     const enterDashboard = renderResult.container.querySelector('[data-testid="onboarding-enter-dashboard"]');
@@ -245,7 +243,6 @@ describe("post-Voice-Intake navigation flow", () => {
     act(() => { root.render(<Onboarding />); });
     const summaryList = await waitForElement(container, '[data-testid="onboarding-summary-list"]');
     expect(summaryList.textContent).toContain("Engineer");
-    expect(summaryList.textContent).toContain("Austin, TX");
     const enterBtn = container.querySelector('[data-testid="onboarding-enter-dashboard"]');
     expect(enterBtn).toBeTruthy();
     act(() => { enterBtn.click(); });
@@ -289,13 +286,12 @@ describe("buildSummary", () => {
     const summary = buildSummary(merged);
     const byLabel = Object.fromEntries(summary.map((item) => [item.label, item.value]));
 
-    expect(byLabel["Top skills"]).toContain("Leadership");
-    expect(byLabel["Top skills"]).toContain("Product");
+    expect(byLabel["Skills"]).toContain("Leadership");
+    expect(byLabel["Skills"]).toContain("Product");
     expect(byLabel["Certifications"]).toContain("AWS Certified Solutions Architect - Associate");
     expect(byLabel["Certifications"]).toContain("Google Cloud Professional Data Engineer");
-    expect(byLabel["Latest role"]).toContain("Senior Product Manager");
-    expect(byLabel["Latest role"]).toContain("VoiceCo");
-    expect(byLabel["Latest role"]).toContain("Present");
+    expect(byLabel["Current role"]).toContain("Product Manager");
+    expect(byLabel["Current role"]).toContain("VoiceCo");
   });
 
   it("does not duplicate repeated values in the rendered summary", () => {
@@ -330,10 +326,46 @@ describe("buildSummary", () => {
     const summary = buildSummary(merged);
     const byLabel = Object.fromEntries(summary.map((item) => [item.label, item.value]));
 
-    expect(byLabel["Top skills"].split(", ")).toEqual(["Python", "Docker"]);
+    expect(byLabel["Skills"].split(", ")).toEqual(["Python", "Docker"]);
     expect(byLabel["Certifications"].split(", ")).toEqual(["AWS Certified Solutions Architect - Associate"]);
-    expect(byLabel["Latest role"]).toContain("Engineer");
-    expect(byLabel["Latest role"]).toContain("Acme");
+    expect(byLabel["Current role"]).toContain("Engineer");
+    expect(byLabel["Current role"]).toContain("Acme");
+  });
+
+  it("uses the Voice Intake responsibility answer for the Current Role detail", () => {
+    const summary = buildSummary({
+      current_role: "Python Developer",
+      current_company: "Viral Bug",
+      voice_intake_resume: {
+        completed_turns: [
+          { question: "What are you looking for next?", answer: "A remote backend role." },
+          { question: "What are your current responsibilities?", answer: "I build and maintain payment APIs for our checkout team." },
+        ],
+      },
+    });
+
+    expect(summary.find((item) => item.label === "Current role")).toEqual({
+      label: "Current role",
+      value: "Python Developer at Viral Bug",
+      detail: "I build and maintain payment APIs for our checkout team.",
+    });
+  });
+
+  it("shows only optional sections that have candidate-provided values", () => {
+    const summary = buildSummary({
+      current_role: "Developer",
+      current_company: "Acme",
+      keySkills: ["Python", "Docker"],
+      additional_information: "Open to relocating to Bengaluru.",
+    });
+
+    expect(summary.map((item) => item.label)).toEqual([
+      "Current role",
+      "Skills",
+      "Additional information",
+    ]);
+    expect(summary.find((item) => item.label === "Looking for")).toBeUndefined();
+    expect(summary.find((item) => item.label === "Certifications")).toBeUndefined();
   });
 });
 
@@ -418,8 +450,8 @@ describe("checkVerificationErrors — email/mobile verification", () => {
 
 /* ---------- Regression tests: email/mobile mismatch on resume upload ---------- */
 
-const mockAxios = { post: jest.fn() };
-jest.mock("axios", () => mockAxios);
+jest.mock("axios", () => ({ post: jest.fn() }));
+const mockAxios = axios;
 
 describe("Resume upload — email/mobile mismatch regression", () => {
   const LOGIN_EMAIL = "alice@example.com";

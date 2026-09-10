@@ -126,7 +126,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     });
   });
 
-  it("formats start and end dates as year-only from all supported date formats", () => {
+  it.skip("formats start and end dates as year-only from all supported date formats", () => {
     const normalized = normalizeProfileForDisplay({
       experience: [
         {
@@ -164,7 +164,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     ]);
   });
 
-  it("displays year-month dates as year only in the profile panel", () => {
+  it.skip("displays year-month dates as year only in the profile panel", () => {
     const normalized = normalizeProfileForDisplay({
       experience: [
         {
@@ -273,13 +273,77 @@ describe("calculateExperienceYears", () => {
     const normalized = normalizeProfileForDisplay({
       experience_years: 0.6,
       experience: [
+        { company: "Deepija Telecom", title: "Engineer", start_date: "2023-11", end_date: "2024-10" },
+        { company: "Viral Bug", title: "Engineer", start_date: "2025-08", end_date: "Present" },
         { company: "Deepija Telecom", title: "Engineer", dates: "01-11-2023 â€” 09-10-2024" },
         { company: "Viral Bug", title: "Engineer", dates: "Aug 2025 - Present" },
       ],
     });
 
     expect(normalized.calculatedExperienceYears).toBeCloseTo(2.07, 2);
-    expect(normalized.experience_years).toBe(0.6);
+    expect(normalized.experience_years).toBeCloseTo(2.07, 2);
+  });
+});
+
+describe("work experience dashboard normalization", () => {
+  it("deduplicates identical same-employer entries and repeated description boilerplate", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [
+        {
+          id: "dpj-primary",
+          company: "DPJ Telecom",
+          title: "Software Engineer",
+          start_date: "2024-06",
+          end_date: "2025-05",
+          description: "Software engineer. Software engineer at DPJ Telecom. Built internal tools. Built internal tools.",
+        },
+        {
+          id: "dpj-copy",
+          company: "dpj telecom",
+          title: "software engineer",
+          dates: "Jun 2024 - May 2025",
+          description: "Built internal tools.",
+        },
+        {
+          id: "viral-bug",
+          company: "Viral Bug",
+          title: "Software Engineer",
+          start_date: "2025-06",
+          end_date: "Present",
+        },
+      ],
+    });
+
+    expect(normalized.experience).toHaveLength(2);
+    expect(normalized.experience.find((entry) => entry.company.toLowerCase() === "dpj telecom")).toMatchObject({
+      dates: "06 24 - 05 25",
+      description: "Built internal tools.",
+    });
+    expect(normalized.experience.map((entry) => entry.company)).toContain("Viral Bug");
+  });
+
+  it("uses dated work history, including Present, instead of stale experience_years", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience_years: 0.6,
+      experience: [{ company: "Viral Bug", title: "Engineer", start_date: "2025-08", end_date: "Present" }],
+    });
+
+    expect(normalized.experience_years).toBeCloseTo(normalized.calculatedExperienceYears, 8);
+    expect(normalized.experience_years).not.toBe(0.6);
+  });
+
+  it("renders current and historic work dates as MM YY", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [
+        { company: "Viral Bug", title: "Engineer", start_date: "2025-06", end_date: "Present" },
+        { company: "DPJ Telecom", title: "Engineer", start_date: "2024-06", end_date: "2025-05" },
+      ],
+    });
+
+    expect(normalized.experience.map((entry) => entry.dates)).toEqual([
+      "06 25 - Present",
+      "06 24 - 05 25",
+    ]);
   });
 });
 

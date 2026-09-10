@@ -4,7 +4,7 @@ import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
 import { JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { formatExperienceYears, normalizeProfileForDisplay } from "../lib/profileNormalization";
-import { buildCandidateNarrative } from "../lib/candidateNarrative";
+import { buildProfileBio } from "../lib/profileBio";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -74,7 +74,7 @@ function SectionLabel({ children }) {
 }
 
 export function generateBio(profile) {
-  return buildCandidateNarrative(profile);
+  return buildProfileBio(profile);
 }
 
 /* --- Hover-only rows (no card background by default) --- */

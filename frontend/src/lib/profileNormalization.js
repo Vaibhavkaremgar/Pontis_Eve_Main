@@ -542,6 +542,41 @@ function mergeExperienceFields(target, source) {
   return merged;
 }
 
+// Work history is more precise than education: keep the supplied month while
+// presenting it in the compact dashboard format.  Do not use this for
+// education, whose existing year-only display is intentional.
+function formatWorkExperienceDateLabel(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  if (isOpenEndedExperienceValue(text)) return "Present";
+
+  const timestamp = parseExperienceDate(text, "start");
+  if (timestamp === null) return "";
+  const date = new Date(timestamp);
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")} ${String(date.getUTCFullYear()).slice(-2)}`;
+}
+
+function formatWorkExperienceDateRange(exp) {
+  if (!exp || typeof exp !== "object") return "";
+
+  let start = exp.start_date ?? exp.startDate ?? null;
+  let end = exp.end_date ?? exp.endDate ?? null;
+  const rawDates = normalizeText(exp.dates ?? exp.duration ?? "");
+
+  if (rawDates) {
+    const range = splitExperienceDateRange(rawDates);
+    if (range) {
+      if (!normalizeText(start)) start = range[0];
+      if (!normalizeText(end)) end = range[1];
+    }
+  }
+
+  const startLabel = formatWorkExperienceDateLabel(start);
+  const endLabel = formatWorkExperienceDateLabel(end);
+  if (!startLabel || startLabel === "Present") return endLabel === "Present" ? "Present" : "";
+  return `${startLabel} - ${endLabel || "Present"}`;
+}
+
 function dedupeExperienceDescription(value) {
   const text = normalizeText(value);
   if (!text) return "";
@@ -560,11 +595,29 @@ function dedupeExperienceDescription(value) {
     .join(" ");
 }
 
+function dedupeExperienceDescriptionForRecord(value, exp) {
+  const text = dedupeExperienceDescription(value);
+  if (!text) return "";
+
+  const identityKey = (item) => normalizeKey(item).replace(/[^\w\s]+/g, " ").replace(/\s+/g, " ").trim();
+  const title = identityKey(exp?.title ?? exp?.role ?? "");
+  const company = identityKey(exp?.company ?? exp?.company_name ?? "");
+  const boilerplate = new Set([
+    title,
+    title && company ? `${title} at ${company}` : "",
+  ].filter(Boolean));
+
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((fragment) => !boilerplate.has(identityKey(fragment)))
+    .join(" ");
+}
+
 function synthesizeExperienceDates(exp) {
   if (!exp || typeof exp !== "object") return "";
   const startLabel = normalizeText(exp.start_date ?? exp.startDate ?? "");
   if (!startLabel) return "";
-  return formatExperienceDateRange(exp);
+  return formatWorkExperienceDateRange(exp);
 }
 
 export function calculateExperienceYears(experience) {
@@ -618,10 +671,10 @@ function normalizeExperienceRecord(exp) {
   });
   ["description", "summary"].forEach((field) => {
     if (typeof normalized[field] === "string") {
-      normalized[field] = dedupeExperienceDescription(normalized[field]);
+      normalized[field] = dedupeExperienceDescriptionForRecord(normalized[field], normalized);
     }
   });
-  const formattedDates = formatExperienceDateRange(normalized);
+  const formattedDates = formatWorkExperienceDateRange(normalized);
   if (formattedDates) {
     normalized.dates = formattedDates;
   }
@@ -914,6 +967,7 @@ export function normalizeProfileForDisplay(profile = {}) {
   );
   const education = normalizeEducation(profile.education ?? []);
   const calculatedExperienceYears = calculateExperienceYears(experience);
+  const hasDatedWorkHistory = experience.some((entry) => extractExperienceInterval(entry) !== null);
 
   return {
     ...profile,
@@ -924,5 +978,8 @@ export function normalizeProfileForDisplay(profile = {}) {
     experience,
     education,
     calculatedExperienceYears,
+    // A dated work history is the current source of truth. This prevents an
+    // older profile field from disagreeing with both the header and Bio.
+    experience_years: hasDatedWorkHistory ? calculatedExperienceYears : profile.experience_years,
   };
 }

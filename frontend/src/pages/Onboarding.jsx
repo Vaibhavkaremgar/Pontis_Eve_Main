@@ -24,7 +24,6 @@ import {
   isVoiceIntakeCompleteStatus,
 } from "../lib/onboardingStorage";
 import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
-import { buildCandidateNarrative } from "../lib/candidateNarrative";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -516,13 +515,66 @@ function StepParsing({ onComplete, parsingReady, parsingError }) {
 
 /* ---------- Step 5: Bridge ---------- */
 
-export function buildCareerSummary(profile) {
-  return buildCandidateNarrative(profile);
+function nonEmptyText(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
-export function buildSummary(profile) {
-  const summaryText = buildCareerSummary(profile);
-  return summaryText ? [{ label: "Summary", value: summaryText }] : [];
+function voiceIntakeTurns(profile) {
+  const intake = profile?.voice_intake_resume || profile?.raw_data?.voice_intake;
+  return Array.isArray(intake?.completed_turns) ? intake.completed_turns : [];
+}
+
+// The recap must be grounded in what the candidate said, rather than in a
+// generated profile narrative. These are the intake prompts that ask about
+// current work; their answers are stored with the completed Voice Intake.
+function currentWorkSummary(profile) {
+  const turn = voiceIntakeTurns(profile).find(({ question, answer }) => {
+    const prompt = nonEmptyText(question).toLowerCase();
+    return nonEmptyText(answer) && /responsibilit|current (?:work|role|job)|what do you do|recent .*project/.test(prompt);
+  });
+  const answer = nonEmptyText(turn?.answer);
+  if (!answer) return "";
+
+  // Keep the candidate's wording, only shortening an unusually long answer
+  // at a sentence boundary. This cannot add responsibilities or technologies.
+  if (answer.length <= 280) return answer;
+  const shortened = answer.slice(0, 280);
+  const lastSentence = Math.max(shortened.lastIndexOf(". "), shortened.lastIndexOf("! "), shortened.lastIndexOf("? "));
+  return `${(lastSentence > 80 ? shortened.slice(0, lastSentence + 1) : shortened).trim()}…`;
+}
+
+function listValue(value) {
+  return Array.isArray(value)
+    ? value.map(nonEmptyText).filter(Boolean).join(", ")
+    : nonEmptyText(value);
+}
+
+export function buildSummary(profile = {}) {
+  const current = Array.isArray(profile.experience) ? profile.experience[0] : {};
+  const role = nonEmptyText(profile.current_role || profile.headline || current?.title);
+  const company = nonEmptyText(profile.current_company || current?.company);
+  const roleAndCompany = [role, company].filter(Boolean).join(" at ");
+  const responsibilities = currentWorkSummary(profile);
+  const items = [];
+
+  if (roleAndCompany || responsibilities) {
+    items.push({
+      label: "Current role",
+      value: roleAndCompany,
+      detail: responsibilities,
+    });
+  }
+
+  const lookingFor = listValue(profile.preferred_roles || profile.raw_data?.preferred_roles);
+  const skills = listValue(profile.keySkills || profile.skills);
+  const certifications = listValue(profile.certifications || profile.raw_data?.certifications);
+  const additionalInformation = nonEmptyText(profile.additional_information || profile.raw_data?.additional_information);
+
+  if (lookingFor) items.push({ label: "Looking for", value: lookingFor });
+  if (skills) items.push({ label: "Skills", value: skills });
+  if (certifications) items.push({ label: "Certifications", value: certifications });
+  if (additionalInformation) items.push({ label: "Additional information", value: additionalInformation });
+  return items;
 }
 
 function StepBridge({ profile, voiceIntakeCompleted }) {
@@ -557,9 +609,16 @@ function StepBridge({ profile, voiceIntakeCompleted }) {
               <p className="text-[11px] uppercase tracking-wide text-[#9A9A98] font-normal">
                 {item.label}
               </p>
-              <p className="text-[13.5px] text-[#1F1F1F] mt-0.5 leading-relaxed font-normal">
-                {item.value}
-              </p>
+              {item.value && (
+                <p className="text-[13.5px] text-[#1F1F1F] mt-0.5 leading-relaxed font-normal">
+                  {item.value}
+                </p>
+              )}
+              {item.detail && (
+                <p className="text-[13.5px] text-[#1F1F1F] mt-0.5 leading-relaxed font-normal">
+                  {item.detail}
+                </p>
+              )}
             </div>
           </li>
         ))}

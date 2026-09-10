@@ -201,7 +201,7 @@ describe("LivingProfile experience toggle", () => {
     ]);
   });
 
-  it("shows the persisted experience value in the profile header", () => {
+  it("shows calculated experience in the profile header instead of a stale persisted value", () => {
     view = renderLivingProfile({
       userProfile: {
         experience_years: 0.6,
@@ -210,12 +210,16 @@ describe("LivingProfile experience toggle", () => {
             id: "exp-deepija",
             title: "Engineer",
             company: "Deepija Telecom",
+            start_date: "2023-11",
+            end_date: "2024-10",
             dates: "Nov 2023 - Oct 2024",
           },
           {
             id: "exp-viral",
             title: "Engineer",
             company: "Viral Bug",
+            start_date: "2025-08",
+            end_date: "Present",
             dates: "Aug 2025 - Present",
           },
         ],
@@ -223,8 +227,8 @@ describe("LivingProfile experience toggle", () => {
     });
 
     const header = view.container.querySelector('[data-testid="profile-header-card"]');
-    expect(header.textContent).toContain("0.6 yrs exp");
-    expect(header.textContent).not.toContain("2.1 yrs exp");
+    expect(header.textContent).toContain("2.1 yrs exp");
+    expect(header.textContent).not.toContain("0.6 yrs exp");
   });
 
   it("renders updated experience dates from the profile API", () => {

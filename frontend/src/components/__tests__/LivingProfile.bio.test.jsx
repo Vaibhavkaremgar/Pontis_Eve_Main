@@ -1,6 +1,4 @@
 import { generateBio } from "../LivingProfile";
-import { buildSummary } from "../../pages/Onboarding";
-
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
   useSearchParams: () => [new URLSearchParams(), jest.fn()],
@@ -27,33 +25,29 @@ function sentences(text) {
   return text.split(/(?<=[.!?])\s+/).filter(Boolean);
 }
 
-describe("candidate Bio and Summary", () => {
-  it("generates a meaningful five-line Bio once voice intake is completed", () => {
+describe("candidate Bio", () => {
+  it("derives a concise, non-repetitive Bio from the persisted profile", () => {
     const bio = generateBio(completedProfile);
-    expect(sentences(bio)).toHaveLength(5);
+    expect(sentences(bio)).toHaveLength(3);
     expect(bio).toContain("Product Manager");
     expect(bio).toContain("7 years");
     expect(bio).toContain("Acme");
     expect(bio).toContain("Senior Product Manager");
+    expect(bio).toContain("Product Strategy");
+    expect(bio).not.toContain("Jane Doe");
+    expect(bio.match(/Product Manager at Acme/g)).toHaveLength(1);
+    expect(bio.match(/Acme/g)).toHaveLength(1);
   });
 
-  it("keeps skills, education, and certifications out of the Bio", () => {
+  it("uses relevant skills without pulling in unrelated education or certifications", () => {
     const bio = generateBio(completedProfile);
-    expect(bio).not.toContain("Product Strategy");
+    expect(bio).toContain("Product Strategy");
     expect(bio).not.toContain("AWS Certified");
     expect(bio).not.toContain("MIT");
     expect(bio).not.toContain("B.Sc");
   });
 
-  it("uses a concise three-line narrative before voice intake is complete", () => {
-    const bio = generateBio({
-      ...completedProfile,
-      voice_intake_resume: { status: "in_progress" },
-    });
-    expect(sentences(bio)).toHaveLength(3);
-  });
-
-  it("uses the persisted experience and explicit current role/company in the Bio", () => {
+  it("uses normalized work history and the explicit current role/company", () => {
     const bio = generateBio({
       ...completedProfile,
       experience_years: 0.6,
@@ -61,29 +55,35 @@ describe("candidate Bio and Summary", () => {
       current_role: "Python Developer",
       current_company: "Viral Bug",
       experience: [
-        { id: "viral", title: "Python Developer", company: "Viral Bug" },
-        { id: "deepija", title: "Software Engineer", company: "Deepija Telecom Private Limited" },
+        { id: "viral", title: "Python Developer", company: "Viral Bug", start_date: "2025-08", end_date: "Present" },
+        { id: "deepija", title: "Software Engineer", company: "Deepija Telecom Private Limited", start_date: "2023-11", end_date: "2024-10" },
       ],
     });
 
-    expect(bio).toContain("0.6 years");
+    expect(bio).toContain("2.1 years");
     expect(bio).toContain("Python Developer at Viral Bug");
     expect(bio).not.toContain("currently works as Software Engineer at Deepija Telecom Private Limited");
   });
 
-  it("keeps the onboarding Summary identical to the Bio and regenerates it from saved updates", () => {
-    const initialBio = generateBio(completedProfile);
-    const initialSummary = buildSummary(completedProfile);
-    expect(initialSummary).toEqual([{ label: "Summary", value: initialBio }]);
-
-    const updated = {
+  it("regenerates from Voice Intake profile updates and differs for different candidates", () => {
+    const beforeVoiceUpdate = generateBio(completedProfile);
+    const voiceUpdatedProfile = {
       ...completedProfile,
-      preferred_roles: ["Director of Product"],
-      additional_information: "Interested in leading product organisations through growth.",
+      current_role: "Platform Engineer",
+      current_company: "Northstar Systems",
+      headline: "Platform Engineer",
+      experience_years: 4,
+      keySkills: ["Kubernetes", "Go"],
+      preferred_roles: ["Staff Platform Engineer"],
+      experience: [{ id: "current", title: "Platform Engineer", company: "Northstar Systems" }],
     };
-    const updatedBio = generateBio(updated);
-    expect(updatedBio).toContain("Director of Product");
-    expect(updatedBio).not.toEqual(initialBio);
-    expect(buildSummary(updated)).toEqual([{ label: "Summary", value: updatedBio }]);
+    const afterVoiceUpdate = generateBio(voiceUpdatedProfile);
+
+    expect(afterVoiceUpdate).toContain("Platform Engineer at Northstar Systems");
+    expect(afterVoiceUpdate).toContain("4 years");
+    expect(afterVoiceUpdate).toContain("Kubernetes and Go");
+    expect(afterVoiceUpdate).toContain("Staff Platform Engineer");
+    expect(afterVoiceUpdate).not.toContain("Product Manager");
+    expect(afterVoiceUpdate).not.toEqual(beforeVoiceUpdate);
   });
 });
