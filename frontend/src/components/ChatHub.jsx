@@ -80,12 +80,27 @@ export default function ChatHub({
   onMicClick,
 }) {
   const scrollRef = React.useRef(null);
+  const inputRef = React.useRef(null);
+
+  const resizeInput = React.useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    const maxHeight = 160;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`;
+    input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
 
   React.useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chats, sending]);
+
+  React.useEffect(() => {
+    resizeInput();
+  }, [inputValue, resizeInput]);
 
   return (
     <section
@@ -150,7 +165,7 @@ export default function ChatHub({
         <form
           onSubmit={onSend}
           data-testid="chat-input-area"
-          className="flex items-center gap-2 bg-white border border-black/[0.06] rounded-full pl-3 pr-1.5 py-1.5 shadow-[0_2px_6px_rgba(0,0,0,0.03)] focus-within:border-black/[0.14] transition-colors"
+          className="flex items-end gap-2 bg-white border border-black/[0.06] rounded-2xl pl-3 pr-1.5 py-1.5 shadow-[0_2px_6px_rgba(0,0,0,0.03)] focus-within:border-black/[0.14] transition-colors"
         >
           <button
             type="button"
@@ -160,13 +175,24 @@ export default function ChatHub({
           >
             <Plus className="w-4 h-4" strokeWidth={1.75} />
           </button>
-          <input
+          <textarea
+            ref={inputRef}
             data-testid="chat-text-input"
-            type="text"
+            rows={1}
+            wrap="soft"
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={(e) => {
+              setInputValue(e.target.value);
+              resizeInput();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                e.currentTarget.form?.requestSubmit();
+              }
+            }}
             placeholder="Ask Eve anything…"
-            className="flex-1 bg-transparent border-none text-[13.5px] text-[#1F1F1F] placeholder:text-[#B5B5B3] focus:outline-none py-1 font-normal"
+            className="flex-1 min-w-0 max-h-40 resize-none bg-transparent border-none text-[13.5px] leading-5 text-[#1F1F1F] placeholder:text-[#B5B5B3] focus:outline-none py-1 font-normal"
             disabled={sending}
           />
           {onMicClick && (

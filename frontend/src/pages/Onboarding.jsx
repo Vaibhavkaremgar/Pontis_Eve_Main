@@ -24,6 +24,7 @@ import {
   isVoiceIntakeCompleteStatus,
 } from "../lib/onboardingStorage";
 import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
+import { buildCandidateNarrative } from "../lib/candidateNarrative";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -516,80 +517,12 @@ function StepParsing({ onComplete, parsingReady, parsingError }) {
 /* ---------- Step 5: Bridge ---------- */
 
 export function buildCareerSummary(profile) {
-  if (!profile) return "";
-  const merged = normalizeProfileForDisplay(profile);
-  const role = (merged.headline || merged.current_role || "").trim();
-  const skills = (merged.keySkills || []).slice(0, 5);
-  const targetRoles = (merged.preferred_roles || []).slice(0, 3);
-  const rawData = (merged.raw_data && typeof merged.raw_data === "object") ? merged.raw_data : {};
-  const rolePrefBio = (rawData.role_preference_bio || "").trim();
-  const additionalInfo = (merged.additional_information || "").trim();
-
-  const sentences = [];
-
-  // Sentence 1: current role + skills background
-  if (role && skills.length) {
-    sentences.push(`${role} with a background in ${skills.slice(0, 4).join(", ")}.`);
-  } else if (role) {
-    sentences.push(`${role} with cross-functional experience.`);
-  } else if (skills.length) {
-    sentences.push(`Professional with a background in ${skills.slice(0, 4).join(", ")}.`);
-  }
-
-  // Sentence 2: voice-derived career interest / role preference bio
-  if (rolePrefBio && rolePrefBio.length > 10) {
-    const clean = rolePrefBio.replace(/\.$/, "");
-    sentences.push(`${clean}.`);
-  } else if (additionalInfo && additionalInfo.length > 10) {
-    const firstSentence = additionalInfo.split(/[.!?]/)[0].trim();
-    if (firstSentence) sentences.push(`${firstSentence}.`);
-  }
-
-  // Sentence 3: target roles
-  if (targetRoles.length) {
-    sentences.push(`Currently targeting ${targetRoles.join(", ")} roles.`);
-  } else if (role) {
-    sentences.push(`Open to new opportunities that leverage their expertise.`);
-  }
-
-  // Sentence 4: skills reinforcement (only if we have room and haven't already covered them)
-  if (sentences.length < 4 && skills.length > 2) {
-    sentences.push(`Brings hands-on experience with ${skills.slice(0, 5).join(", ")}.`);
-  }
-
-  return sentences.slice(0, 4).join(" ");
+  return buildCandidateNarrative(profile);
 }
 
 export function buildSummary(profile) {
-  const merged = profile ? normalizeProfileForDisplay(profile) : null;
-  if (!merged) return FALLBACK_SUMMARY;
-  const items = [];
-
-  // Replace "Positioning" with a 3-4 line professional summary paragraph
   const summaryText = buildCareerSummary(profile);
-  if (summaryText) items.push({ label: "Summary", value: summaryText });
-
-  if (merged.location) items.push({ label: "Location", value: merged.location });
-  if (merged.keySkills?.length)
-    items.push({ label: "Top skills", value: merged.keySkills.slice(0, 8).join(", ") });
-  if (merged.experience?.length) {
-    const first = merged.experience[0];
-    items.push({
-      label: "Latest role",
-      value: (first.title || "") + (first.company ? " at " + first.company : "") + (first.dates ? " · " + first.dates : ""),
-    });
-  }
-  if (merged.certifications?.length)
-    items.push({ label: "Certifications", value: merged.certifications.slice(0, 8).join(", ") });
-  if (merged.education?.length) {
-    const edu = merged.education[0];
-    items.push({ label: "Education", value: (edu.degree || "") + (edu.institution ? " · " + edu.institution : "") });
-  }
-  if (merged.preferred_roles?.length)
-    items.push({ label: "Target roles", value: merged.preferred_roles.slice(0, 6).join(", ") });
-  if (merged.additional_information)
-    items.push({ label: "Career context", value: merged.additional_information });
-  return items.length ? items : FALLBACK_SUMMARY;
+  return summaryText ? [{ label: "Summary", value: summaryText }] : [];
 }
 
 function StepBridge({ profile, voiceIntakeCompleted }) {

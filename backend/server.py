@@ -4615,6 +4615,35 @@ def _remove_item_from_dict_list(existing_list: list, item_to_remove: str, match_
     return new_list, found
 
 
+def _remove_phrase_from_text(existing_text: Any, phrase_to_remove: str) -> tuple[Any, bool]:
+    """Remove one phrase from free-form text, ignoring case and separators.
+
+    Additional information is a single text value in ``raw_data``, rather than a
+    list.  Match words across whitespace/punctuation variations (for example,
+    ``Java full-stack`` for ``Java Full Stack``), while keeping surrounding text.
+    """
+    if not isinstance(existing_text, str) or not isinstance(phrase_to_remove, str):
+        return existing_text, False
+
+    words = re.findall(r"\w+", phrase_to_remove, flags=re.UNICODE)
+    if not words:
+        return existing_text, False
+
+    separator = r"[\W_]+"
+    pattern = r"(?<!\w)" + separator.join(re.escape(word) for word in words) + r"(?!\w)"
+    updated_text, replacements = re.subn(pattern, "", existing_text, flags=re.IGNORECASE)
+    if not replacements:
+        return existing_text, False
+
+    # Keep list-like prose tidy after an item is removed without altering the
+    # remaining content or any other raw_data fields.
+    updated_text = re.sub(r"([,;|])\s*(?:[,;|]\s*)+", r"\1 ", updated_text)
+    updated_text = re.sub(r"(?m)^[ \t]*[-*•][ \t]*(?:\r?\n|$)", "", updated_text)
+    updated_text = re.sub(r"[ \t]{2,}", " ", updated_text)
+    updated_text = re.sub(r"^[ \t,;|]+|[ \t,;|]+$", "", updated_text)
+    return updated_text, True
+
+
 # System prompt for scanning a candidate answer against ALL missing profile fields.
 _MULTI_FIELD_EXTRACT_SYSTEM = """You are a recruitment data extractor.
 Given a candidate's message and a list of missing profile fields, extract any information
@@ -4927,9 +4956,13 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                     has_preference_payload = True
                     applied_deletions.setdefault(del_field, []).append(item)
                 elif del_field == "additional_information":
-                    existing_raw["additional_information"] = ""
-                    raw_data_changed = True
-                    applied_deletions.setdefault("additional_information", []).append(item)
+                    updated_text, found = _remove_phrase_from_text(
+                        existing_raw.get("additional_information"), item
+                    )
+                    if found:
+                        existing_raw["additional_information"] = updated_text
+                        raw_data_changed = True
+                        applied_deletions.setdefault("additional_information", []).append(item)
                 elif del_field == "experience_years":
                     set_clauses.append("experience_years = :experience_years")
                     params["experience_years"] = None

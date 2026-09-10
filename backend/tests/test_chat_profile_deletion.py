@@ -275,11 +275,33 @@ class TestScalarFieldDeletions:
         assert state["raw_data"]["availability"] == ""
         assert "availability" in result["deleted"]
 
-    def test_additional_information_deletion_clears_field_and_tracks(self):
-        state = _make_candidate()
-        _, result = _run_apply(state, {"profile_deletions": {"additional_information": ["Open to remote work"]}})
-        assert state["raw_data"]["additional_information"] == ""
+    def test_additional_information_deletion_removes_only_requested_phrase_from_raw_data(self):
+        state = _make_candidate(
+            raw_data={
+                **_make_candidate()["raw_data"],
+                "additional_information": "Java Full-Stack; Open to remote work",
+                "unrelated_raw_value": "must be preserved",
+            }
+        )
+        _, result = _run_apply(
+            state,
+            {"profile_deletions": {"additional_information": ["java full stack"]}},
+        )
+        # The fake DB applies the raw_data value sent by UPDATE candidates,
+        # mirroring the JSONB value that will be read on the profile refresh.
+        assert state["raw_data"]["additional_information"] == "Open to remote work"
+        assert state["raw_data"]["unrelated_raw_value"] == "must be preserved"
         assert "additional_information" in result["deleted"]
+
+    def test_additional_information_deletion_is_a_noop_when_phrase_is_absent(self):
+        state = _make_candidate()
+        original = state["raw_data"]["additional_information"]
+        _, result = _run_apply(
+            state,
+            {"profile_deletions": {"additional_information": ["Java full stack"]}},
+        )
+        assert state["raw_data"]["additional_information"] == original
+        assert "additional_information" not in result["deleted"]
 
     def test_experience_years_deletion_clears_field_and_tracks(self):
         state = _make_candidate()
