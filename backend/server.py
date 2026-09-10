@@ -557,6 +557,9 @@ def _normalize_for_frontend(c: dict) -> dict:
         "profile_strength_detail": _ps_result,
         "recommendation_readiness": _ps_result.get("recommendation_readiness"),
     }
+    voice_intake_summary = raw_data.get("voice_intake_summary")
+    if isinstance(voice_intake_summary, dict):
+        profile["voice_intake_summary_source"] = voice_intake_summary
     if voice_intake_resume:
         profile["voice_intake_resume"] = voice_intake_resume
 
@@ -6492,6 +6495,13 @@ async def _persist_voice_intake_profile_state(
             update_params[field] = json.dumps(merged.get(field) or [])
 
     merged_raw = merged.get("raw_data") or {}
+    # The canonical profile intentionally merges resume and intake fields.
+    # Save the intake extraction separately so the onboarding recap can remain
+    # grounded only in what the candidate said, including after a refresh.
+    merged_raw["voice_intake_summary"] = {
+        **(voice_data if isinstance(voice_data, dict) else {}),
+        "voice_intake_resume": voice_intake_state,
+    }
     merged_raw["voice_intake"] = voice_intake_state
     set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
     update_params["raw_data"] = json.dumps(merged_raw)

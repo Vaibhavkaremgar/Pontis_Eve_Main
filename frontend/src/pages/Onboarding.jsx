@@ -550,7 +550,7 @@ function listValue(value) {
 }
 
 function voiceSummarySource(profile) {
-  const source = profile?.voice_intake_summary_source;
+  const source = profile?.voice_intake_summary_source || profile?.raw_data?.voice_intake_summary;
   return source && typeof source === "object" ? source : {};
 }
 
@@ -566,32 +566,53 @@ function summarySkills(value) {
 }
 
 function dynamicProfessionalSummary({ overview, roleAndCompany, responsibilities, lookingFor }) {
-  // The persisted intake overview is already generated from the candidate's
-  // answers. Prefer it when present; the remaining path only joins facts that
-  // were supplied in this profile, so it never manufactures a biography.
-  if (overview) return overview;
-  const facts = [roleAndCompany, responsibilities, lookingFor && `Looking for ${lookingFor}.`]
+  // A role/company line is useful context, but is not itself a professional
+  // summary. Keep this section grounded in a real intake overview, work detail,
+  // or stated target role.
+  const normalizedOverview = overview.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalizedRole = roleAndCompany.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (overview && normalizedOverview !== normalizedRole) return overview;
+  const supportingFacts = [responsibilities, lookingFor && `Looking for ${lookingFor}.`]
     .map(nonEmptyText)
     .filter(Boolean);
-  return facts.join(" ");
+  return supportingFacts.length
+    ? [roleAndCompany, ...supportingFacts].filter(Boolean).join(" ")
+    : "";
 }
 
 export function buildSummary(profile = {}) {
   // This source is deliberately local to the post-intake recap. The normal
   // profile display merge continues to preserve its established behavior.
   const voice = voiceSummarySource(profile);
+  const hasVoiceSource = Object.keys(voice).length > 0;
   const current = Array.isArray(profile.experience) ? profile.experience[0] : {};
-  const role = nonEmptyText(voice.current_role || voice.headline || profile.current_role || profile.headline || current?.title);
-  const company = nonEmptyText(voice.current_company || profile.current_company || current?.company);
+  const role = nonEmptyText(hasVoiceSource
+    ? (voice.current_role || voice.headline)
+    : (profile.current_role || profile.headline || current?.title));
+  const company = nonEmptyText(hasVoiceSource
+    ? voice.current_company
+    : (profile.current_company || current?.company));
   const roleAndCompany = [role, company].filter(Boolean).join(" at ");
-  const responsibilities = currentWorkSummary(voice).trim() || currentWorkSummary(profile);
-  const lookingFor = listValue(voice.preferred_roles || voice.raw_data?.preferred_roles || profile.preferred_roles || profile.raw_data?.preferred_roles);
-  const skills = summarySkills(voice.keySkills || voice.skills || profile.keySkills || profile.skills);
-  const certifications = listValue(voice.certifications || voice.raw_data?.certifications || profile.certifications || profile.raw_data?.certifications);
-  const additionalInformation = nonEmptyText(voice.additional_information || voice.raw_data?.additional_information || profile.additional_information || profile.raw_data?.additional_information);
+  const responsibilities = hasVoiceSource
+    ? currentWorkSummary(voice).trim()
+    : currentWorkSummary(profile);
+  const lookingFor = listValue(hasVoiceSource
+    ? (voice.preferred_roles || voice.raw_data?.preferred_roles)
+    : (profile.preferred_roles || profile.raw_data?.preferred_roles));
+  const skills = summarySkills(hasVoiceSource
+    ? (voice.keySkills || voice.skills)
+    : (profile.keySkills || profile.skills));
+  const certifications = listValue(hasVoiceSource
+    ? (voice.certifications || voice.raw_data?.certifications)
+    : (profile.certifications || profile.raw_data?.certifications));
+  const additionalInformation = nonEmptyText(hasVoiceSource
+    ? (voice.additional_information || voice.raw_data?.additional_information)
+    : (profile.additional_information || profile.raw_data?.additional_information));
   const items = [];
 
-  const overview = nonEmptyText(voice.summary || voice.bio || profile.summary || profile.bio);
+  const overview = nonEmptyText(hasVoiceSource
+    ? (voice.summary || voice.bio)
+    : (profile.summary || profile.bio));
   const professionalSummary = dynamicProfessionalSummary({ overview, roleAndCompany, responsibilities, lookingFor });
   if (professionalSummary) items.push({ label: "Summary", value: professionalSummary });
 
@@ -796,7 +817,12 @@ export default function Onboarding() {
     // Retain the authoritative intake response only for the immediate summary
     // handoff. It prevents a resume-first display merge from showing stale
     // current-role data in this one recap.
-    mergedProfile.voice_intake_summary_source = intakeResult?.profile || intakeResult?.profile_updates || {};
+    mergedProfile.voice_intake_summary_source =
+      intakeResult?.profile?.voice_intake_summary_source ||
+      intakeResult?.profile_updates?.voice_intake_summary_source ||
+      intakeResult?.profile ||
+      intakeResult?.profile_updates ||
+      {};
     setParsedProfile(mergedProfile);
 
     const s = loadOnboardingState();

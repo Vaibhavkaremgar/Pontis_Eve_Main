@@ -360,7 +360,6 @@ describe("buildSummary", () => {
     });
 
     expect(summary.map((item) => item.label)).toEqual([
-      "Summary",
       "Current role",
       "Skills",
       "Additional information",
@@ -388,23 +387,38 @@ describe("buildSummary", () => {
     );
   });
 
-  it("uses Voice Intake current role and company over stale resume values", () => {
+  it("uses the persisted Voice Intake recap source over stale resume values", () => {
     const summary = buildSummary({
       current_role: "Software Engineer",
       current_company: "Deepija Telecom",
+      keySkills: ["Java", "Spring"],
+      certifications: ["Resume Certification"],
       voice_intake_summary_source: {
         current_role: "Python Developer",
         current_company: "Viral Bug",
+        skills: ["Python", "FastAPI"],
+        preferred_roles: ["Backend Developer"],
+        voice_intake_resume: {
+          completed_turns: [
+            { question: "What are your current responsibilities?", answer: "I build APIs for the payments platform." },
+          ],
+        },
       },
     });
 
     expect(summary.find((item) => item.label === "Current role")?.value).toBe("Python Developer at Viral Bug");
+    expect(summary.find((item) => item.label === "Skills")?.value).toBe("Python, FastAPI");
+    expect(summary.find((item) => item.label === "Certifications")).toBeUndefined();
+    expect(summary.find((item) => item.label === "Summary")?.value).toBe(
+      "Python Developer at Viral Bug I build APIs for the payments platform. Looking for Backend Developer."
+    );
+    expect(summary.find((item) => item.label === "Summary")?.value).not.toBe("Python Developer at Viral Bug");
   });
 
   it("does not render responsibility phrases as skills", () => {
     const summary = buildSummary({
-      keySkills: ["Python", "data integration, debugging, testing, clean code, REST API development"],
       voice_intake_summary_source: {
+        skills: ["Python", "data integration, debugging, testing, clean code, REST API development"],
         voice_intake_resume: {
           completed_turns: [
             { question: "What are your current responsibilities?", answer: "I handle data integration, debugging, testing, clean code, and REST API development." },
