@@ -564,3 +564,83 @@ class TestRegressionEducationAndNewJob:
         assert entry["company"] == "Acme Corp"
         assert entry["start_date"] == "March 2023"
         assert "REST APIs" in entry["description"]
+
+    def test_explicit_voice_current_job_stays_separate_and_updates_bio(self):
+        """A current job at a new employer must not inherit resume-job details."""
+        from server import _merge_voice_into_profile
+
+        profile = {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "current_role": "Software Engineer",
+            "current_company": "Deepija Telecom",
+            "experience_years": 2,
+            "skills": ["Python"],
+            "education": [{"degree": "B.Sc", "institution": "University"}],
+            "raw_data": {"availability": "30 days", "preferred_roles": ["Backend Engineer"]},
+            "work_experience": [{
+                "title": "Software Engineer",
+                "company": "Deepija Telecom",
+                "start_date": "2023",
+                "end_date": "2024",
+                "description": "Built telecom platform APIs.",
+            }],
+        }
+        voice = {
+            "current_role": "Python Developer",
+            "current_company": "Viral Bug",
+            "work_experience": [{
+                "title": "Python Developer",
+                "company": "Viral Bug",
+                "end_date": "Present",
+                "description": "Developing Python services.",
+            }],
+        }
+
+        merged = _merge_voice_into_profile(profile, voice)
+
+        assert merged["current_role"] == "Python Developer"
+        assert merged["current_company"] == "Viral Bug"
+        assert len(merged["work_experience"]) == 2
+        deepija = next(item for item in merged["work_experience"] if item["company"] == "Deepija Telecom")
+        viral_bug = next(item for item in merged["work_experience"] if item["company"] == "Viral Bug")
+        assert deepija["description"] == "Built telecom platform APIs."
+        assert deepija["start_date"] == "2023"
+        assert deepija["end_date"] == "2024"
+        assert viral_bug["title"] == "Python Developer"
+        assert viral_bug["end_date"] == "Present"
+        assert viral_bug["description"] == "Developing Python services."
+        assert "telecom platform" not in viral_bug["description"].lower()
+        assert "Python Developer at Viral Bug" in merged["summary"]
+
+        # Fields outside Bio and work experience remain untouched.
+        assert merged["skills"] == profile["skills"]
+        assert merged["education"] == profile["education"]
+        assert merged["raw_data"]["availability"] == "30 days"
+        assert merged["raw_data"]["preferred_roles"] == ["Backend Engineer"]
+
+    def test_matching_voice_job_enriches_its_own_resume_entry(self):
+        """The same role and employer is enriched rather than appended."""
+        from server import _merge_work_experience
+
+        existing = [{
+            "title": "Python Developer",
+            "company": "Viral Bug",
+            "start_date": "2025",
+            "description": "Built internal automation.",
+        }]
+        voice = [{
+            "title": "Python Developer",
+            "company": "Viral Bug",
+            "end_date": "Present",
+            "description": "Maintains production Python services.",
+        }]
+
+        merged = _merge_work_experience(existing, voice)
+
+        assert len(merged) == 1
+        assert merged[0]["company"] == "Viral Bug"
+        assert merged[0]["start_date"] == "2025"
+        assert merged[0]["end_date"] == "Present"
+        assert "internal automation" in merged[0]["description"].lower()
+        assert "production python services" in merged[0]["description"].lower()

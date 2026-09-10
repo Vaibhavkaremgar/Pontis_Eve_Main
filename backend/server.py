@@ -5796,13 +5796,13 @@ def _experience_entries_compatible(existing: dict, new_item: dict) -> bool:
     existing_company = _normalize_profile_text(existing.get("company") or existing.get("company_name") or "")
     new_company = _normalize_profile_text(new_item.get("company") or new_item.get("company_name") or "")
 
-    # Company names must match exactly (case-insensitive) when both are present.
-    # Token-overlap matching is too loose and causes entries from different companies
-    # to be incorrectly merged (e.g. a new current job merged into a previous employer).
+    # A named employer is part of a job's identity.  Do not use title similarity to
+    # merge two records with different companies: that can attach one employer's
+    # resume description to a voice-reported job at another employer.
     if existing_company and new_company:
         ec_key = _normalize_profile_key(existing_company)
         nc_key = _normalize_profile_key(new_company)
-        if ec_key != nc_key and ec_key not in nc_key and nc_key not in ec_key:
+        if ec_key != nc_key:
             return False
     if existing_title and new_title and not _experience_text_matches(existing_title, new_title):
         return False
@@ -6175,10 +6175,20 @@ def _build_merged_candidate_summary(existing: dict, voice: dict) -> str:
     seen: set[str] = set()
 
     current_role = _sanitize_summary_role(existing.get("current_role") or existing.get("headline"))
+    voice_current_role = _sanitize_summary_role(voice.get("current_role"))
+    voice_current_company = _normalize_profile_text(voice.get("current_company"))
+    has_explicit_voice_current_job = bool(voice_current_role and voice_current_company)
     profile_skills = _summary_skills(existing.get("skills") or [], voice.get("skills") or [])
     intro_bits: list[str] = []
     if current_role:
-        intro_bits.append(current_role)
+        if has_explicit_voice_current_job:
+            intro_bits.append(f"{current_role} at {voice_current_company}")
+        else:
+            intro_bits.append(current_role)
+    if has_explicit_voice_current_job:
+        years_of_experience = _format_years_of_experience(existing.get("experience_years"))
+        if years_of_experience:
+            intro_bits.append(f"with {years_of_experience}")
     if profile_skills:
         if current_role:
             intro_bits.append(f"with strengths in {_summary_natural_join(profile_skills)}")
@@ -6186,6 +6196,25 @@ def _build_merged_candidate_summary(existing: dict, voice: dict) -> str:
             intro_bits.append(f"Strengths include {_summary_natural_join(profile_skills)}")
     if intro_bits:
         _append_summary_clause(clauses, " ".join(intro_bits), seen)
+
+    # When Voice Intake explicitly identifies a current employer, retain a concise
+    # historical role from the resume without blending its details into that job.
+    if has_explicit_voice_current_job:
+        current_job_key = (
+            _normalize_profile_key(current_role),
+            _normalize_profile_key(voice_current_company),
+        )
+        for entry in existing.get("work_experience") or []:
+            if not isinstance(entry, dict):
+                continue
+            title = _sanitize_summary_role(entry.get("title") or entry.get("role"))
+            company = _normalize_profile_text(entry.get("company") or entry.get("company_name"))
+            if not title or not company:
+                continue
+            if (_normalize_profile_key(title), _normalize_profile_key(company)) == current_job_key:
+                continue
+            _append_summary_clause(clauses, f"Previous experience includes {title} at {company}", seen)
+            break
 
     raw_data = _parse_raw_data(existing.get("raw_data"))
     voice_focus = _sanitize_summary_focus(
@@ -6212,24 +6241,38 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     Safely merge voice-extracted data into existing candidate profile.
     - Fills missing fields from voice
     - Merges skills (deduped), work_experience (deduped by company+title), education (deduped)
-    - Allows voice to update current_role only when it is clearly more specific
+    - Treats an explicitly stated voice current role and company as authoritative
     - Stores availability, preferred_roles, certifications, additional_information in raw_data
     """
     merged = dict(existing)
 
-    # Fill missing scalar fields
-    for key in ("current_company", "location"):
-        if voice.get(key) and not merged.get(key):
-            merged[key] = voice[key]
-
-    # current_role: fill if missing, or update if voice provides a more specific title
+    # An explicit current role/company pair from Voice Intake describes the
+    # candidate's latest employment, so it takes precedence over resume scalars.
+    # This is deliberately limited to the pair: other profile fields retain their
+    # existing merge behavior.
     voice_role = (voice.get("current_role") or "").strip()
+    voice_company = (voice.get("current_company") or "").strip()
     existing_role = (merged.get("current_role") or "").strip()
-    if voice_role:
+    if voice_role and voice_company:
+        merged["current_role"] = voice_role
+        merged["current_company"] = voice_company
+    else:
+        # Fill missing scalar fields when Voice Intake does not supply an explicit
+        # current-job pair.
+        for key in ("current_company", "location"):
+            if voice.get(key) and not merged.get(key):
+                merged[key] = voice[key]
+
+    # Without a company, retain the conservative historical role behavior.
+    if voice_role and not voice_company:
         if not existing_role:
             merged["current_role"] = voice_role
         elif _is_more_specific_role(existing_role, voice_role):
             merged["current_role"] = voice_role
+
+    # Location is independent from current employment and can still fill a gap.
+    if voice.get("location") and not merged.get("location"):
+        merged["location"] = voice["location"]
 
     # experience_years: fill if missing
     if voice.get("experience_years") and not merged.get("experience_years"):
