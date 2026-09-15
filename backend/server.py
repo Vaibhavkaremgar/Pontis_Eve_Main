@@ -411,6 +411,7 @@ PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resu
   "education": [{"degree":"","institution":"","start_date":"","end_date":""}],
   "certifications": ["cert1"]
 }
+For education, extract the actual stated start and completion dates. Do not use "Present" for a completed degree; use it only when the resume explicitly says the course is current or ongoing. If only a completion year is stated, place it in end_date and leave start_date empty.
 Return only the JSON object, no markdown, no explanation."""
 
 
@@ -504,6 +505,11 @@ def _normalize_for_frontend(c: dict) -> dict:
         _esd = _truncate_date_to_month(e.get("start_date") or "")
         _eed = _truncate_date_to_month(e.get("end_date") or "")
         dates = " — ".join(filter(None, [_esd, _eed]))
+        # Preserve a parser-supplied education date when separate boundaries
+        # are unavailable. Unlike employment, a missing end date is never
+        # interpreted as an ongoing course.
+        if not dates:
+            dates = _normalize_experience_text(e.get("dates") or e.get("duration") or "")
         education.append({
             "id": e.get("id", f"edu-{i}"),
             "degree": e.get("degree", ""),

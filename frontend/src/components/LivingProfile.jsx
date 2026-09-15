@@ -119,6 +119,32 @@ function EducationRow({ edu }) {
   );
 }
 
+function groupExperienceByEmployment(experience) {
+  const groups = new Map();
+
+  (experience || []).forEach((exp, index) => {
+    const title = exp?.title || exp?.role || "Role not provided";
+    const company = exp?.company || exp?.company_name || "";
+    const key = `${title.trim().toLowerCase()}|${company.trim().toLowerCase()}`;
+    const projects = Array.isArray(exp?.projects) && exp.projects.length
+      ? exp.projects.map((project, projectIndex) => ({
+          id: project?.id || `${exp?.id || index}-project-${projectIndex}`,
+          title: project?.title || project?.name || `Project ${projectIndex + 1}`,
+          description: project?.description || project?.summary || "",
+        }))
+      : [{
+          id: exp?.id || `project-${index}`,
+          title: exp?.project_title || exp?.projectTitle || exp?.project_name || exp?.projectName || `Project ${index + 1}`,
+          description: exp?.project_description || exp?.projectDescription || exp?.description || exp?.summary || "",
+        }];
+
+    if (!groups.has(key)) groups.set(key, { ...exp, title, company, projects });
+    else groups.get(key).projects.push(...projects);
+  });
+
+  return [...groups.values()];
+}
+
 function ResumeExperienceEntry({ exp }) {
   const highlights = String(exp.description || exp.summary || "")
     .split(/\n+|(?<=\.)\s+(?=[A-Z])/)
@@ -133,10 +159,15 @@ function ResumeExperienceEntry({ exp }) {
         {exp.dates && <p className="shrink-0 text-[11.5px] font-medium text-[#777774]">{exp.dates}</p>}
       </div>
       {exp.company && <p className="mt-0.5 text-[12.5px] font-medium text-[#6A5E9D]">{exp.company}</p>}
-      {highlights.length > 0 && (
-        <ul className="mt-3 space-y-1.5 text-[12.5px] leading-relaxed text-[#4A4A48]">
-          {highlights.map((highlight, index) => <li key={`${exp.id}-highlight-${index}`} className="flex gap-2"><span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[#7B6FB8]" />{highlight}</li>)}
-        </ul>
+      {exp.projects?.length > 0 && (
+        <div className="mt-3 space-y-3">
+          {exp.projects.map((project) => (
+            <div key={project.id} data-testid={`experience-project-${project.id}`}>
+              <h5 className="text-[12.5px] font-semibold text-[#1F1F1F]">{project.title}</h5>
+              {project.description && <p className="mt-1 text-[12.5px] leading-relaxed text-[#4A4A48]">{project.description}</p>}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -284,10 +315,14 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
   const profile = normalizeProfileForDisplay(user);
   const profileCandidateId = profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
   const [showAllExperiences, setShowAllExperiences] = React.useState(false);
-  const experienceCount = profile.experience?.length ?? 0;
+  const groupedExperience = React.useMemo(
+    () => groupExperienceByEmployment(profile.experience),
+    [profile.experience]
+  );
+  const experienceCount = groupedExperience.length;
   const visibleExperiences = showAllExperiences
-    ? profile.experience
-    : profile.experience?.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
+    ? groupedExperience
+    : groupedExperience.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
   const hobbies = [profile.hobbies, profile.interests, profile.raw_data?.hobbies, profile.raw_data?.interests]
     .find((value) => Array.isArray(value) && value.length > 0) || [];
 

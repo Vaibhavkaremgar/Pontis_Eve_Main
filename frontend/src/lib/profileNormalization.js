@@ -223,6 +223,32 @@ function formatExperienceDateRange(exp) {
   return `${startLabel} — ${endLabel}`;
 }
 
+// Education does not inherit the work-history rule that assumes a missing end
+// date means an active role. "Present" is shown only when explicitly supplied.
+function formatEducationDateRange(education) {
+  if (!education || typeof education !== "object") return "";
+
+  let start = education.start_date ?? education.startDate ?? null;
+  let end = education.end_date ?? education.endDate ?? null;
+  const rawDates = normalizeText(education.dates ?? education.duration ?? "");
+
+  if (rawDates) {
+    const range = splitExperienceDateRange(rawDates);
+    if (range && range.length === 2) {
+      if (!normalizeText(start)) start = range[0];
+      if (!normalizeText(end)) end = range[1];
+    } else if (!normalizeText(start) && !normalizeText(end)) {
+      // A single education date represents the completion date.
+      end = rawDates;
+    }
+  }
+
+  const startLabel = formatExperienceDateLabel(start);
+  const endLabel = formatExperienceDateLabel(end);
+  if (startLabel && endLabel) return `${startLabel} — ${endLabel}`;
+  return endLabel || startLabel || rawDates;
+}
+
 function extractExperienceSortValues(exp) {
   if (!exp || typeof exp !== "object") {
     return { openEnded: false, start: null, end: null };
@@ -857,7 +883,7 @@ function normalizeEducation(education) {
   });
 
   return merged.map((entry) => {
-    const formatted = formatExperienceDateRange(entry);
+    const formatted = formatEducationDateRange(entry);
     return formatted ? { ...entry, dates: formatted } : entry;
   });
 }
