@@ -69,7 +69,10 @@ function OpenToMatchesBadge({ isOpen, onToggle }) {
 
 function SectionLabel({ children }) {
   return (
-    <h3 className="text-[13px] font-medium text-[#1F1F1F] mb-3">{children}</h3>
+    <div className="flex items-center gap-3 mb-4">
+      <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#4A4A48]">{children}</h3>
+      <div className="h-px flex-1 bg-black/[0.08]" />
+    </div>
   );
 }
 
@@ -112,6 +115,41 @@ function EducationRow({ edu }) {
       <p className="text-[12px] text-[#9A9A98] mt-0.5 font-normal">
         {edu.institution} · {edu.dates}
       </p>
+    </div>
+  );
+}
+
+function ResumeExperienceEntry({ exp }) {
+  const highlights = String(exp.description || exp.summary || "")
+    .split(/\n+|(?<=\.)\s+(?=[A-Z])/)
+    .map((item) => item.replace(/^[-•]\s*/, "").trim())
+    .filter(Boolean);
+
+  return (
+    <div data-testid={`experience-row-${exp.id}`} className="relative border-l border-[#D8D5E3] pl-5 pb-7 last:pb-0">
+      <span className="absolute -left-[4.5px] top-1.5 h-2 w-2 rounded-full border-2 border-[#7B6FB8] bg-[#FDFDFC]" />
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+        <h4 className="text-[14px] font-semibold leading-snug text-[#1F1F1F]">{exp.title || "Role not provided"}</h4>
+        {exp.dates && <p className="shrink-0 text-[11.5px] font-medium text-[#777774]">{exp.dates}</p>}
+      </div>
+      {exp.company && <p className="mt-0.5 text-[12.5px] font-medium text-[#6A5E9D]">{exp.company}</p>}
+      {highlights.length > 0 && (
+        <ul className="mt-3 space-y-1.5 text-[12.5px] leading-relaxed text-[#4A4A48]">
+          {highlights.map((highlight, index) => <li key={`${exp.id}-highlight-${index}`} className="flex gap-2"><span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[#7B6FB8]" />{highlight}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ResumeEducationEntry({ edu }) {
+  return (
+    <div data-testid={`education-row-${edu.id}`} className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+        <h4 className="text-[13px] font-semibold text-[#1F1F1F]">{edu.degree || "Education not provided"}</h4>
+        {edu.dates && <p className="shrink-0 text-[11.5px] text-[#777774]">{edu.dates}</p>}
+      </div>
+      {edu.institution && <p className="mt-0.5 text-[12px] text-[#4A4A48]">{edu.institution}</p>}
     </div>
   );
 }
@@ -250,6 +288,8 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
   const visibleExperiences = showAllExperiences
     ? profile.experience
     : profile.experience?.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
+  const hobbies = [profile.hobbies, profile.interests, profile.raw_data?.hobbies, profile.raw_data?.interests]
+    .find((value) => Array.isArray(value) && value.length > 0) || [];
 
   return (
     <div className="space-y-8" data-testid="living-profile-content">
@@ -299,9 +339,9 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
         </div>
       </div>
 
-      {/* Bio */}
-      <div>
-        <SectionLabel>Bio</SectionLabel>
+      {/* Resume content */}
+      <section>
+        <SectionLabel>Summary</SectionLabel>
         {(() => {
           // Bio is derived from the latest saved profile so chat and voice
           // updates cannot leave a stale, separately stored bio behind.
@@ -312,13 +352,12 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
             <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
           );
         })()}
-      </div>
+      </section>
 
-      {/* Experience */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
+      <section>
+        <div className="flex items-start justify-between gap-4">
           <SectionLabel>
-            {profile.name ? `Where ${profile.name.split(" ")[0]} has worked` : "Experience"}
+            Work Experience
           </SectionLabel>
           {experienceCount > DEFAULT_VISIBLE_EXPERIENCES && (
             <button
@@ -333,37 +372,35 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
           )}
         </div>
         {experienceCount > 0 ? (
-          <div className="space-y-1">
+          <div>
             {visibleExperiences.map((exp) => (
-              <ExperienceRow key={exp.id} exp={exp} />
+              <ResumeExperienceEntry key={exp.id} exp={exp} />
             ))}
           </div>
         ) : (
           <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
         )}
-      </div>
+      </section>
 
-      {/* Education */}
-      <div>
+      <section>
         <SectionLabel>Education</SectionLabel>
         {profile.education?.length > 0 ? (
-          <div className="space-y-1">
+          <div>
             {profile.education.map((edu) => (
-              <EducationRow key={edu.id} edu={edu} />
+              <ResumeEducationEntry key={edu.id} edu={edu} />
             ))}
           </div>
         ) : (
           <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
         )}
-      </div>
+      </section>
 
-      {/* Skills */}
-      <div>
+      <section>
         <SectionLabel>Skills</SectionLabel>
         {profile.keySkills?.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
             {profile.keySkills.map((sk) => (
-              <span key={sk} className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full font-normal">
+              <span key={sk} className="border border-black/[0.07] bg-[#F6F6F4] text-[#343432] text-[12px] px-3 py-1.5 rounded-full font-medium">
                 {sk}
               </span>
             ))}
@@ -371,43 +408,47 @@ export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
         ) : (
           <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
         )}
-      </div>
+      </section>
 
-      {/* Preferred roles */}
-      {profile.preferred_roles?.length > 0 && (
-        <div>
-          <SectionLabel>Preferred roles</SectionLabel>
+      <section>
+          <SectionLabel>Certifications</SectionLabel>
+          {profile.certifications?.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {profile.certifications.map((c) => (
+                <span key={c} className="border border-[#DDD8EF] bg-[#F1EFF8] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium">{c}</span>
+              ))}
+            </div>
+          ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+      </section>
+
+      <section>
+          <SectionLabel>Preferred Roles</SectionLabel>
+          {profile.preferred_roles?.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {profile.preferred_roles.map((r) => (
-              <span key={r} className="bg-[#E7E3F0] text-[#7B6FB8] text-[12px] px-2.5 py-1 rounded-full font-normal">
+              <span key={r} className="bg-[#E7E3F0] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium">
                 {r}
               </span>
             ))}
           </div>
-        </div>
-      )}
+          ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+      </section>
 
-      {/* Certifications */}
-      {profile.certifications?.length > 0 && (
-        <div>
-          <SectionLabel>Certifications</SectionLabel>
-          <div className="flex flex-wrap gap-1.5">
-            {profile.certifications.map((c) => (
-              <span key={c} className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full font-normal">
-                {c}
-              </span>
-            ))}
+      <section>
+        <SectionLabel>Additional Information</SectionLabel>
+        {profile.additional_information
+          ? <p className="text-[13px] text-[#4A4A48] leading-[1.75] font-normal">{profile.additional_information}</p>
+          : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+      </section>
+
+      <section>
+        <SectionLabel>Hobbies &amp; Interests</SectionLabel>
+        {hobbies.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {hobbies.map((hobby) => <span key={hobby} className="bg-black/[0.03] text-[#4A4A48] text-[12px] px-3 py-1.5 rounded-full">{hobby}</span>)}
           </div>
-        </div>
-      )}
-
-      {/* Additional information */}
-      {profile.additional_information && (
-        <div>
-          <SectionLabel>Additional information</SectionLabel>
-          <p className="text-[13.5px] text-[#1F1F1F] leading-[1.7] font-normal">{profile.additional_information}</p>
-        </div>
-      )}
+        ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+      </section>
     </div>
   );
 }
