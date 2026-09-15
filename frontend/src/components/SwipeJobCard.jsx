@@ -440,7 +440,7 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
 
 // ─── Deck ────────────────────────────────────────────────────────────────────
 
-export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismissJob }) {
+export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismissJob, onExhausted }) {
   const [index, setIndex] = React.useState(0);
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
@@ -448,11 +448,16 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const [dismissing, setDismissing] = React.useState(false);
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
+  const exhaustionRequestedRef = React.useRef(false);
 
   // Only show jobs that haven't been actioned this session AND aren't already tracked
   const pending = jobs.filter((j) => !actioned.has(j.id) && !j.tracked);
   const current = pending[index] ?? null;
   const total = pending.length;
+
+  React.useEffect(() => {
+    if (total > 0) exhaustionRequestedRef.current = false;
+  }, [total]);
 
   const advance = React.useCallback(() => setIndex((i) => i + 1), []);
 
@@ -531,6 +536,10 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   }
 
   if (total === 0 || index >= total) {
+    if (!exhaustionRequestedRef.current && jobs.length > 0) {
+      exhaustionRequestedRef.current = true;
+      Promise.resolve().then(() => onExhausted?.());
+    }
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2 px-8 text-center">
         <p className="text-[15px] font-medium text-[#1F1F1F]">You're all caught up.</p>

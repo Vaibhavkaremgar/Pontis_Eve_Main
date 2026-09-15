@@ -148,6 +148,7 @@ function Dashboard() {
   const [sending, setSending] = React.useState(false);
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
+  const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
   // When true, the auto-routing effect must not override their choice.
@@ -155,7 +156,8 @@ function Dashboard() {
   // Snapshot of the profile used to start VoiceIntake — always fetched fresh before mounting.
   const [voiceIntakeProfile, setVoiceIntakeProfile] = React.useState(null);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
-  const rightPanelTab = centerView === "swipe" ? activeTab : "profile";
+  const hasJobsAccess = userProfile.strengthPercent >= 90;
+  const rightPanelTab = hasJobsAccess && centerView === "swipe" ? activeTab : "profile";
 
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
@@ -253,10 +255,20 @@ function Dashboard() {
   React.useEffect(() => {
     // Backend is the single source of truth for the initial view.
     // Skip if the user has already made an explicit navigation choice.
-    if (voiceIntakeCenterView !== null && !userChoseCenterViewRef.current) {
+    if (
+      hasJobsAccess &&
+      voiceIntakeCenterView !== null &&
+      !userChoseCenterViewRef.current
+    ) {
       setCenterView(voiceIntakeCenterView);
     }
-  }, [voiceIntakeCenterView]);
+  }, [hasJobsAccess, voiceIntakeCenterView]);
+
+  React.useEffect(() => {
+    if (!hasJobsAccess && centerView === "swipe") {
+      setCenterView("chat");
+    }
+  }, [centerView, hasJobsAccess]);
 
   const refreshProfile = React.useCallback(async () => {
     if (!candidateId) return null;
@@ -401,17 +413,22 @@ function Dashboard() {
   }, [userProfile.strengthPercent]);
 
   // Load real job recommendations from backend
-  const fetchJobs = React.useCallback(() => {
+  const fetchJobs = React.useCallback((requestMore = false) => {
     if (!candidateId) return;
     setJobsError(false);
     axios
-      .get(`${API}/candidate/${candidateId}/jobs`)
+      .get(`${API}/candidate/${candidateId}/jobs`, requestMore ? { params: { request_more: true } } : undefined)
       .then((res) => {
         setAvailableJobs(res.data || []);
         setSelectedJob((prev) => prev ?? (res.data?.[0] || null));
         setJobsLoading(false);
       })
-      .catch(() => {
+      .catch((error) => {
+        if (error?.response?.status === 403 && error.response.data?.detail?.code === "daily_job_limit_reached") {
+          setShowSubscriptionPopup(true);
+          setJobsLoading(false);
+          return;
+        }
         setJobsError(true);
         setJobsLoading(false);
       });
@@ -589,6 +606,15 @@ function Dashboard() {
       data-testid="app-shell"
     >
       <Toaster position="top-right" richColors closeButton />
+      {showSubscriptionPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-label="Subscription required">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl text-center">
+            <h2 className="text-lg font-medium text-[#1F1F1F]">Unlock more jobs</h2>
+            <p className="mt-2 text-sm text-[#4A4A48]">Unlock more jobs by subscribing.</p>
+            <button onClick={() => setShowSubscriptionPopup(false)} className="mt-5 rounded-xl bg-[#1F1F1F] px-5 py-2.5 text-sm font-medium text-white">Close</button>
+          </div>
+        </div>
+      )}
 
       {/* Dashboard top header with Bell */}
       <div className="shrink-0 flex items-center justify-end px-5 py-2 border-b border-black/[0.05]">
@@ -679,20 +705,24 @@ function Dashboard() {
           <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
             {/* Toggle bar */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
+              {hasJobsAccess && (
+                <button
+                  data-testid="jobs-tab"
+                  onClick={() => {
+                    userChoseCenterViewRef.current = true;
+                    setCenterView("swipe");
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
+                    centerView === "swipe"
+                      ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
+                      : "text-[#9A9A98] hover:text-[#4A4A48]"
+                  }`}
+                >
+                  Jobs for you
+                </button>
+              )}
               <button
-                onClick={() => {
-                  userChoseCenterViewRef.current = true;
-                  setCenterView("swipe");
-                }}
-                className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                  centerView === "swipe"
-                    ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
-                    : "text-[#9A9A98] hover:text-[#4A4A48]"
-                }`}
-              >
-                Jobs for you
-              </button>
-              <button
+                data-testid="chat-tab"
                 onClick={() => {
                   userChoseCenterViewRef.current = true;
                   setCenterView("chat");
@@ -733,7 +763,7 @@ function Dashboard() {
               }}
             />
               </div>
-            ) : centerView === "swipe" ? (
+            ) : hasJobsAccess && centerView === "swipe" ? (
               jobsLoading ? (
                 <div className="flex-1 flex items-center justify-center">
                   <div className="flex items-center gap-2 text-[#9A9A98]">
@@ -758,6 +788,7 @@ function Dashboard() {
                   candidateId={candidateId}
                   onJobsChange={fetchJobs}
                   onDismissJob={handleDismissJob}
+                  onExhausted={() => fetchJobs(true)}
                 />
               )
             ) : (

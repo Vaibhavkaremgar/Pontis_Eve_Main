@@ -5478,6 +5478,21 @@ ALTER TABLE candidate_job_recommendations
 ADD COLUMN IF NOT EXISTS hidden_reason TEXT
 """
 
+CREATE_DAILY_JOB_ACCESS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_daily_job_access (
+    candidate_id       UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    recommendation_id  UUID NOT NULL REFERENCES candidate_job_recommendations(id) ON DELETE CASCADE,
+    access_date        DATE NOT NULL,
+    accessed_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (candidate_id, recommendation_id, access_date)
+)
+"""
+
+CREATE_DAILY_JOB_ACCESS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_cdja_candidate_date
+ON candidate_daily_job_access (candidate_id, access_date)
+"""
+
 
 async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
@@ -5491,6 +5506,8 @@ async def _ensure_schema():
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
         await db.execute(text(ALTER_CANDIDATE_JOB_RECS_ADD_REASON))
+        await db.execute(text(CREATE_DAILY_JOB_ACCESS_TABLE))
+        await db.execute(text(CREATE_DAILY_JOB_ACCESS_INDEX))
         await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
         await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
         await db.commit()
@@ -6813,8 +6830,74 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
 
 # ---------- Jobs endpoints ----------
 
+FREE_DAILY_JOB_LIMIT = 3
+
+
+def _has_active_subscription(candidate: dict) -> bool:
+    """Read subscription state from the existing candidate record/profile payload."""
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+    subscription = _parse_raw_data(raw_data.get("subscription"))
+    sources = (candidate, raw_data, subscription)
+    if any(source.get(key) is True for source in sources for key in ("subscription_active", "is_subscribed", "is_active")):
+        return True
+    statuses = [candidate.get("subscription_status"), raw_data.get("subscription_status"), subscription.get("status")]
+    return any(str(status).lower() in {"active", "trialing", "trial"} for status in statuses if status is not None)
+
+
+def _daily_job_limit_reached(used: int, request_more: bool) -> bool:
+    return request_more and used >= FREE_DAILY_JOB_LIMIT
+
+
+async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_more: bool = False) -> bool:
+    """Persist and enforce the free daily job allowance. Returns whether it applies."""
+    if _has_active_subscription(candidate):
+        return False
+
+    async with SessionLocal() as db:
+        # Serialise claims for one candidate/day so separate devices cannot each
+        # receive a different free batch.
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
+            "lock_key": f"daily-job-access:{candidate_id}"
+        })
+        used_row = await db.execute(text("""
+            SELECT COUNT(*) FROM candidate_daily_job_access
+            WHERE candidate_id = :cid AND access_date = CURRENT_DATE
+        """), {"cid": candidate_id})
+        used = used_row.scalar() or 0
+        if _daily_job_limit_reached(used, request_more):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "daily_job_limit_reached", "message": "Unlock more jobs by subscribing."},
+            )
+
+        slots = max(0, FREE_DAILY_JOB_LIMIT - used)
+        if slots:
+            candidates = await db.execute(text("""
+                SELECT cjr.id
+                FROM candidate_job_recommendations cjr
+                WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM candidate_daily_job_access access
+                    WHERE access.candidate_id = cjr.candidate_id
+                      AND access.recommendation_id = cjr.id
+                      AND access.access_date = CURRENT_DATE
+                  )
+                ORDER BY cjr.recommendation_rank ASC NULLS LAST,
+                         cjr.match_score DESC NULLS LAST
+                LIMIT :slots
+            """), {"cid": candidate_id, "slots": slots})
+            for row in candidates.fetchall():
+                await db.execute(text("""
+                    INSERT INTO candidate_daily_job_access
+                        (candidate_id, recommendation_id, access_date)
+                    VALUES (:cid, :rid, CURRENT_DATE)
+                    ON CONFLICT (candidate_id, recommendation_id, access_date) DO NOTHING
+                """), {"cid": candidate_id, "rid": str(row[0])})
+        await db.commit()
+    return True
+
 @api_router.get("/candidate/{candidate_id}/jobs")
-async def get_candidate_jobs(candidate_id: str):
+async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
     """Return semantic job recommendations for this candidate, joined with job_descriptions."""
     candidate = await _get_candidate_row(candidate_id)
 
@@ -6832,6 +6915,8 @@ async def get_candidate_jobs(candidate_id: str):
             await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
         except Exception as e:
             logger.warning("[matching] On-demand matching failed for %s: %s", candidate_id, e)
+
+    limited = await _claim_daily_job_access(candidate_id, candidate, request_more)
 
     async with SessionLocal() as db:
         rows = await db.execute(
@@ -6862,9 +6947,17 @@ async def get_candidate_jobs(candidate_id: str):
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND (
+                    :limited = false OR EXISTS (
+                      SELECT 1 FROM candidate_daily_job_access access
+                      WHERE access.candidate_id = cjr.candidate_id
+                        AND access.recommendation_id = cjr.id
+                        AND access.access_date = CURRENT_DATE
+                    )
+                  )
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, "limited": limited},
         )
         results = rows.mappings().fetchall()
     return [
