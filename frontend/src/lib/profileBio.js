@@ -36,15 +36,16 @@ function articleFor(value) {
 }
 
 /**
- * Builds the Profile Bio solely from the profile currently supplied by the
- * persisted-profile view. It is intentionally a fresh derivation: no saved
- * summary/bio text is reused, so Voice Intake and chat profile updates cannot
- * leave stale prose on the page.
+ * Builds the Profile Bio from the persisted-profile view. A saved Bio always
+ * wins over the fallback generator so a candidate's manual wording is never
+ * replaced by automatically generated prose.
  */
 export function buildProfileBio(profile) {
   if (!profile || typeof profile !== "object") return "";
 
   const candidate = normalizeProfileForDisplay(profile);
+  const savedBio = text(candidate.bio || candidate.summary);
+  if (savedBio) return savedBio;
   const latest = candidate.experience?.[0] || {};
   const role = text(candidate.current_role || candidate.headline || latest.title);
   const company = text(candidate.current_company || latest.company);

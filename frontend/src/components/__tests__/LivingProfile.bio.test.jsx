@@ -26,6 +26,23 @@ function sentences(text) {
 }
 
 describe("candidate Bio", () => {
+  it("displays a persisted manual Bio instead of regenerating it", () => {
+    const manualBio = "Product leader focused on accessible, mission-driven software.";
+
+    expect(generateBio({ ...completedProfile, bio: manualBio })).toBe(manualBio);
+  });
+
+  it("does not overwrite a persisted manual Bio when other profile fields change", () => {
+    const manualBio = "I build calm, useful products for complex workflows.";
+
+    expect(generateBio({
+      ...completedProfile,
+      bio: manualBio,
+      keySkills: ["React", "TypeScript"],
+      preferred_roles: ["Staff Product Manager"],
+    })).toBe(manualBio);
+  });
+
   it("derives a concise, non-repetitive Bio from the persisted profile", () => {
     const bio = generateBio(completedProfile);
     expect(sentences(bio)).toHaveLength(3);

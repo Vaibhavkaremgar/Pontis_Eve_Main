@@ -9,15 +9,22 @@ import { saveOnboardingState } from "../../lib/onboardingStorage";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("axios");
+let latestProfile = null;
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
   useSearchParams: () => [new URLSearchParams(), jest.fn()],
 }), { virtual: true });
 jest.mock("../../components/Sidebar", () => () => <div />);
-jest.mock("../../components/ChatHub", () => () => <div data-testid="chat-hub" />);
-jest.mock("../../components/LivingProfile", () => ({ onPhotoChange }) => (
-  <button data-testid="refresh-profile" onClick={() => onPhotoChange("photo-url")}>Refresh</button>
+jest.mock("../../components/ChatHub", () => (props) => (
+  <div data-testid="chat-hub">
+    <input data-testid="chat-text-input" value={props.inputValue || ""} onChange={(e) => props.setInputValue(e.target.value)} />
+    <button data-testid="chat-send-btn" onClick={props.onSend}>Send</button>
+  </div>
 ));
+jest.mock("../../components/LivingProfile", () => ({ onPhotoChange, userProfile }) => {
+  latestProfile = userProfile;
+  return <button data-testid="refresh-profile" onClick={() => onPhotoChange("photo-url")}>Refresh</button>;
+});
 jest.mock("../../components/SwipeJobCard", () => ({ onExhausted }) => (
   <button data-testid="jobs-deck" onClick={onExhausted}>Next job</button>
 ));
@@ -42,6 +49,12 @@ function profile(strength) {
     profile_strength_label: "Strong",
     voice_intake_resume: { status: "completed", has_open_question: false },
   };
+}
+
+function setInputValue(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function mockRequests(profiles) {
@@ -81,6 +94,7 @@ describe("Dashboard profile-strength jobs access", () => {
   beforeEach(() => {
     localStorage.clear();
     jest.clearAllMocks();
+    latestProfile = null;
     saveOnboardingState({ candidateId: "candidate-1", isOpenToMatches: true });
   });
 
@@ -123,6 +137,28 @@ describe("Dashboard profile-strength jobs access", () => {
     await waitFor(() => dashboard.container.querySelector('[data-testid="chat-hub"]'));
     expect(dashboard.container.querySelector('[data-testid="jobs-tab"]')).toBeNull();
     expect(dashboard.container.querySelector('[data-testid="jobs-deck"]')).toBeNull();
+  });
+
+  it("refreshes persisted strength and Bio after Eve saves an update, unlocking Jobs at 90%", async () => {
+    const savedBio = "Product leader building inclusive software teams.";
+    mockRequests([
+      { ...profile(55), bio: "" },
+      { ...profile(90), bio: savedBio },
+    ]);
+    axios.post.mockResolvedValue({ data: { reply: "Saved.", profile_updates: { bio: savedBio } } });
+    dashboard = renderDashboard();
+
+    await waitFor(() => dashboard.container.querySelector('[data-testid="chat-hub"]'));
+    act(() => {
+      setInputValue(dashboard.container.querySelector('[data-testid="chat-text-input"]'), "Update my bio");
+      dashboard.container.querySelector('[data-testid="chat-send-btn"]').click();
+    });
+
+    await waitFor(() => latestProfile?.strengthPercent === 90);
+    expect(latestProfile.bio).toBe(savedBio);
+    expect(latestProfile.strength).toBe("Strong");
+    expect(dashboard.container.querySelector('[data-testid="jobs-tab"]')).toBeTruthy();
+    expect(axios.get.mock.calls.filter(([url]) => url.includes("/candidate/candidate-1/profile"))).toHaveLength(2);
   });
 
   it("shows the subscription prompt when a fourth job is requested", async () => {

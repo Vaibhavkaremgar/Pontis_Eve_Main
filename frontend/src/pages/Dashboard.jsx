@@ -197,18 +197,15 @@ function Dashboard() {
           profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent,
           profile_strength_label: data.profile_strength_label ?? data.strength,
         };
-        const cachedProfile = stored.parsedProfile ?? buildFallbackProfile(isOpenToMatches);
         setUserProfile((prev) => {
-          const next = hydrateDisplayProfile(
-            mergeProfilesForDisplay(
-              { ...backendProfile, isOpenToMatches: prev.isOpenToMatches },
-              {
-                ...cachedProfile,
-                isOpenToMatches: prev.isOpenToMatches,
-                voice_intake_resume: data.voice_intake_resume ?? cachedProfile.voice_intake_resume ?? null,
-              }
-            )
-          );
+          // The persisted payload is authoritative.  In particular, do not
+          // merge onboarding storage here: it can contain an older Bio and
+          // profile-strength snapshot than the one Eve just saved.
+          const next = hydrateDisplayProfile(normalizeProfileForDisplay({
+            ...backendProfile,
+            isOpenToMatches: prev.isOpenToMatches,
+            voice_intake_resume: data.voice_intake_resume ?? null,
+          }));
           return profilesAreEqual(prev, next) ? prev : next;
         });
         if (!footerIdentityRef.current.name && (backendProfile.name || backendProfile.email)) {
@@ -280,7 +277,6 @@ function Dashboard() {
         setCandidateId(profileCandidateId);
         saveOnboardingState({ ...loadOnboardingState(), candidateId: profileCandidateId });
       }
-      const hasPhotoUrl = Object.prototype.hasOwnProperty.call(data || {}, "photo_url");
       // Use backend data as the authoritative source for all profile fields.
       // List fields (skills, certifications, experience, education, preferred_roles)
       // must NOT be merged with stale prev state — deletions would otherwise be
@@ -291,7 +287,7 @@ function Dashboard() {
           ...data,
           candidate_id: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
           candidateId: profileCandidateId ?? prev.candidate_id ?? prev.candidateId ?? null,
-          avatar: hasPhotoUrl ? (data.photo_url ?? null) : prev.avatar,
+          avatar: data.photo_url ?? null,
           isOpenToMatches: prev.isOpenToMatches,
           voice_intake_resume: data.voice_intake_resume ?? prev.voice_intake_resume ?? null,
         };
@@ -302,7 +298,7 @@ function Dashboard() {
         ...data,
         candidate_id: profileCandidateId,
         candidateId: profileCandidateId,
-        avatar: hasPhotoUrl ? (data.photo_url ?? null) : undefined,
+        avatar: data.photo_url ?? null,
         voice_intake_resume: data.voice_intake_resume ?? null,
       }));
       console.log(
@@ -477,14 +473,10 @@ function Dashboard() {
       } else {
         toast.error("Eve didn't respond. Try again?");
       }
-      const profileUpdates = res?.data?.profile || res?.data?.profile_updates || null;
-      const hasDeletions = profileUpdates && typeof profileUpdates === "object" && profileUpdates.profile_deletions;
-      if (profileUpdates && !hasDeletions) {
-        setUserProfile((prev) => mergeProfileUpdatesForDisplay(prev, profileUpdates));
-      }
-      if ((profileUpdates || hasDeletions) && candidateId) {
-        await refreshProfile();
-      }
+      // Eve's reply is not a profile snapshot. Always reload after a
+      // successful turn so the meter, Jobs gate, and profile fields use the
+      // profile that was actually persisted by the backend.
+      if (candidateId) await refreshProfile();
     } catch (err) {
       console.error("chat error", err);
       toast.error("Couldn't reach Eve right now.");
