@@ -1484,11 +1484,11 @@ def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = Non
 
 
 def _apply_profile_strength_test_override(candidate: dict, result: dict) -> dict:
-    """Apply the temporary, candidate-specific Profile Strength meter override."""
+    """Apply the temporary, candidate-specific effective Profile Strength override."""
     if str(candidate.get("id") or candidate.get("candidate_id") or "") != "53a744f8-3292-4339-8533-f9a2f2f93e96":
         return result
 
-    # TODO: Remove this temporary Profile Strength Meter test override.
+    # TODO: Remove this temporary test override after validating 90% job access.
     overridden = dict(result)
     overridden["percent"] = 90
     overridden["label"] = "Strong"
@@ -1498,6 +1498,26 @@ def _apply_profile_strength_test_override(candidate: dict, result: dict) -> dict
         "label": "Strong",
     }
     return overridden
+
+
+async def _effective_profile_strength_percent(candidate_id: str, candidate: dict) -> int:
+    """Calculate the effective strength used to authorize job visibility."""
+    from profile_strength_service import calculate_profile_strength_v2
+
+    scoring_candidate = dict(candidate)
+    scoring_candidate["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
+    raw_data = _parse_raw_data(scoring_candidate.get("raw_data"))
+    async with SessionLocal() as db:
+        row = await db.execute(
+            text("SELECT * FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"),
+            {"cid": candidate_id},
+        )
+        prefs_row_result = row.mappings().fetchone()
+    prefs_row = dict(prefs_row_result) if prefs_row_result else None
+
+    result = calculate_profile_strength_v2(scoring_candidate, raw_data, prefs_row)
+    effective_result = _apply_profile_strength_test_override(scoring_candidate, result)
+    return effective_result["percent"]
 
 
 def _has_work_experience(value: Any) -> bool:
@@ -5343,6 +5363,10 @@ async def chat(request: ChatRequest):
             else:
                 candidate_row = await _get_candidate_row(request.candidate_id)
 
+            if await _effective_profile_strength_percent(request.candidate_id, candidate_row) < 90:
+                job_context = "\n\nJob matches are unavailable until Profile Strength reaches 90%."
+                raise HTTPException(status_code=403, detail="Profile Strength below job visibility threshold")
+
             # Ensure recommendations exist (runs matching if none yet)
             async with SessionLocal() as db:
                 count_row = await db.execute(
@@ -5387,6 +5411,10 @@ async def chat(request: ChatRequest):
             ]
             job_context = "\n\nREAL JOB MATCHES FROM DATABASE:\n" + _format_jobs_for_context(jobs)
             logger.info("[chat] Injected %d real job matches for candidate %s", len(jobs), request.candidate_id)
+        except HTTPException as e:
+            if e.status_code != 403:
+                logger.warning("[chat] Job retrieval failed for candidate %s: %s", request.candidate_id, e)
+                job_context = "\n\nJob search attempted but no results could be retrieved at this time."
         except Exception as e:
             logger.warning("[chat] Job retrieval/matching failed for candidate %s: %s", request.candidate_id, e)
             job_context = "\n\nJob search attempted but no results could be retrieved at this time."
@@ -6815,7 +6843,12 @@ async def get_opportunities(candidate_id: str):
     Return recruiter-interested job opportunities for the given candidate.
     Scoped strictly by candidate_id — never returns another candidate's data.
     """
-    await _get_candidate_row(candidate_id)
+    candidate = await _get_candidate_row(candidate_id)
+    if await _effective_profile_strength_percent(candidate_id, candidate) < 90:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "profile_strength_required", "message": "Profile Strength must be at least 90% to view opportunities."},
+        )
     async with SessionLocal() as db:
         rows = await db.execute(
             text("""
@@ -7024,6 +7057,11 @@ async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_mo
 async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
     """Return semantic job recommendations for this candidate, joined with job_descriptions."""
     candidate = await _get_candidate_row(candidate_id)
+    if await _effective_profile_strength_percent(candidate_id, candidate) < 90:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "profile_strength_required", "message": "Profile Strength must be at least 90% to view jobs."},
+        )
 
     # If no recommendations exist yet, run matching synchronously so the first load is useful
     async with SessionLocal() as db:

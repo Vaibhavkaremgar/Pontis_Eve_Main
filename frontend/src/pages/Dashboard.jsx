@@ -378,7 +378,10 @@ function Dashboard() {
   }, [chatRestored, voiceIntakeInProgress, voiceIntakeResumeQuestion, userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
   // Opportunities count
   React.useEffect(() => {
-    if (!candidateId) return;
+    if (!candidateId || !hasJobsAccess) {
+      setOpportunitiesCount(0);
+      return;
+    }
     const fetchCount = () => {
       const oppPromise = axios
         .get(`${API}/candidate/${candidateId}/opportunities`)
@@ -395,7 +398,7 @@ function Dashboard() {
     fetchCount();
     const interval = setInterval(fetchCount, 30000);
     return () => clearInterval(interval);
-  }, [candidateId]);
+  }, [candidateId, hasJobsAccess]);
 
   // Show weak-profile popup once per session if strength < 75 on first load
   React.useEffect(() => {
@@ -410,7 +413,12 @@ function Dashboard() {
 
   // Load real job recommendations from backend
   const fetchJobs = React.useCallback((requestMore = false) => {
-    if (!candidateId) return;
+    if (!candidateId || !hasJobsAccess) {
+      setAvailableJobs([]);
+      setSelectedJob(null);
+      setJobsLoading(false);
+      return;
+    }
     setJobsError(false);
     axios
       .get(`${API}/candidate/${candidateId}/jobs`, requestMore ? { params: { request_more: true } } : undefined)
@@ -428,7 +436,7 @@ function Dashboard() {
         setJobsError(true);
         setJobsLoading(false);
       });
-  }, [candidateId]);
+  }, [candidateId, hasJobsAccess]);
 
   React.useEffect(() => {
     fetchJobs();
