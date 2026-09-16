@@ -189,6 +189,21 @@ def test_upload_and_replace_profile_photo_updates_stored_reference(tmp_path, mon
     assert not old_path.exists()
     assert Path(second_stored["photo_file_path"]).exists()
 
+    # Simulate a fresh login: discard the upload response/state and fetch a
+    # newly read candidate row. The persisted DB JSON must still project a
+    # usable URL and the view endpoint must serve the stored bytes.
+    reloaded_row = {"id": "cand-123", "raw_data": second_stored}
+
+    async def fresh_candidate_lookup(cid):
+        assert cid == "cand-123"
+        return reloaded_row
+
+    monkeypatch.setattr(server, "_get_candidate_row", fresh_candidate_lookup)
+    reloaded_profile = _normalize_for_frontend(reloaded_row)
+    assert reloaded_profile["photo_url"] == "/api/candidate/cand-123/photo/view?rev=rev-second"
+    response = asyncio.run(view_profile_photo("cand-123"))
+    assert Path(response.path).read_bytes() == b"second"
+
 
 def test_delete_profile_photo_clears_stored_reference_and_file(tmp_path, monkeypatch):
     import server

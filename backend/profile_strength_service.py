@@ -204,12 +204,23 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
         return []
 
     preferred_roles = _jlist(p.get("preferred_roles")) or _jlist(raw.get("preferred_roles"))
-    preferred_locations = _jlist(p.get("preferred_locations")) or _jlist(raw.get("location_preferences"))
-    preferred_industries = _jlist(p.get("preferred_industries")) or _jlist(raw.get("target_industries"))
+    # Profile updates use the canonical names below, while older resume/voice
+    # imports used the aliases at the right. Both are persisted candidate
+    # input and must produce the same score.
+    preferred_locations = (
+        _jlist(p.get("preferred_locations"))
+        or _jlist(raw.get("preferred_locations"))
+        or _jlist(raw.get("location_preferences"))
+    )
+    preferred_industries = (
+        _jlist(p.get("preferred_industries"))
+        or _jlist(raw.get("preferred_industries"))
+        or _jlist(raw.get("target_industries"))
+    )
     employment_types = _jlist(p.get("employment_types")) or _jlist(raw.get("employment_types"))
-    remote_preference = _clean(p.get("remote_preference")) or _clean(raw.get("work_type_preference"))
+    remote_preference = _clean(p.get("remote_preference")) or _clean(raw.get("remote_preference")) or _clean(raw.get("work_type_preference"))
     notice_period = _clean(p.get("notice_period")) or _clean(raw.get("notice_period")) or _clean(raw.get("availability"))
-    expected_salary = _clean(p.get("expected_salary")) or _clean(raw.get("salary_expectation"))
+    expected_salary = _clean(p.get("expected_salary")) or _clean(raw.get("expected_salary")) or _clean(raw.get("salary_expectation"))
     willing_to_relocate = p.get("willing_to_relocate")
     open_to_opportunities = p.get("open_to_opportunities")
 
@@ -1272,6 +1283,16 @@ def calculate_profile_strength_v2(
         weighted_sum += float(s) * w
         total_weight += w
 
+    weighted_contributions: dict[str, dict[str, float]] = {}
+    for dim_key, weight in weights.items():
+        dimension_score = dim_scores.get(dim_key, {}).get("score")
+        if dimension_score is not None:
+            weighted_contributions[dim_key] = {
+                "score": round(float(dimension_score), 2),
+                "weight": weight,
+                "contribution": round(float(dimension_score) * weight, 2),
+            }
+
     if total_weight > 0:
         raw_percent = weighted_sum / total_weight
     else:
@@ -1359,6 +1380,13 @@ def calculate_profile_strength_v2(
         "inconsistencies": inconsistencies,
         "constraint_profile": constraint_profile,
         "evidence": evidence,
+        "calculation": {
+            "weighted_categories": weighted_contributions,
+            "included_weight": round(total_weight, 3),
+            "weighted_percent_before_adjustments": round(weighted_sum / total_weight, 2) if total_weight else 0.0,
+            "consistency_penalty": medium_issues * 3,
+            "final_percent": percent,
+        },
         # Backward-compatible fields
         "percent": percent,
         "label": label,
@@ -1379,6 +1407,12 @@ def calculate_profile_strength_v2(
         d7.get("score") or 0,
         rec_conf["score"],
         rec_conf["recommendation_tier"],
+    )
+    logger.info(
+        "[profile_strength_breakdown] candidate=%s categories=%s final_percent=%d",
+        cid,
+        {key: value["contribution"] for key, value in weighted_contributions.items()},
+        percent,
     )
 
     return result

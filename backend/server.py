@@ -3270,7 +3270,7 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
         async with SessionLocal() as db:
             await db.execute(
                 text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
-                {"rd": json.dumps(raw_data), "cid": candidate_id},
+                {"rd": json.dumps(raw_data), "cid": canonical_candidate_id},
             )
             await db.commit()
     except Exception:
@@ -3289,8 +3289,9 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
 @api_router.get("/candidate/{candidate_id}/photo/view")
 async def view_profile_photo(candidate_id: str):
     existing = await _get_candidate_row(candidate_id)
+    canonical_candidate_id = str(existing.get("id") or existing.get("candidate_id") or candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
-    file_path = _resolve_candidate_photo_path(candidate_id, raw_data.get("photo_file_path"))
+    file_path = _resolve_candidate_photo_path(canonical_candidate_id, raw_data.get("photo_file_path"))
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="No profile photo.")
     suffix = Path(file_path).suffix.lower()

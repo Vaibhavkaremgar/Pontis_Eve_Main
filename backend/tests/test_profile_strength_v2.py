@@ -167,6 +167,57 @@ def test_existing_parsed_resume_summary_is_counted_in_ninety_percent_profile():
     assert "career_summary" in result["dimensions"]["career_intent"]["signals"]
 
 
+def test_complete_profile_counts_canonical_preference_keys_and_exposes_every_contribution():
+    """Regression: canonical chat/profile keys must not lose preference credit."""
+    c = _base()
+    c.update({
+        "name": "Complete Dev", "email": "complete@example.com", "location": "Remote",
+        "current_role": "Senior Backend Engineer", "current_company": "Acme",
+        "summary": "Builds reliable backend platforms.", "experience_years": 7,
+        "skills": ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS", "Kubernetes"],
+        "work_experience": [{
+            "title": "Lead Engineer", "company": "Acme", "description": "Led platform work",
+            "start_date": "2018-01-01", "end_date": "2023-01-01",
+        }],
+        "education": [{"degree": "B.Tech", "institution": "University"}],
+        "certifications": ["AWS Certified"],
+        "candidate_certificates": [{"id": "cert-1", "file_name": "aws.pdf"}],
+        "interview_technical_score": 10,
+        "interview_communication_score": 8.5,
+        "raw_data": {
+            "preferred_roles": ["Senior Backend Engineer"],
+            # These canonical keys are written by profile/chat updates.
+            "preferred_locations": ["Remote"], "remote_preference": "remote",
+            "notice_period": "30 days", "expected_salary": "100000",
+            "employment_types": ["Full-time"], "preferred_industries": ["Software"],
+            "projects": ["AI platform"],
+            "voice_intake": {
+                "status": "completed",
+                "completed_turns": [
+                    {"question": "Roles?", "answer": "Senior backend roles."},
+                    {"question": "Skills?", "answer": "Python and FastAPI."},
+                    {"question": "Projects?", "answer": "Platform work."},
+                ],
+                "known_topics": ["background_experience", "skills_technologies", "target_role",
+                                 "responsibilities_projects", "availability_location", "career_preferences"],
+            },
+        },
+    })
+
+    result = calculate_profile_strength_v2(c)
+    calculation = result["calculation"]
+
+    # Full persisted data produces 93. The remaining preference five points
+    # are only the deliberately optional relocation declaration.
+    assert result["percent"] == 93
+    assert result["dimensions"]["preferences_constraints"]["score"] == 95
+    assert set(calculation["weighted_categories"]) == {
+        "identity_background", "skills_capability", "evidence", "career_intent",
+        "preferences_constraints", "behaviour_communication", "career_readiness",
+    }
+    assert calculation["final_percent"] == result["percent"]
+
+
 # ---------------------------------------------------------------------------
 # Candidate 2: Resume + voice intake
 # ---------------------------------------------------------------------------
