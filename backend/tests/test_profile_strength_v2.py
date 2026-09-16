@@ -117,6 +117,56 @@ class TestCandidate1ResumeOnly:
         assert result["percent"] < 100
 
 
+def test_existing_parsed_resume_summary_is_counted_in_ninety_percent_profile():
+    """A normalised-column gap must not hide valid persisted resume data."""
+    c = _base()
+    c.update({
+        "name": "Complete Dev",
+        "email": "complete@example.com",
+        "phone": "1234567890",
+        "location": "Remote",
+        "current_role": "Senior Backend Engineer",
+        "current_company": "Acme",
+        "experience_years": 7,
+        "skills": ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS", "Kubernetes"],
+        "work_experience": [{
+            "title": "Lead Engineer", "company": "Acme", "description": "Led platform work",
+            "start_date": "2018-01-01", "end_date": "2023-01-01",
+        }],
+        "education": [{"degree": "B.Tech", "institution": "University"}],
+        "interview_technical_score": 10,
+        "interview_communication_score": 8.5,
+        "candidate_certificates": [{"id": "cert-1", "file_name": "aws.pdf"}],
+        # This is a realistic older import: the parsed resume has a valid
+        # summary while the newer summary column has not been backfilled.
+        "summary": "",
+        "parsed_resume_json": {"summary": "Backend engineer focused on reliable platforms."},
+        "raw_data": {
+            "preferred_roles": ["Senior Backend Engineer"],
+            "availability": "30 days",
+            "work_type_preference": "remote",
+            "projects": ["AI platform", "REST API service"],
+            "voice_intake": {
+                "status": "completed",
+                "completed_turns": [
+                    {"question": "What roles?", "answer": "Senior backend engineering roles."},
+                    {"question": "Skills?", "answer": "Python, FastAPI, PostgreSQL."},
+                    {"question": "Availability?", "answer": "30 days notice."},
+                ],
+                "known_topics": [
+                    "background_experience", "skills_technologies", "target_role",
+                    "responsibilities_projects", "availability_location", "career_preferences",
+                ],
+            },
+        },
+    })
+
+    result = calculate_profile_strength_v2(c)
+
+    assert result["percent"] == 90
+    assert "career_summary" in result["dimensions"]["career_intent"]["signals"]
+
+
 # ---------------------------------------------------------------------------
 # Candidate 2: Resume + voice intake
 # ---------------------------------------------------------------------------

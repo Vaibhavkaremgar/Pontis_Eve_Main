@@ -327,9 +327,11 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   );
 }
 
-export function ProfileTab({ user, onToggleOpenToMatches, onPhotoChange }) {
+export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoChange }) {
   const profile = normalizeProfileForDisplay(user);
-  const profileCandidateId = profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
+  // The active dashboard candidate is authoritative. Profile data can be a
+  // stale snapshot while the initial profile request is resolving.
+  const profileCandidateId = candidateId ?? profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
   const [showAllExperiences, setShowAllExperiences] = React.useState(false);
   const groupedExperience = React.useMemo(
     () => groupExperienceByEmployment(profile.experience),
@@ -1478,7 +1480,7 @@ export default function LivingProfile({
       {/* Scrollable content */}
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
         <div className="max-w-2xl mx-auto">
-          {activeTab === "profile" && <ProfileTab user={userProfile} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} />}
+          {activeTab === "profile" && <ProfileTab user={userProfile} candidateId={candidateId} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} />}
           {activeTab === "jobs" && (
             <JobsTab
               jobs={jobs}

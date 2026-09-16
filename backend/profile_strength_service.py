@@ -1180,15 +1180,27 @@ def calculate_profile_strength_v2(
             return primary
         return fallback
 
-    # Build enriched view (canonical DB columns win over parsed_resume_json)
+    # Build enriched view (canonical DB columns win over parsed_resume_json).
+    # A resume import is persisted in both the normalised columns and the
+    # original parsed payload.  Older imports can legitimately have some of
+    # the former empty, so do not discard that already-known profile data when
+    # calculating completion.
     enriched = dict(candidate)
     enriched["raw_data"] = raw
     for field, fb in [
         ("name", parsed_resume.get("name")),
+        ("email", parsed_resume.get("email")),
+        ("phone", parsed_resume.get("phone")),
+        ("location", parsed_resume.get("location")),
         ("current_role", parsed_resume.get("current_role") or parsed_resume.get("headline")),
+        ("headline", parsed_resume.get("headline") or parsed_resume.get("current_role")),
+        ("current_company", parsed_resume.get("current_company") or parsed_resume.get("company")),
+        ("summary", parsed_resume.get("summary") or parsed_resume.get("bio")),
+        ("experience_years", parsed_resume.get("experience_years") or parsed_resume.get("total_experience_years")),
         ("skills", parsed_resume.get("skills")),
         ("work_experience", parsed_resume.get("work_experience")),
         ("education", parsed_resume.get("education")),
+        ("certifications", parsed_resume.get("certifications")),
     ]:
         enriched[field] = _prefer(enriched.get(field), fb)
 

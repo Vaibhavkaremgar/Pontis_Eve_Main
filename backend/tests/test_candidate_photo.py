@@ -13,12 +13,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from server import (  # noqa: E402
     _candidate_photo_url,
     _candidate_photo_dir,
+    _normalize_for_frontend,
     _resolve_candidate_photo_path,
     _photo_view_url,
     _validate_candidate_photo_upload,
     MAX_PROFILE_PHOTO_BYTES,
     upload_profile_photo,
     delete_profile_photo,
+    view_profile_photo,
 )
 
 
@@ -72,6 +74,38 @@ def test_candidate_photo_url_falls_back_to_view_endpoint(tmp_path, monkeypatch):
     raw_data = {"photo_file_path": str(photo_path)}
 
     assert _candidate_photo_url(profile, raw_data) == f"/api/candidate/{candidate_id}/photo/view"
+
+
+def test_uploaded_photo_is_in_profile_payload_and_viewable_after_reload(tmp_path, monkeypatch):
+    """The profile GET projection must retain the persisted photo reference."""
+    import server
+
+    candidate_id = "cand-123"
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    photo_dir = _candidate_photo_dir(candidate_id)
+    photo_dir.mkdir(parents=True, exist_ok=True)
+    photo_path = photo_dir / "persisted.png"
+    photo_path.write_bytes(b"persisted-image")
+    raw_data = {
+        "photo_file_path": str(photo_path),
+        "photo_version": "persisted",
+        "photo_url": _photo_view_url(candidate_id, "persisted"),
+    }
+    reloaded_row = {"id": candidate_id, "raw_data": raw_data}
+
+    # This is the same projection used by GET /candidate/{id}/profile after a
+    # page reload or a new login session.
+    profile = _normalize_for_frontend(reloaded_row)
+    assert profile["candidate_id"] == candidate_id
+    assert profile["photo_url"] == _photo_view_url(candidate_id, "persisted")
+
+    async def fake_get_candidate_row(cid):
+        assert cid == candidate_id
+        return reloaded_row
+
+    monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+    response = asyncio.run(view_profile_photo(candidate_id))
+    assert Path(response.path) == photo_path
 
 
 def test_photo_view_url_can_be_versioned():

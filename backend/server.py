@@ -3246,21 +3246,25 @@ async def _seed_employment_gaps_after_parse(candidate_id: str, parsed: dict) -> 
 @api_router.post("/candidate/{candidate_id}/photo")
 async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
     existing = await _get_candidate_row(candidate_id)
+    # Always derive storage and URLs from the row we found.  This prevents an
+    # alias/stale client-side id from writing a photo under a different
+    # candidate directory than the profile GET endpoint reads.
+    canonical_candidate_id = str(existing.get("id") or existing.get("candidate_id") or candidate_id)
     file_bytes = await file.read()
     ext = _validate_candidate_photo_upload(file.content_type or "", file_bytes)
     photo_version = uuid.uuid4().hex
 
-    dest_dir = _candidate_photo_dir(candidate_id)
+    dest_dir = _candidate_photo_dir(canonical_candidate_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / f"{photo_version}{ext}"
 
     raw_data = _parse_raw_data(existing.get("raw_data"))
     old_path = raw_data.get("photo_file_path")
-    previous_photo_path = _resolve_candidate_photo_path(candidate_id, old_path)
+    previous_photo_path = _resolve_candidate_photo_path(canonical_candidate_id, old_path)
 
     try:
         dest_path.write_bytes(file_bytes)
-        raw_data["photo_url"] = _photo_view_url(candidate_id, photo_version)
+        raw_data["photo_url"] = _photo_view_url(canonical_candidate_id, photo_version)
         raw_data["photo_file_path"] = str(dest_path)
         raw_data["photo_version"] = photo_version
         async with SessionLocal() as db:
@@ -3277,7 +3281,7 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
         raise
 
     if previous_photo_path and previous_photo_path != dest_path:
-        await _delete_candidate_photo(candidate_id, str(previous_photo_path))
+        await _delete_candidate_photo(canonical_candidate_id, str(previous_photo_path))
 
     return {"photo_url": raw_data["photo_url"]}
 
