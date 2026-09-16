@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
 from groq_client import GroqClientPool, AllKeysRateLimitedError
 import pypdf
@@ -6988,6 +6989,14 @@ async def respond_to_opportunity(candidate_id: str, rec_id: str, body: Opportuni
 # ---------- Jobs endpoints ----------
 
 FREE_DAILY_JOB_LIMIT = 3
+# The daily allowance resets at midnight in the product timezone, not at the
+# database server's midnight.
+PRODUCT_TIMEZONE = os.environ.get("PRODUCT_TIMEZONE", "Asia/Kolkata")
+
+
+def _product_current_date():
+    """Return the product calendar date stored in daily job-access records."""
+    return datetime.now(ZoneInfo(PRODUCT_TIMEZONE)).date()
 
 
 def _has_active_subscription(candidate: dict) -> bool:
@@ -7005,11 +7014,14 @@ def _daily_job_limit_reached(used: int, request_more: bool) -> bool:
     return request_more and used >= FREE_DAILY_JOB_LIMIT
 
 
-async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_more: bool = False) -> bool:
+async def _claim_daily_job_access(
+    candidate_id: str, candidate: dict, request_more: bool = False, access_date=None
+) -> bool:
     """Persist and enforce the free daily job allowance. Returns whether it applies."""
     if _has_active_subscription(candidate):
         return False
 
+    access_date = access_date or _product_current_date()
     async with SessionLocal() as db:
         # Serialise claims for one candidate/day so separate devices cannot each
         # receive a different free batch.
@@ -7018,8 +7030,8 @@ async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_mo
         })
         used_row = await db.execute(text("""
             SELECT COUNT(*) FROM candidate_daily_job_access
-            WHERE candidate_id = :cid AND access_date = CURRENT_DATE
-        """), {"cid": candidate_id})
+            WHERE candidate_id = :cid AND access_date = :access_date
+        """), {"cid": candidate_id, "access_date": access_date})
         used = used_row.scalar() or 0
         if _daily_job_limit_reached(used, request_more):
             raise HTTPException(
@@ -7037,7 +7049,6 @@ async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_mo
                     SELECT 1 FROM candidate_daily_job_access access
                     WHERE access.candidate_id = cjr.candidate_id
                       AND access.recommendation_id = cjr.id
-                      AND access.access_date = CURRENT_DATE
                   )
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST,
                          cjr.match_score DESC NULLS LAST
@@ -7047,9 +7058,9 @@ async def _claim_daily_job_access(candidate_id: str, candidate: dict, request_mo
                 await db.execute(text("""
                     INSERT INTO candidate_daily_job_access
                         (candidate_id, recommendation_id, access_date)
-                    VALUES (:cid, :rid, CURRENT_DATE)
+                    VALUES (:cid, :rid, :access_date)
                     ON CONFLICT (candidate_id, recommendation_id, access_date) DO NOTHING
-                """), {"cid": candidate_id, "rid": str(row[0])})
+                """), {"cid": candidate_id, "rid": str(row[0]), "access_date": access_date})
         await db.commit()
     return True
 
@@ -7078,7 +7089,10 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
         except Exception as e:
             logger.warning("[matching] On-demand matching failed for %s: %s", candidate_id, e)
 
-    limited = await _claim_daily_job_access(candidate_id, candidate, request_more)
+    # Capture once so a request which happens to span midnight has one coherent
+    # product-calendar date for both its claim and response.
+    access_date = _product_current_date()
+    limited = await _claim_daily_job_access(candidate_id, candidate, request_more, access_date)
 
     async with SessionLocal() as db:
         rows = await db.execute(
@@ -7114,12 +7128,12 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
                       SELECT 1 FROM candidate_daily_job_access access
                       WHERE access.candidate_id = cjr.candidate_id
                         AND access.recommendation_id = cjr.id
-                        AND access.access_date = CURRENT_DATE
+                        AND access.access_date = :access_date
                     )
                   )
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
             """),
-            {"cid": candidate_id, "limited": limited},
+            {"cid": candidate_id, "limited": limited, "access_date": access_date},
         )
         results = rows.mappings().fetchall()
     return [
