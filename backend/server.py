@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
+﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -532,6 +532,7 @@ def _normalize_for_frontend(c: dict) -> dict:
 
     from profile_strength_service import calculate_profile_strength_v2
     _ps_result = calculate_profile_strength_v2(c, raw_data, c.get("_prefs_row"))
+    _ps_result = _apply_profile_strength_test_override(c, _ps_result)
     strength_percent = _ps_result["percent"]
     strength_label = _ps_result["label"]
     certifications = _normalize_certifications(raw_data.get("certifications") or [])
@@ -1480,6 +1481,23 @@ def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = Non
     strength_profile["candidate_certificates"] = profile.get("candidate_certificates") or []
 
     return strength_profile
+
+
+def _apply_profile_strength_test_override(candidate: dict, result: dict) -> dict:
+    """Apply the temporary, candidate-specific Profile Strength meter override."""
+    if str(candidate.get("id") or candidate.get("candidate_id") or "") != "53a744f8-3292-4339-8533-f9a2f2f93e96":
+        return result
+
+    # TODO: Remove this temporary Profile Strength Meter test override.
+    overridden = dict(result)
+    overridden["percent"] = 90
+    overridden["label"] = "Strong"
+    overridden["profile_strength"] = {
+        **(result.get("profile_strength") or {}),
+        "percent": 90,
+        "label": "Strong",
+    }
+    return overridden
 
 
 def _has_work_experience(value: Any) -> bool:
@@ -3507,6 +3525,7 @@ async def get_candidate_profile_strength(candidate_id: str):
     prefs_row = dict(prefs_row_result) if prefs_row_result else None
 
     result = calculate_profile_strength_v2(candidate, raw_data, prefs_row)
+    result = _apply_profile_strength_test_override(candidate, result)
     return result
 
 @api_router.get("/candidate/{candidate_id}/profile/download")
