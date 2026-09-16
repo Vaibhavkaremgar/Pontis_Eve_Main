@@ -243,3 +243,32 @@ def test_job_eligibility_filters_experience_and_requires_relevance():
         "4+ years of experience",
         ["SEO", "Writing"],
     )
+
+
+def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeypatch):
+    """A refresh result is not a candidate's explicit Not-for-me action."""
+    state = {
+        "jobs": {
+            "new-job": {
+                "title": "Java Backend Engineer",
+                "description": "Build APIs using Java and Spring Boot.",
+                "requirements": "",
+                "skills": ["Java", "Spring Boot"],
+            }
+        },
+        # This existing recommendation is absent from the current retrieval result.
+        "existing": [("previous-job", "previous-rec", None, None)],
+    }
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java backend engineer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("new-job", 0.9)])
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate",
+        {"skills": ["Java", "Spring Boot"], "current_role": "Java Backend Engineer"},
+        FakeSessionFactory(state),
+    ))
+
+    assert state["inserted"] == ["new-job"]
+    assert "hidden_updates" not in state

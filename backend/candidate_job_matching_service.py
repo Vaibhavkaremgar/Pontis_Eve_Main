@@ -795,7 +795,6 @@ async def refresh_candidate_job_matches(
 
     # 4. Hybrid re-ranking
     scored: List[Tuple[str, float, Dict]] = []
-    eligible_job_ids: list[str] = []
     for job_id, job_data in job_details.items():
         if not _job_is_eligible(
             signals,
@@ -821,7 +820,6 @@ async def refresh_candidate_job_matches(
             intelligence=intelligence,
         )
         scored.append((job_id, final, components))
-        eligible_job_ids.append(job_id)
         logger.info(
             "[job-match] job=%r target_role_score=%.4f skills_score=%.4f "
             "experience_score=%.4f semantic_score=%.4f final_score=%.4f",
@@ -888,20 +886,6 @@ async def refresh_candidate_job_matches(
                     },
                 )
         await db.commit()
-
-    stale_job_ids = [job_id for job_id in existing.keys() if job_id not in set(eligible_job_ids)]
-    if stale_job_ids:
-        async with SessionLocal() as db:
-            await db.execute(
-                text("""
-                    UPDATE candidate_job_recommendations
-                    SET hidden_at = COALESCE(hidden_at, now())
-                    WHERE candidate_id = :cid
-                      AND job_id::text = ANY(CAST(:job_ids AS text[]))
-                """),
-                {"cid": candidate_id, "job_ids": stale_job_ids},
-            )
-            await db.commit()
 
     logger.info(
         "[matching] Upserted %d job recommendations for candidate %s",
