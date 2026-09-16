@@ -26,6 +26,7 @@ import unittest.mock as mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import server
+from profile_strength_service import calculate_profile_strength_v2, get_canonical_preferences
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,37 @@ def _run_apply(candidate_state, updates):
         asyncio.run(server._apply_profile_updates("cand-regression-test", updates))
 
     return candidate_state
+
+
+def test_natural_language_preference_update_persists_canonical_keys_and_improves_score():
+    """Chat extraction must feed the exact preference keys used by strength scoring."""
+    state = _make_candidate(raw_data={})
+    before = calculate_profile_strength_v2(state, {})["dimensions"]["preferences_constraints"]["score"]
+    message = (
+        "I'm targeting Platform Engineer roles. Preferred locations: Bengaluru and Pune. "
+        "Preferred industries: fintech and healthcare. I prefer remote full-time work, "
+        "have a 30 day notice period, and my expected salary is 24 LPA. "
+        "I'm willing to relocate and open to new opportunities."
+    )
+    updates = server._infer_profile_updates_from_message(message)
+    _run_apply(state, updates)
+
+    raw = state["raw_data"]
+    assert get_canonical_preferences(state) == {
+        "preferred_roles": ["Platform Engineer"],
+        "preferred_locations": ["Bengaluru", "Pune"],
+        "preferred_industries": ["fintech", "healthcare"],
+        "employment_types": ["Full-time"],
+        "remote_preference": "Remote",
+        "notice_period": "30 day",
+        "expected_salary": "24 LPA",
+        "willing_to_relocate": True,
+        "open_to_opportunities": True,
+    }
+    assert raw["expected_salary"] == "24 LPA"
+    assert raw["notice_period"] == "30 day"
+    after = calculate_profile_strength_v2(state, raw)["dimensions"]["preferences_constraints"]["score"]
+    assert after > before
 
 
 # ===========================================================================

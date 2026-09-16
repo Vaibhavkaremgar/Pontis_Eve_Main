@@ -3998,6 +3998,10 @@ FIELD DEFINITIONS — use exactly these keys:
   experience_years: Total years of professional experience as a number.
   skills         : List of technology/tool strings (e.g. ["FastAPI", "PostgreSQL", "Python"]).
   preferred_roles: List of job titles the candidate explicitly says they want.
+  preferred_locations, preferred_industries, employment_types: Lists of explicitly stated preferences.
+  remote_preference: "Remote", "Hybrid", "On-site", or "Flexible" only when stated.
+  expected_salary: Plain salary expectation string; use this key, never salary_expectation.
+  willing_to_relocate, open_to_opportunities: Boolean only when explicitly stated.
   availability / notice_period: Plain string describing when the candidate can start or their notice period.
   work_experience: List of job objects. Each object must have:
                      {{"title": "<job title>", "company": "<company name>", "description": "<responsibilities>"}}
@@ -4177,7 +4181,8 @@ def _sanitize_profile_updates(updates: dict) -> dict:
             if isinstance(value, dict):
                 sanitized[field] = value
             continue
-        if field in ("skills", "certifications", "preferred_roles"):
+        if field in ("skills", "certifications", "preferred_roles", "preferred_locations",
+                     "preferred_industries", "employment_types"):
             if not isinstance(value, list):
                 continue
             clean_items = _sanitize_structured_list_items(value)
@@ -4555,16 +4560,48 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         availability = _normalize_availability_value(availability)
         updates["availability"] = availability
         updates["notice_period"] = availability
+    else:
+        notice_period = _extract_first_match(
+            text, [r"\b(?:have|with|on)?\s*(?P<value>\d+\s*(?:days?|weeks?|months?))\s+notice period\b"]
+        )
+        if notice_period:
+            updates["notice_period"] = notice_period
 
     salary_expectation = _extract_first_match(
         text,
         [
             r"\b(?:salary expectation|expected salary|salary range|compensation expectation)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:salary expectation|expected salary|salary range|compensation expectation)\s+(?:is|of)\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:i(?:'m| am)?\s+(?:expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)|expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)\s+(?P<value>(?:[₹$€£]\s*)?\d[\d,]*(?:\s*(?:[-–—]|to)\s*(?:[₹$€£]\s*)?\d[\d,]*)?(?:\s*(?:k|lpa|pa|per annum|annual(?:ly)?|year(?:ly)?|yr|month(?:ly)?|lac|lakhs?|crore|crores))?)(?:[.!?;]|$)",
         ],
     )
     if salary_expectation:
+        # Preserve the fallback's established output contract; application maps
+        # this legacy extraction alias into the canonical expected_salary key.
         updates["salary_expectation"] = salary_expectation.strip()
+
+    remote_match = re.search(r"\b(?:prefer|want|looking for|open to)\s+(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
+    if remote_match:
+        updates["remote_preference"] = {"remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site", "onsite": "On-site", "flexible": "Flexible"}[remote_match.group(1).lower().replace(" ", "-")]
+
+    employment_match = re.search(r"\b(full[ -]?time|part[ -]?time|contract|freelance|internship)\b", text, re.IGNORECASE)
+    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to")):
+        updates["employment_types"] = [_normalize_profile_text(employment_match.group(1)).title().replace("Full-Time", "Full-time").replace("Part-Time", "Part-time")]
+
+    locations = _extract_first_match(text, [r"\b(?:preferred locations?|locations? preferred)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
+    if locations:
+        updates["preferred_locations"] = _split_update_list(locations)
+    industries = _extract_first_match(text, [r"\b(?:preferred|target) industries?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
+    if industries:
+        updates["preferred_industries"] = _split_update_list(industries)
+    if re.search(r"\b(?:willing|happy|open)\s+to\s+relocate\b", text, re.IGNORECASE):
+        updates["willing_to_relocate"] = True
+    elif re.search(r"\b(?:not|not willing|unwilling)\s+to\s+relocate\b", text, re.IGNORECASE):
+        updates["willing_to_relocate"] = False
+    if re.search(r"\b(?:not\s+open|closed)\s+to\s+(?:new\s+)?opportunities\b", text, re.IGNORECASE):
+        updates["open_to_opportunities"] = False
+    elif re.search(r"\bopen\s+to\s+(?:new\s+)?opportunities\b", text, re.IGNORECASE):
+        updates["open_to_opportunities"] = True
 
     current_role = _extract_first_match(
         text,
@@ -4683,7 +4720,9 @@ VALID_UPDATE_FIELDS = {
     "name", "email", "phone", "location", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "salary_expectation", "certifications",
-    "projects", "preferred_locations", "additional_information",
+    "projects", "preferred_locations", "preferred_industries", "employment_types",
+    "remote_preference", "expected_salary", "willing_to_relocate",
+    "open_to_opportunities", "additional_information",
     "profile_deletions",
 }
 
@@ -4920,6 +4959,26 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             if merged_roles != existing_roles:
                 existing_raw["preferred_roles"] = merged_roles
                 raw_data_changed = True
+        elif field in ("preferred_locations", "preferred_industries", "employment_types"):
+            if not isinstance(value, list):
+                continue
+            has_preference_payload = True
+            old_values = _normalize_preference_list(existing_raw.get(field) or [])
+            merged_values = _normalize_preference_list(old_values + value)
+            if merged_values != old_values:
+                existing_raw[field] = merged_values
+                raw_data_changed = True
+        elif field in ("remote_preference", "open_to_opportunities", "willing_to_relocate"):
+            if field == "remote_preference":
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                value = value.strip()
+            elif not isinstance(value, bool):
+                continue
+            has_preference_payload = True
+            if existing_raw.get(field) != value:
+                existing_raw[field] = value
+                raw_data_changed = True
         elif field == "certifications":
             if not isinstance(value, list):
                 continue
@@ -4938,18 +4997,18 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             availability_value = _normalize_availability_value(value)
             if not availability_value:
                 continue
-            if existing_raw.get("availability") != availability_value:
-                existing_raw["availability"] = availability_value
+            if existing_raw.get("notice_period") != availability_value:
+                existing_raw["notice_period"] = availability_value
                 raw_data_changed = True
-        elif field == "salary_expectation":
+        elif field in ("salary_expectation", "expected_salary"):
             if not isinstance(value, str):
                 continue
             salary_value = value.strip()
             if not salary_value:
                 continue
             has_preference_payload = True
-            if existing_raw.get("salary_expectation") != salary_value:
-                existing_raw["salary_expectation"] = salary_value
+            if existing_raw.get("expected_salary") != salary_value:
+                existing_raw["expected_salary"] = salary_value
                 raw_data_changed = True
         elif field == "additional_information":
             # This is free-form profile metadata, not a candidates table column.
@@ -5172,15 +5231,20 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             await db.commit()
         persisted = True
 
-    preferred_roles = _normalize_preferred_roles(existing_raw.get("preferred_roles") or [])
-    availability_value = (existing_raw.get("availability") or "").strip()
-    if preferred_roles or availability_value:
+    preference_payload = {
+        "preferred_roles": _normalize_preferred_roles(existing_raw.get("preferred_roles") or []),
+        "preferred_locations": existing_raw.get("preferred_locations") or [],
+        "preferred_industries": existing_raw.get("preferred_industries") or [],
+        "employment_types": existing_raw.get("employment_types") or [],
+        "remote_preference": existing_raw.get("remote_preference"),
+        "notice_period": existing_raw.get("notice_period"),
+        "expected_salary": existing_raw.get("expected_salary"),
+        "willing_to_relocate": existing_raw.get("willing_to_relocate"),
+    }
+    if any(value not in (None, "", []) for value in preference_payload.values()):
         await _upsert_candidate_preferences(
             candidate_id,
-            {
-                "preferred_roles": preferred_roles,
-                "availability": availability_value,
-            },
+            preference_payload,
         )
 
     return {
@@ -6552,7 +6616,7 @@ async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
     remote_preference = _clean_str(voice.get("remote_preference"))
     expected_salary = _clean_str(voice.get("expected_salary") or voice.get("salary_expectation"))
     willing_to_relocate = voice.get("willing_to_relocate")
-    notice_period = _availability_to_notice_period(voice.get("availability"))
+    notice_period = _availability_to_notice_period(voice.get("notice_period") or voice.get("availability"))
     if not any((preferred_roles, preferred_locations, preferred_industries,
                 employment_types, remote_preference, expected_salary,
                 notice_period, willing_to_relocate is not None)):
