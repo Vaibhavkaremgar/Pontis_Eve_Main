@@ -189,6 +189,7 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
     raw_data is used as fallback for fields not yet in the table.
     """
     raw = _parse_raw(candidate.get("raw_data"))
+    parsed_resume = _parse_raw(candidate.get("parsed_resume_json"))
     p = prefs_row or {}
 
     def _jlist(v: Any) -> list:
@@ -203,7 +204,9 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
                 return []
         return []
 
-    preferred_roles = _jlist(p.get("preferred_roles")) or _jlist(raw.get("preferred_roles"))
+    preferred_roles = (_jlist(p.get("preferred_roles")) or _jlist(raw.get("preferred_roles"))
+                       or _jlist(raw.get("target_roles")) or _jlist(parsed_resume.get("preferred_roles"))
+                       or _jlist(parsed_resume.get("target_roles")))
     # Profile updates use the canonical names below, while older resume/voice
     # imports used the aliases at the right. Both are persisted candidate
     # input and must produce the same score.
@@ -211,18 +214,22 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
         _jlist(p.get("preferred_locations"))
         or _jlist(raw.get("preferred_locations"))
         or _jlist(raw.get("location_preferences"))
+        or _jlist(parsed_resume.get("preferred_locations"))
+        or _jlist(parsed_resume.get("location_preferences"))
     )
     preferred_industries = (
         _jlist(p.get("preferred_industries"))
         or _jlist(raw.get("preferred_industries"))
         or _jlist(raw.get("target_industries"))
+        or _jlist(parsed_resume.get("preferred_industries"))
+        or _jlist(parsed_resume.get("target_industries"))
     )
-    employment_types = _jlist(p.get("employment_types")) or _jlist(raw.get("employment_types"))
-    remote_preference = _clean(p.get("remote_preference")) or _clean(raw.get("remote_preference")) or _clean(raw.get("work_type_preference"))
-    notice_period = _clean(p.get("notice_period")) or _clean(raw.get("notice_period")) or _clean(raw.get("availability"))
-    expected_salary = _clean(p.get("expected_salary")) or _clean(raw.get("expected_salary")) or _clean(raw.get("salary_expectation"))
-    willing_to_relocate = p.get("willing_to_relocate")
-    open_to_opportunities = p.get("open_to_opportunities")
+    employment_types = _jlist(p.get("employment_types")) or _jlist(raw.get("employment_types")) or _jlist(parsed_resume.get("employment_types"))
+    remote_preference = _clean(p.get("remote_preference")) or _clean(raw.get("remote_preference")) or _clean(raw.get("work_type_preference")) or _clean(parsed_resume.get("remote_preference"))
+    notice_period = _clean(p.get("notice_period")) or _clean(raw.get("notice_period")) or _clean(raw.get("availability")) or _clean(parsed_resume.get("notice_period"))
+    expected_salary = _clean(p.get("expected_salary")) or _clean(raw.get("expected_salary")) or _clean(raw.get("salary_expectation")) or _clean(parsed_resume.get("expected_salary"))
+    willing_to_relocate = p.get("willing_to_relocate") if p.get("willing_to_relocate") is not None else raw.get("willing_to_relocate")
+    open_to_opportunities = p.get("open_to_opportunities") if p.get("open_to_opportunities") is not None else raw.get("open_to_opportunities")
 
     return {
         "preferred_roles": preferred_roles,

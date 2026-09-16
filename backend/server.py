@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import hashlib
+import base64
 import shutil
 import re
 import secrets
@@ -1374,6 +1375,30 @@ def _candidate_photo_url(candidate: dict, raw_data: dict) -> Optional[str]:
         return _photo_view_url(candidate_id, raw_data.get("photo_version"))
 
     return None
+
+
+def _restore_candidate_photo(candidate_id: str, raw_data: dict) -> Optional[Path]:
+    """Restore a persisted photo when ephemeral local document storage changed."""
+    encoded = raw_data.get("photo_content_base64")
+    destination = _resolve_candidate_photo_path(candidate_id, raw_data.get("photo_file_path"))
+    if not isinstance(encoded, str) or not encoded or not destination:
+        return None
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        logger.warning("[candidate-photo] candidate=%s invalid persisted photo content", candidate_id)
+        return None
+    if not content or len(content) > MAX_PROFILE_PHOTO_BYTES:
+        logger.warning("[candidate-photo] candidate=%s invalid persisted photo size=%s", candidate_id, len(content))
+        return None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    except OSError as exc:
+        logger.warning("[candidate-photo] candidate=%s could not restore path=%s: %s", candidate_id, destination, exc)
+        return None
+    logger.info("[candidate-photo] candidate=%s restored path=%s bytes=%d", candidate_id, destination, len(content))
+    return destination
 
 
 def _has_text(value: Any) -> bool:
@@ -3267,12 +3292,15 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
         raw_data["photo_url"] = _photo_view_url(canonical_candidate_id, photo_version)
         raw_data["photo_file_path"] = str(dest_path)
         raw_data["photo_version"] = photo_version
+        # The path is an optimization; /tmp storage can disappear between requests.
+        raw_data["photo_content_base64"] = base64.b64encode(file_bytes).decode("ascii")
         async with SessionLocal() as db:
             await db.execute(
                 text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
                 {"rd": json.dumps(raw_data), "cid": canonical_candidate_id},
             )
             await db.commit()
+        logger.info("[candidate-photo] candidate=%s persisted_path=%s exists=%s bytes=%d version=%s", canonical_candidate_id, dest_path, dest_path.exists(), len(file_bytes), photo_version)
     except Exception:
         try:
             dest_path.unlink(missing_ok=True)
@@ -3292,6 +3320,9 @@ async def view_profile_photo(candidate_id: str):
     canonical_candidate_id = str(existing.get("id") or existing.get("candidate_id") or candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
     file_path = _resolve_candidate_photo_path(canonical_candidate_id, raw_data.get("photo_file_path"))
+    logger.info("[candidate-photo] candidate=%s persisted_path=%s resolved_path=%s exists=%s", canonical_candidate_id, raw_data.get("photo_file_path"), file_path, bool(file_path and file_path.exists()))
+    if file_path and not file_path.exists():
+        file_path = _restore_candidate_photo(canonical_candidate_id, raw_data)
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="No profile photo.")
     suffix = Path(file_path).suffix.lower()
@@ -3313,6 +3344,7 @@ async def delete_profile_photo(candidate_id: str):
     raw_data.pop("photo_url", None)
     raw_data.pop("photo_file_path", None)
     raw_data.pop("photo_version", None)
+    raw_data.pop("photo_content_base64", None)
 
     async with SessionLocal() as db:
         await db.execute(

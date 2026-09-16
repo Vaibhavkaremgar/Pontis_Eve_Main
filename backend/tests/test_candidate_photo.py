@@ -169,6 +169,7 @@ def test_upload_and_replace_profile_photo_updates_stored_reference(tmp_path, mon
     assert first_result["photo_url"] == "/api/candidate/cand-123/photo/view?rev=rev-first"
     assert first_stored["photo_url"] == "/api/candidate/cand-123/photo/view?rev=rev-first"
     assert first_stored["photo_version"] == "rev-first"
+    assert first_stored["photo_content_base64"]
     assert first_session.committed is True
     assert first_stored["photo_file_path"].endswith("rev-first.png")
 
@@ -201,6 +202,10 @@ def test_upload_and_replace_profile_photo_updates_stored_reference(tmp_path, mon
     monkeypatch.setattr(server, "_get_candidate_row", fresh_candidate_lookup)
     reloaded_profile = _normalize_for_frontend(reloaded_row)
     assert reloaded_profile["photo_url"] == "/api/candidate/cand-123/photo/view?rev=rev-second"
+    # Simulate the next request being served by a fresh worker whose /tmp
+    # document directory is empty.  The DB-backed photo metadata must restore
+    # the exact persisted path before FileResponse is constructed.
+    Path(second_stored["photo_file_path"]).unlink()
     response = asyncio.run(view_profile_photo("cand-123"))
     assert Path(response.path).read_bytes() == b"second"
 
@@ -255,4 +260,5 @@ def test_delete_profile_photo_clears_stored_reference_and_file(tmp_path, monkeyp
     assert stored.get("photo_url") is None
     assert stored.get("photo_file_path") is None
     assert stored.get("photo_version") is None
+    assert stored.get("photo_content_base64") is None
     assert not photo_path.exists()

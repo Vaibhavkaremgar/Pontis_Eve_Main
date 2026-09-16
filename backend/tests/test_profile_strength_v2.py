@@ -218,6 +218,42 @@ def test_complete_profile_counts_canonical_preference_keys_and_exposes_every_con
     assert calculation["final_percent"] == result["percent"]
 
 
+def test_complete_candidate_credits_persisted_resume_preferences_and_relocation():
+    """Regression: valid profile data must not be hidden in resume/raw JSON."""
+    c = _base()
+    c.update({
+        "name": "Persisted Candidate", "email": "persisted@example.com",
+        "location": "Bengaluru", "current_role": "Backend Engineer",
+        "summary": "Builds dependable APIs.", "experience_years": 5,
+        "skills": ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS", "Redis"],
+        "work_experience": [{
+            "title": "Backend Engineer", "company": "Acme", "description": "Built production APIs.",
+            "start_date": "2021-01-01", "end_date": "2025-01-01",
+        }],
+        "education": [{"degree": "B.Tech", "institution": "University"}],
+        "candidate_certificates": [{"id": "cert-1", "file_name": "aws.pdf"}],
+        "parsed_resume_json": {
+            "projects": [{"name": "Payments API", "description": "Built reliable payment services."}],
+            "certifications": ["AWS Certified Developer"],
+            "preferred_industries": ["Fintech"], "employment_types": ["Full-time"],
+        },
+        "raw_data": {
+            "target_roles": ["Backend Engineer"], "location_preferences": ["Bengaluru"],
+            "work_type_preference": "remote", "availability": "30 days",
+            "salary_expectation": "1800000", "willing_to_relocate": True,
+        },
+    })
+
+    result = calculate_profile_strength_v2(c)
+
+    # All seven persisted preference declarations are recognized: role,
+    # location, remote, availability, salary, employment type, industry, and
+    # relocation.  The score follows the defined weights; it is not a floor.
+    assert result["dimensions"]["preferences_constraints"]["score"] == 100
+    assert result["dimensions"]["career_intent"]["score"] == 70
+    assert result["percent"] == 77
+
+
 # ---------------------------------------------------------------------------
 # Candidate 2: Resume + voice intake
 # ---------------------------------------------------------------------------
