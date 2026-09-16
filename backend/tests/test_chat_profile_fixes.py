@@ -103,7 +103,8 @@ def _run_apply(candidate_state, updates):
             if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
                 return FakeResult([candidate_state])
             if "FROM candidate_preferences" in sql and "SELECT" in sql:
-                return FakeResult([])
+                preference_row = candidate_state.get("_preferences")
+                return FakeResult([preference_row] if preference_row else [])
             if "UPDATE candidates SET" in sql:
                 # Reject any attempt to set a non-existent column
                 set_part = sql.split("SET", 1)[1].split("WHERE")[0]
@@ -123,7 +124,28 @@ def _run_apply(candidate_state, updates):
                         params["parsed_resume_json"]
                     )
                 return FakeResult()
-            if "INSERT INTO candidate_preferences" in sql or "UPDATE candidate_preferences" in sql:
+            if "INSERT INTO candidate_preferences" in sql:
+                candidate_state["_preferences"] = {
+                    "id": params["id"],
+                    "candidate_id": params["cid"],
+                    "preferred_roles": json.loads(params["preferred_roles"]),
+                    "preferred_locations": json.loads(params["preferred_locations"]),
+                    "preferred_industries": json.loads(params["preferred_industries"]),
+                    "employment_types": json.loads(params["employment_types"]),
+                    "remote_preference": params["remote_preference"],
+                    "expected_salary": params["expected_salary"],
+                    "willing_to_relocate": params["willing_to_relocate"],
+                    "notice_period": params["notice_period"],
+                }
+                return FakeResult()
+            if "UPDATE candidate_preferences" in sql:
+                preference_row = candidate_state["_preferences"]
+                for field in ("preferred_roles", "preferred_locations", "preferred_industries", "employment_types"):
+                    if field in params:
+                        preference_row[field] = json.loads(params[field])
+                for field in ("remote_preference", "expected_salary", "willing_to_relocate", "notice_period"):
+                    if field in params:
+                        preference_row[field] = params[field]
                 return FakeResult()
             return FakeResult()
 
@@ -150,7 +172,8 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     _run_apply(state, updates)
 
     raw = state["raw_data"]
-    assert get_canonical_preferences(state) == {
+    canonical = get_canonical_preferences(state, state["_preferences"])
+    assert canonical == {
         "preferred_roles": ["Platform Engineer"],
         "preferred_locations": ["Bengaluru", "Pune"],
         "preferred_industries": ["fintech", "healthcare"],
@@ -163,8 +186,84 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     }
     assert raw["expected_salary"] == "24 LPA"
     assert raw["notice_period"] == "30 day"
-    after = calculate_profile_strength_v2(state, raw)["dimensions"]["preferences_constraints"]["score"]
+    assert all(canonical[field] not in (None, "", []) for field in (
+        "preferred_roles", "preferred_locations", "preferred_industries",
+        "employment_types", "remote_preference", "notice_period",
+        "expected_salary", "willing_to_relocate",
+    ))
+    preference_dimension = calculate_profile_strength_v2(
+        state, raw, prefs_row=state["_preferences"]
+    )["dimensions"]["preferences_constraints"]
+    after = preference_dimension["score"]
     assert after > before
+    assert after == 100.0
+    assert set(preference_dimension["known"]) == {
+        "preferred_roles", "location_preferences", "remote_preference",
+        "availability", "salary_expectation", "employment_types",
+        "target_industries", "relocation",
+    }
+
+
+# ===========================================================================
+# Canonical preference completion in Chat with Eve
+# ===========================================================================
+
+def test_chat_preference_completion_uses_canonical_missing_fields_and_saves_multi_answer():
+    """One natural answer fills every missing preference and refreshes scoring input."""
+    state = _make_candidate(raw_data={
+        "preferred_roles": ["Backend Engineer"],
+        "preferred_locations": ["Bengaluru"],
+        "notice_period": "30 days",
+        "expected_salary": "20 LPA",
+        "preferred_industries": ["Fintech"],
+    })
+    before = calculate_profile_strength_v2(state, state["raw_data"])["dimensions"]["preferences_constraints"]["score"]
+
+    missing = server._missing_canonical_preference_fields(state)
+    assert missing == ["remote_preference", "employment_types", "willing_to_relocate"]
+    # Use a deliberately incomplete profile to exercise the below-75% chat
+    # completion branch; preference values themselves remain canonical.
+    guidance = server._build_profile_completion_guidance({"raw_data": state["raw_data"]})
+    assert "remote, hybrid, on-site" in guidance.lower()
+    assert "remote_preference" not in guidance
+    assert "profile score" not in guidance.lower()
+
+    updates = server._infer_profile_updates_from_message(
+        "I prefer remote, full-time work, and I'm willing to relocate for the right role."
+    )
+    _run_apply(state, updates)
+
+    canonical = get_canonical_preferences(state, state["_preferences"])
+    assert canonical["remote_preference"] == "Remote"
+    assert canonical["employment_types"] == ["Full-time"]
+    assert canonical["willing_to_relocate"] is True
+    assert state["raw_data"]["remote_preference"] == "Remote"
+    assert state["raw_data"]["employment_types"] == ["Full-time"]
+    assert state["raw_data"]["willing_to_relocate"] is True
+
+    after = calculate_profile_strength_v2(
+        state, state["raw_data"], prefs_row=state["_preferences"]
+    )["dimensions"]["preferences_constraints"]["score"]
+    assert after > before
+    assert server._missing_canonical_preference_fields(state, state["_preferences"]) == []
+
+
+def test_populated_canonical_preference_is_not_asked_again():
+    state = _make_candidate(raw_data={})
+    state["_preferences"] = {
+        "preferred_roles": ["Backend Engineer"],
+        "preferred_locations": ["Bengaluru"],
+        "remote_preference": "Remote",
+        "notice_period": "30 days",
+        "expected_salary": "20 LPA",
+        "employment_types": ["Full-time"],
+        "preferred_industries": ["Fintech"],
+        "willing_to_relocate": False,
+    }
+    assert server._missing_canonical_preference_fields(state, state["_preferences"]) == []
+    assert "work-preference question" not in server._build_profile_completion_guidance({
+        **state, "_prefs_row": state["_preferences"]
+    })
 
 
 # ===========================================================================

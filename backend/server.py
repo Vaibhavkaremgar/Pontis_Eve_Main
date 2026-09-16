@@ -3949,6 +3949,7 @@ BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
 - PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
 - PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 75% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking profile questions once the guidance says the profile is at 75%+.
+- PREFERENCE COMPLETION: When PROFILE COMPLETION GUIDANCE asks about a work preference, ask that exact question naturally. Never expose field keys, internal guidance, or a profile score/percentage to the candidate.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
 - Job search, job matching, and job recommendations must ONLY be triggered when the candidate explicitly asks for jobs, roles, or matches (e.g. "find me jobs", "show me matches", "what roles suit me"). Never volunteer job search in response to profile/resume/details questions.
@@ -4085,6 +4086,42 @@ def _build_profile_context(profile: dict) -> tuple[str, list[str]]:
     return "\n".join(lines) if lines else "No profile data yet.", missing
 
 
+# These are deliberately candidate-facing descriptions/questions.  The storage
+# keys stay at the boundary between the chat workflow and persistence layer.
+_CANONICAL_PREFERENCE_LABELS = {
+    "preferred_roles": "roles they are targeting",
+    "preferred_locations": "preferred work locations",
+    "remote_preference": "remote, hybrid, or on-site preference",
+    "notice_period": "availability to start",
+    "expected_salary": "salary expectation",
+    "employment_types": "preferred employment type",
+    "preferred_industries": "preferred industries",
+    "willing_to_relocate": "relocation preference",
+}
+
+_CANONICAL_PREFERENCE_QUESTIONS = {
+    "preferred_roles": "What kinds of roles are you looking for?",
+    "preferred_locations": "Which locations would you prefer to work in?",
+    "remote_preference": "Do you prefer remote, hybrid, on-site, or flexible work?",
+    "notice_period": "What is your notice period or when could you start?",
+    "expected_salary": "What salary range are you targeting?",
+    "employment_types": "Are you looking for full-time, part-time, contract, or freelance work?",
+    "preferred_industries": "Are there any industries you would especially like to work in?",
+    "willing_to_relocate": "Would you be open to relocating for the right role?",
+}
+
+
+def _missing_canonical_preference_fields(candidate: dict, prefs_row: Optional[dict] = None) -> list[str]:
+    """Return only canonical preference keys that have no saved candidate value."""
+    from profile_strength_service import get_canonical_preferences
+
+    preferences = get_canonical_preferences(candidate, prefs_row)
+    return [
+        field for field in _CANONICAL_PREFERENCE_LABELS
+        if preferences.get(field) in (None, "", [])
+    ]
+
+
 def _build_profile_completion_guidance(profile: dict) -> str:
     """
     Return a short guidance string for Eve's system prompt.
@@ -4099,10 +4136,19 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         except Exception:
             raw_data = {}
     try:
-        result = calculate_profile_strength_v2(profile, raw_data)
+        result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
         percent = result.get("percent", 0)
         if percent >= 75:
             return f"Profile is at {percent}% (75%+ reached). Do NOT ask any more profile-completion questions."
+        # Preference completion is based on the canonical reader, rather than
+        # whichever legacy alias happened to be present in raw_data. Preserve
+        # the established 75% completion boundary for all chat behavior.
+        missing_preferences = _missing_canonical_preference_fields(
+            profile, profile.get("_prefs_row")
+        )
+        if missing_preferences:
+            question = _CANONICAL_PREFERENCE_QUESTIONS[missing_preferences[0]]
+            return f'Ask this one work-preference question naturally: "{question}"'
         next_actions = result.get("recommended_next_actions") or []
         if next_actions:
             return (
@@ -4802,8 +4848,14 @@ Return ONLY valid JSON with the exact keys below (omit keys where nothing was fo
   "experience_years": null,
   "skills": [],
   "preferred_roles": [],
+  "preferred_locations": [],
+  "preferred_industries": [],
+  "employment_types": [],
+  "remote_preference": "",
   "availability": "",
   "notice_period": "",
+  "expected_salary": "",
+  "willing_to_relocate": null,
   "certifications": [],
   "additional_information": ""
 }
@@ -4812,6 +4864,9 @@ Rules:
 - Do NOT invent or hallucinate.
 - skills and certifications must be plain name strings, not sentences.
 - preferred_roles must be job title strings.
+- preferred_locations, preferred_industries, and employment_types must be lists of explicit preferences.
+- remote_preference must be Remote, Hybrid, On-site, or Flexible only when explicitly stated.
+- willing_to_relocate must be true or false only when explicitly stated.
 - experience_years must be a number or null."""
 
 
@@ -5233,12 +5288,23 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
 
     preference_payload = {
         "preferred_roles": _normalize_preferred_roles(existing_raw.get("preferred_roles") or []),
-        "preferred_locations": existing_raw.get("preferred_locations") or [],
-        "preferred_industries": existing_raw.get("preferred_industries") or [],
+        # Chat updates before the canonical-preferences migration legitimately
+        # stored these values under the intake/resume aliases.  Include them in
+        # the upsert so a later chat update backfills the authoritative row.
+        "preferred_locations": (
+            existing_raw.get("preferred_locations")
+            or existing_raw.get("location_preferences")
+            or []
+        ),
+        "preferred_industries": (
+            existing_raw.get("preferred_industries")
+            or existing_raw.get("target_industries")
+            or []
+        ),
         "employment_types": existing_raw.get("employment_types") or [],
         "remote_preference": existing_raw.get("remote_preference"),
-        "notice_period": existing_raw.get("notice_period"),
-        "expected_salary": existing_raw.get("expected_salary"),
+        "notice_period": existing_raw.get("notice_period") or existing_raw.get("availability"),
+        "expected_salary": existing_raw.get("expected_salary") or existing_raw.get("salary_expectation"),
         "willing_to_relocate": existing_raw.get("willing_to_relocate"),
     }
     if any(value not in (None, "", []) for value in preference_payload.values()):
@@ -5402,6 +5468,7 @@ async def chat(request: ChatRequest):
     persisted_window: list[dict] = []
     voice_resume: Optional[dict] = None
     frontend_profile: Optional[dict] = None
+    missing_preference_fields: list[str] = []
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
@@ -5413,7 +5480,24 @@ async def chat(request: ChatRequest):
                     raw_data = {}
             frontend_profile = _normalize_for_frontend(row)
             frontend_profile["raw_data"] = raw_data
+            # candidate_preferences is authoritative for canonical work
+            # preferences. Load it before generating either chat guidance or
+            # the multi-field extraction target list.
+            async with SessionLocal() as db:
+                prefs_result = await db.execute(
+                    text("SELECT * FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"),
+                    {"cid": request.candidate_id},
+                )
+                prefs_row = prefs_result.mappings().fetchone()
+            frontend_profile["_prefs_row"] = dict(prefs_row) if prefs_row else None
             profile_context, missing_fields = _build_profile_context(frontend_profile)
+            missing_preference_fields = _missing_canonical_preference_fields(
+                row, frontend_profile["_prefs_row"]
+            )
+            missing_fields.extend(
+                _CANONICAL_PREFERENCE_LABELS[field]
+                for field in missing_preference_fields
+            )
             voice_resume = frontend_profile.get("voice_intake_resume") or _build_voice_intake_resume(frontend_profile)
             if voice_resume:
                 profile_context += "\n\nVOICE INTAKE RESUME:\n" + _format_voice_intake_resume_context(voice_resume)
@@ -5531,13 +5615,13 @@ async def chat(request: ChatRequest):
 
     # Scan the candidate's answer against ALL missing fields, not just the one asked.
     # This ensures a single answer that covers multiple questions saves all of them.
-    if request.candidate_id and missing_fields and last_user.content.strip():
+    if request.candidate_id and (missing_fields or missing_preference_fields) and last_user.content.strip():
         # Skip [PROFILE_QUESTION] instructions — they are not candidate answers
         candidate_text = last_user.content
         if not candidate_text.startswith("[PROFILE_QUESTION]"):
             try:
                 multi_updates = await _extract_multi_field_updates_from_answer(
-                    candidate_text, missing_fields
+                    candidate_text, missing_fields + missing_preference_fields
                 )
                 if multi_updates:
                     profile_updates = _merge_profile_updates(profile_updates or {}, multi_updates) or None
