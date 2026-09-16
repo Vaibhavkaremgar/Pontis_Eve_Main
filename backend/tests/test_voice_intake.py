@@ -736,6 +736,12 @@ class TestVoiceIntakePersistenceRegression:
         voice_data = {
             "preferred_roles": ["Java Backend Developer", "java backend developer"],
             "availability": "I can join immediately.",
+            "remote_preference": "Hybrid",
+            "preferred_industries": ["Fintech"],
+            "employment_types": ["Full-time"],
+            "preferred_locations": ["Bengaluru"],
+            "expected_salary": "₹25 LPA",
+            "willing_to_relocate": False,
             "role_preference_bio": "Looking for Java backend roles.",
         }
         voice_intake_state = {
@@ -758,11 +764,23 @@ class TestVoiceIntakePersistenceRegression:
         assert merged["raw_data"]["voice_intake"] == voice_intake_state
         assert merged["raw_data"]["preferred_roles"] == ["Java Backend Developer"]
         assert merged["raw_data"]["availability"] == "I can join immediately."
+        assert merged["raw_data"]["remote_preference"] == "Hybrid"
+        assert merged["raw_data"]["preferred_industries"] == ["Fintech"]
+        assert merged["raw_data"]["employment_types"] == ["Full-time"]
+        assert merged["raw_data"]["preferred_locations"] == ["Bengaluru"]
+        assert merged["raw_data"]["expected_salary"] == "₹25 LPA"
+        assert merged["raw_data"]["willing_to_relocate"] is False
         assert any("UPDATE candidates SET" in sql for sql, _ in executed)
         assert any("INSERT INTO candidate_preferences" in sql for sql, _ in executed)
         insert_params = next(params for sql, params in executed if "INSERT INTO candidate_preferences" in sql)
         assert "Java Backend Developer" in insert_params["preferred_roles"]
         assert insert_params["notice_period"] == "I can join immediately."
+        assert insert_params["remote_preference"] == "Hybrid"
+        assert "Fintech" in insert_params["preferred_industries"]
+        assert "Full-time" in insert_params["employment_types"]
+        assert "Bengaluru" in insert_params["preferred_locations"]
+        assert insert_params["expected_salary"] == "₹25 LPA"
+        assert insert_params["willing_to_relocate"] is False
 
     def test_voice_intake_persists_resume_certifications_without_duplicates(self, monkeypatch):
         import sys, os

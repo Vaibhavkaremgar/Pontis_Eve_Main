@@ -218,6 +218,53 @@ def test_complete_profile_counts_canonical_preference_keys_and_exposes_every_con
     assert calculation["final_percent"] == result["percent"]
 
 
+def test_completed_assessments_and_voice_preferences_raise_a_complete_profile_above_90():
+    """Completed evidence and every persisted intake preference earn their real credit."""
+    c = _base()
+    c.update({
+        "name": "Assessment Candidate", "email": "assessment@example.com",
+        "location": "Bengaluru", "current_role": "Senior Backend Engineer",
+        "current_company": "Acme", "summary": "Builds reliable distributed systems.",
+        "experience_years": 7,
+        "skills": ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS", "Kubernetes"],
+        "work_experience": [{
+            "title": "Lead Engineer", "company": "Acme", "description": "Led API platform delivery.",
+            "start_date": "2018-01", "end_date": "2025-01",
+        }],
+        "education": [{"degree": "B.Tech", "institution": "University"}],
+        "candidate_certificates": [{"id": "cert-1"}],
+        # The profile has no legacy interview columns: evidence comes from
+        # completed, persisted assessment results.
+        "raw_data": {
+            "preferred_roles": ["Senior Backend Engineer"],
+            "preferred_locations": ["Bengaluru", "Remote"],
+            "remote_preference": "Hybrid",
+            "preferred_industries": ["Fintech"],
+            "employment_types": ["Full-time"],
+            "expected_salary": "₹35 LPA",
+            "willing_to_relocate": False,
+            "availability": "30 days",
+            "projects": ["Payments platform"],
+            "assessments": [
+                {"type": "technical", "status": "completed", "score": 9.0},
+                {"type": "communication and culture", "status": "completed", "score": 8.5},
+            ],
+            "voice_intake": {
+                "status": "completed",
+                "completed_turns": [{"question": "Preferences?", "answer": "Hybrid, fintech, full-time and Bengaluru."}] * 3,
+                "known_topics": ["target_role", "career_preferences", "availability_location", "responsibilities_projects"],
+            },
+        },
+    })
+
+    result = calculate_profile_strength_v2(c)
+
+    assert result["percent"] >= 90
+    assert "skills_demonstrated" in result["dimensions"]["skills_capability"]["signals"]
+    assert "interview_communication_score" in result["dimensions"]["behaviour_communication"]["signals"]
+    assert result["dimensions"]["preferences_constraints"]["score"] == 100
+
+
 def test_complete_candidate_credits_persisted_resume_preferences_and_relocation():
     """Regression: valid profile data must not be hidden in resume/raw JSON."""
     c = _base()

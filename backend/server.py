@@ -2259,6 +2259,7 @@ Rules:
 - Do NOT ask about information already present in the candidate profile
 - Do NOT create duplicate questions for the same topic
 - A topic is covered if the candidate provided meaningful information about it anywhere in the conversation or profile
+- Before completing career_preferences/availability_location, explicitly collect any still-unknown work mode (Remote/Hybrid/On-site/Flexible), preferred industries, employment type, preferred locations, expected salary, and relocation preference. A candidate may decline a field; record that rather than guessing.
 - next_question must be a natural, conversational question — not a hardcoded template
 - If all important topics are covered, set next_question to null and completed to true
 
@@ -5579,6 +5580,12 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "skills": [],
   "experience_years": null,
   "availability": "",
+  "remote_preference": "",
+  "preferred_industries": [],
+  "employment_types": [],
+  "preferred_locations": [],
+  "expected_salary": "",
+  "willing_to_relocate": null,
   "location": "",
   "preferred_roles": [],
   "current_role": "",
@@ -5591,6 +5598,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
 }
 Only include fields where the candidate actually provided information.
 Do NOT invent or hallucinate information.
+For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "Flexible" when stated. For "employment_types" use a list such as ["Full-time"] or ["Contract"]. "willing_to_relocate" must be true or false only when the candidate explicitly states it; otherwise omit it.
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
@@ -6392,6 +6400,16 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         raw_data["availability"] = _normalize_availability_value(voice["availability"]) or str(voice["availability"]).strip()
     if voice.get("salary_expectation"):
         raw_data["salary_expectation"] = str(voice["salary_expectation"]).strip()
+    # Keep each stated preference in raw_data as a durable fallback for older
+    # candidates, while _upsert_candidate_preferences writes the canonical row.
+    preference_fields = (
+        "remote_preference", "preferred_industries", "employment_types",
+        "preferred_locations", "expected_salary", "willing_to_relocate",
+    )
+    for field in preference_fields:
+        value = voice.get(field)
+        if value is not None and value != "" and value != []:
+            raw_data[field] = value
     if voice.get("preferred_roles"):
         existing_pr = raw_data.get("preferred_roles") or []
         seen_pr = {r.lower() for r in existing_pr}
@@ -6446,6 +6464,13 @@ def _normalize_preferred_roles(roles: Any) -> list[str]:
     return normalized
 
 
+def _normalize_preference_list(values: Any) -> list[str]:
+    """Normalize a preference list without manufacturing a preference."""
+    if isinstance(values, str):
+        values = [values]
+    return _normalize_preferred_roles(values)
+
+
 def _availability_to_notice_period(availability: Any) -> str:
     """Map the extracted availability answer onto the preferences schema."""
     if not isinstance(availability, str):
@@ -6461,14 +6486,23 @@ async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
     while remaining idempotent across repeated cumulative submissions.
     """
     preferred_roles = _normalize_preferred_roles(voice.get("preferred_roles"))
+    preferred_locations = _normalize_preference_list(voice.get("preferred_locations"))
+    preferred_industries = _normalize_preference_list(voice.get("preferred_industries"))
+    employment_types = _normalize_preference_list(voice.get("employment_types"))
+    remote_preference = _clean_str(voice.get("remote_preference"))
+    expected_salary = _clean_str(voice.get("expected_salary") or voice.get("salary_expectation"))
+    willing_to_relocate = voice.get("willing_to_relocate")
     notice_period = _availability_to_notice_period(voice.get("availability"))
-    if not preferred_roles and not notice_period:
+    if not any((preferred_roles, preferred_locations, preferred_industries,
+                employment_types, remote_preference, expected_salary,
+                notice_period, willing_to_relocate is not None)):
         return
 
     async with SessionLocal() as db:
         row = await db.execute(
             text(
-                "SELECT id, preferred_roles, notice_period FROM candidate_preferences "
+                "SELECT id, preferred_roles, preferred_locations, preferred_industries, "
+                "employment_types, remote_preference, expected_salary, willing_to_relocate, notice_period FROM candidate_preferences "
                 "WHERE candidate_id = :cid LIMIT 1"
             ),
             {"cid": candidate_id},
@@ -6478,6 +6512,11 @@ async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
     if existing:
         existing_roles = _normalize_preferred_roles(existing.get("preferred_roles") or [])
         merged_roles = _normalize_preferred_roles(existing_roles + preferred_roles)
+        list_fields = {
+            "preferred_locations": preferred_locations,
+            "preferred_industries": preferred_industries,
+            "employment_types": employment_types,
+        }
         merged_notice_period = notice_period or (existing.get("notice_period") or "")
 
         set_parts = []
@@ -6488,6 +6527,19 @@ async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
         if merged_notice_period != (existing.get("notice_period") or ""):
             set_parts.append("notice_period = :notice_period")
             params["notice_period"] = merged_notice_period
+        for field, incoming in list_fields.items():
+            old = _normalize_preference_list(existing.get(field) or [])
+            combined = _normalize_preference_list(old + incoming)
+            if combined != old:
+                set_parts.append(f"{field} = CAST(:{field} AS jsonb)")
+                params[field] = json.dumps(combined)
+        for field, incoming in (("remote_preference", remote_preference), ("expected_salary", expected_salary)):
+            if incoming and incoming != (existing.get(field) or ""):
+                set_parts.append(f"{field} = :{field}")
+                params[field] = incoming
+        if willing_to_relocate is not None and willing_to_relocate != existing.get("willing_to_relocate"):
+            set_parts.append("willing_to_relocate = :willing_to_relocate")
+            params["willing_to_relocate"] = bool(willing_to_relocate)
         if not set_parts:
             return
         set_parts.append("updated_at = now()")
@@ -6503,15 +6555,25 @@ async def _upsert_candidate_preferences(candidate_id: str, voice: dict) -> None:
         "id": str(uuid.uuid4()),
         "cid": candidate_id,
         "preferred_roles": json.dumps(preferred_roles),
+        "preferred_locations": json.dumps(preferred_locations),
+        "preferred_industries": json.dumps(preferred_industries),
+        "employment_types": json.dumps(employment_types),
+        "remote_preference": remote_preference or None,
+        "expected_salary": expected_salary or None,
+        "willing_to_relocate": willing_to_relocate,
         "notice_period": notice_period or None,
     }
     async with SessionLocal() as db:
         await db.execute(
             text("""
                 INSERT INTO candidate_preferences
-                    (id, candidate_id, preferred_roles, notice_period, created_at, updated_at)
+                    (id, candidate_id, preferred_roles, preferred_locations, preferred_industries,
+                     employment_types, remote_preference, expected_salary, willing_to_relocate,
+                     notice_period, created_at, updated_at)
                 VALUES
-                    (:id, :cid, CAST(:preferred_roles AS jsonb), :notice_period, now(), now())
+                    (:id, :cid, CAST(:preferred_roles AS jsonb), CAST(:preferred_locations AS jsonb),
+                     CAST(:preferred_industries AS jsonb), CAST(:employment_types AS jsonb),
+                     :remote_preference, :expected_salary, :willing_to_relocate, :notice_period, now(), now())
             """),
             insert_params,
         )

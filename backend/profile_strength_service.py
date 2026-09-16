@@ -201,7 +201,7 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
                 r = json.loads(v)
                 return r if isinstance(r, list) else []
             except Exception:
-                return []
+                return [v] if _has_text(v) else []
         return []
 
     preferred_roles = (_jlist(p.get("preferred_roles")) or _jlist(raw.get("preferred_roles"))
@@ -224,11 +224,18 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
         or _jlist(parsed_resume.get("preferred_industries"))
         or _jlist(parsed_resume.get("target_industries"))
     )
-    employment_types = _jlist(p.get("employment_types")) or _jlist(raw.get("employment_types")) or _jlist(parsed_resume.get("employment_types"))
-    remote_preference = _clean(p.get("remote_preference")) or _clean(raw.get("remote_preference")) or _clean(raw.get("work_type_preference")) or _clean(parsed_resume.get("remote_preference"))
+    employment_types = (_jlist(p.get("employment_types")) or _jlist(raw.get("employment_types"))
+                        or _jlist(raw.get("employment_type")) or _jlist(parsed_resume.get("employment_types"))
+                        or _jlist(parsed_resume.get("employment_type")))
+    remote_preference = (_clean(p.get("remote_preference")) or _clean(raw.get("remote_preference"))
+                         or _clean(raw.get("work_mode_preference")) or _clean(raw.get("work_type_preference"))
+                         or _clean(parsed_resume.get("remote_preference")) or _clean(parsed_resume.get("work_mode_preference")))
     notice_period = _clean(p.get("notice_period")) or _clean(raw.get("notice_period")) or _clean(raw.get("availability")) or _clean(parsed_resume.get("notice_period"))
-    expected_salary = _clean(p.get("expected_salary")) or _clean(raw.get("expected_salary")) or _clean(raw.get("salary_expectation")) or _clean(parsed_resume.get("expected_salary"))
-    willing_to_relocate = p.get("willing_to_relocate") if p.get("willing_to_relocate") is not None else raw.get("willing_to_relocate")
+    expected_salary = (_clean(p.get("expected_salary")) or _clean(raw.get("expected_salary"))
+                       or _clean(raw.get("salary_expectation")) or _clean(parsed_resume.get("expected_salary"))
+                       or _clean(parsed_resume.get("salary_expectation")))
+    willing_to_relocate = (p.get("willing_to_relocate") if p.get("willing_to_relocate") is not None
+                           else raw.get("willing_to_relocate", parsed_resume.get("willing_to_relocate")))
     open_to_opportunities = p.get("open_to_opportunities") if p.get("open_to_opportunities") is not None else raw.get("open_to_opportunities")
 
     return {
@@ -242,6 +249,45 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
         "willing_to_relocate": willing_to_relocate,
         "open_to_opportunities": open_to_opportunities,
     }
+
+
+def _completed_assessment_scores(candidate: dict) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Read evidence only from completed assessments, across persisted shapes.
+
+    Legacy top-level interview scores are results produced after an interview is
+    completed. Newer assessment payloads must explicitly say completed.
+    """
+    raw = _parse_raw(candidate.get("raw_data"))
+    parsed = _parse_raw(candidate.get("parsed_resume_json"))
+    technical = candidate.get("interview_technical_score")
+    communication = candidate.get("interview_communication_score")
+    culture = candidate.get("interview_culture_fit_score")
+
+    def score(value: Any) -> Optional[float]:
+        try:
+            value = float(value)
+            return value if 0 <= value <= 10 else None
+        except (TypeError, ValueError):
+            return None
+
+    for source in (raw, parsed):
+        records = source.get("assessments") or source.get("assessment_results") or []
+        if isinstance(records, dict):
+            records = [records]
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict) or _clean(record.get("status")).lower() not in ("completed", "complete"):
+                continue
+            kind = _clean(record.get("type") or record.get("assessment_type")).lower()
+            technical = technical if technical is not None else record.get("technical_score")
+            communication = communication if communication is not None else record.get("communication_score")
+            culture = culture if culture is not None else record.get("culture_fit_score")
+            # A completed behavioural/culture assessment can use a general score.
+            if "technical" in kind and technical is None:
+                technical = record.get("score")
+            if any(word in kind for word in ("communication", "behavior", "behaviour", "culture")):
+                communication = communication if communication is not None else record.get("score")
+                culture = culture if culture is not None else record.get("score")
+    return score(technical), score(communication), score(culture)
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +377,7 @@ def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) 
         _add("certifications", "verified_by_document", EVIDENCE_VERIFIED, 0.9)
 
     # Interview scores = demonstrated
-    tech_score = candidate.get("interview_technical_score")
-    comm_score = candidate.get("interview_communication_score")
+    tech_score, comm_score, _ = _completed_assessment_scores(candidate)
     if tech_score is not None:
         _add("skills", "demonstrated_in_assessment", EVIDENCE_DEMONSTRATED, min(float(tech_score) / 10.0, 1.0))
     if comm_score is not None:
@@ -502,7 +547,7 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
         signals.append("uploaded_certificates")
 
     # Interview scores
-    tech_score = candidate.get("interview_technical_score")
+    tech_score, _, _ = _completed_assessment_scores(candidate)
     if tech_score is not None:
         score += 30
         signals.append("technical_assessment")
@@ -660,7 +705,7 @@ def _score_behaviour_communication(candidate: dict, vi_state: dict) -> dict:
     signals = []
 
     # Interview communication score
-    comm_score = candidate.get("interview_communication_score")
+    _, comm_score, culture_score = _completed_assessment_scores(candidate)
     if comm_score is not None:
         try:
             normalized = float(comm_score) / 10.0
@@ -679,7 +724,6 @@ def _score_behaviour_communication(candidate: dict, vi_state: dict) -> dict:
         signals.append("voice_single_turn")
 
     # Culture fit score
-    culture_score = candidate.get("interview_culture_fit_score")
     if culture_score is not None:
         try:
             score += (float(culture_score) / 10.0) * 10
