@@ -434,6 +434,36 @@ class TestCandidate10ExperiencedProfessional:
 # ---------------------------------------------------------------------------
 
 class TestEvidenceQuality:
+    def test_resume_projects_and_certifications_are_scored_as_claimed_evidence(self):
+        """Parsed resume sections must not disappear before profile scoring."""
+        c = _base()
+        c.update({
+            "name": "Resume Candidate",
+            "skills": ["Python", "FastAPI", "PostgreSQL"],
+            "parsed_resume_json": {
+                "projects": [{"name": "Candidate platform", "description": "Built APIs"}],
+                "certifications": ["AWS Certified Developer"],
+            },
+        })
+        result = calculate_profile_strength_v2(c)
+        evidence = result["dimensions"]["evidence"]
+        assert "projects" in evidence["signals"]
+        assert "certifications_claimed" in evidence["signals"]
+
+    def test_display_date_ranges_count_as_dated_work_history(self):
+        c = _base()
+        c.update({
+            "name": "Dated Candidate",
+            "work_experience": [{
+                "title": "Engineer", "company": "Acme",
+                "dates": "January 2022 – Present",
+                "description": "Built and maintained production APIs.",
+            }],
+        })
+        result = calculate_profile_strength_v2(c)
+        signals = result["dimensions"]["identity_background"]["signals"]
+        assert "dated_history" in signals
+
     def test_uploaded_cert_is_verified(self):
         c = _with_resume()
         c["candidate_certificates"] = [{"id": "c1", "file_name": "AWS.pdf"}]

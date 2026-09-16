@@ -125,16 +125,19 @@ function groupExperienceByEmployment(experience) {
   (experience || []).forEach((exp, index) => {
     const title = exp?.title || exp?.role || "Role not provided";
     const company = exp?.company || exp?.company_name || "";
-    const key = `${title.trim().toLowerCase()}|${company.trim().toLowerCase()}`;
+    // An employment entry can arrive as one record per project.  Group those
+    // records by employer so the employment context is rendered once, rather
+    // than once for every project title.
+    const key = company.trim().toLowerCase() || `unassigned-employment-${index}`;
     const projects = Array.isArray(exp?.projects) && exp.projects.length
       ? exp.projects.map((project, projectIndex) => ({
           id: project?.id || `${exp?.id || index}-project-${projectIndex}`,
-          title: project?.title || project?.name || `Project ${projectIndex + 1}`,
+          title: project?.title || project?.name || title,
           description: project?.description || project?.summary || "",
         }))
       : [{
           id: exp?.id || `project-${index}`,
-          title: exp?.project_title || exp?.projectTitle || exp?.project_name || exp?.projectName || `Project ${index + 1}`,
+          title: exp?.project_title || exp?.projectTitle || exp?.project_name || exp?.projectName || title,
           description: exp?.project_description || exp?.projectDescription || exp?.description || exp?.summary || "",
         }];
 
@@ -143,6 +146,15 @@ function groupExperienceByEmployment(experience) {
   });
 
   return [...groups.values()];
+}
+
+function formatEducationDates(education) {
+  const year = (value) => String(value ?? "").match(/(?:18|19|20|21)\d{2}/)?.[0];
+  const startYear = year(education?.start_date ?? education?.startDate);
+  const endYear = year(education?.end_date ?? education?.endDate);
+
+  if (startYear && endYear) return `${startYear} – ${endYear}`;
+  return education?.dates || "";
 }
 
 function ResumeExperienceEntry({ exp }) {
@@ -161,9 +173,11 @@ function ResumeExperienceEntry({ exp }) {
       {exp.company && <p className="mt-0.5 text-[12.5px] font-medium text-[#6A5E9D]">{exp.company}</p>}
       {exp.projects?.length > 0 && (
         <div className="mt-3 space-y-3">
-          {exp.projects.map((project) => (
+          {exp.projects.map((project, projectIndex) => (
             <div key={project.id} data-testid={`experience-project-${project.id}`}>
-              <h5 className="text-[12.5px] font-semibold text-[#1F1F1F]">{project.title}</h5>
+              {!(projectIndex === 0 && project.title === exp.title) && (
+                <h5 className="text-[12.5px] font-semibold text-[#1F1F1F]">{project.title}</h5>
+              )}
               {project.description && <p className="mt-1 text-[12.5px] leading-relaxed text-[#4A4A48]">{project.description}</p>}
             </div>
           ))}
@@ -174,11 +188,13 @@ function ResumeExperienceEntry({ exp }) {
 }
 
 function ResumeEducationEntry({ edu }) {
+  const dates = formatEducationDates(edu);
+
   return (
     <div data-testid={`education-row-${edu.id}`} className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
         <h4 className="text-[13px] font-semibold text-[#1F1F1F]">{edu.degree || "Education not provided"}</h4>
-        {edu.dates && <p className="shrink-0 text-[11.5px] text-[#777774]">{edu.dates}</p>}
+        {dates && <p className="shrink-0 text-[11.5px] text-[#777774]">{dates}</p>}
       </div>
       {edu.institution && <p className="mt-0.5 text-[12px] text-[#4A4A48]">{edu.institution}</p>}
     </div>

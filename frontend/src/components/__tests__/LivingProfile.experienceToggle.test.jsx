@@ -250,6 +250,60 @@ describe("LivingProfile experience toggle", () => {
     expect(row.textContent).toContain("Viral Bug");
   });
 
+  it("groups projects under one company without repeating employment context or numbered labels", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        experience: [
+          {
+            id: "deepija-network",
+            title: "Network Modernization",
+            company: "Deepija Telecom",
+            start_date: "2020-01",
+            end_date: "2022-12",
+            description: "Upgraded the core network.",
+          },
+          {
+            id: "deepija-portal",
+            title: "Customer Portal",
+            company: "Deepija Telecom",
+            start_date: "2020-01",
+            end_date: "2022-12",
+            description: "Built a self-service portal.",
+          },
+        ],
+      },
+    });
+
+    const rows = getExperienceRows(view.container);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("Deepija Telecom");
+    expect(rows[0].textContent.match(/Deepija Telecom/g)).toHaveLength(1);
+    expect(rows[0].textContent).toContain("Network Modernization");
+    expect(rows[0].textContent).toContain("Customer Portal");
+    expect(rows[0].textContent).toContain("Upgraded the core network.");
+    expect(rows[0].textContent).toContain("Built a self-service portal.");
+    expect(rows[0].textContent).not.toMatch(/Project \d+/);
+  });
+
+  it("renders education start and end years as a range", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        education: [
+          {
+            id: "education-masters",
+            degree: "M.Sc Computer Science",
+            institution: "Example University",
+            start_date: "2020-08",
+            end_date: "2022-05",
+          },
+        ],
+      },
+    });
+
+    const row = view.container.querySelector('[data-testid="education-row-education-masters"]');
+    expect(row.textContent).toContain("2020 – 2022");
+  });
+
   it("renders availability and salary expectation as separate profile header fields", () => {
     view = renderLivingProfile({
       userProfile: {

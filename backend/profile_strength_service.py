@@ -80,6 +80,24 @@ def _has_list(v: Any) -> bool:
     return isinstance(v, list) and len(v) > 0
 
 
+def _as_list(value: Any) -> list:
+    """Return meaningful profile items without treating a string as characters."""
+    if isinstance(value, list):
+        return [item for item in value if item not in (None, "")]
+    if _has_text(value):
+        return [value]
+    return []
+
+
+def _experience_has_dates(item: Any) -> bool:
+    """Recognise both structured dates and the display date range persisted by intake."""
+    if not isinstance(item, dict):
+        return False
+    return any(_has_text(item.get(key)) for key in (
+        "start_date", "startDate", "end_date", "endDate", "dates", "duration",
+    ))
+
+
 def _parse_raw(v: Any) -> dict:
     import json
     if isinstance(v, dict):
@@ -267,7 +285,7 @@ def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) 
             _add("work_experience", "claimed_from_resume", EVIDENCE_CLAIMED, 0.7, resume_ts)
         if _has_list(candidate.get("education")):
             _add("education", "claimed_from_resume", EVIDENCE_CLAIMED, 0.8, resume_ts)
-        if _has_list(parsed_resume.get("certifications")) or _has_list(raw.get("certifications")):
+        if _as_list(parsed_resume.get("certifications")) or _as_list(raw.get("certifications")):
             _add("certifications", "claimed_from_resume", EVIDENCE_CLAIMED, 0.6, resume_ts)
 
     # Voice-derived evidence (corroborates resume claims)
@@ -346,7 +364,7 @@ def _score_identity_background(candidate: dict, evidence: dict) -> dict:
         score += 20
         signals.append("work_history")
         # Bonus for timeline consistency (has dates)
-        dated = sum(1 for w in work_exp if isinstance(w, dict) and (w.get("start_date") or w.get("end_date")))
+        dated = sum(1 for w in work_exp if _experience_has_dates(w))
         if dated > 0:
             score += 10
             signals.append("dated_history")
@@ -355,6 +373,15 @@ def _score_identity_background(candidate: dict, evidence: dict) -> dict:
     if isinstance(edu, list) and len(edu) > 0:
         score += 5
         signals.append("education")
+        complete_education = sum(
+            1 for item in edu
+            if isinstance(item, dict)
+            and _has_text(item.get("degree") or item.get("field_of_study"))
+            and _has_text(item.get("institution") or item.get("school"))
+        )
+        if complete_education:
+            score += 5
+            signals.append("education_details")
 
     return {"score": min(score, 100.0), "signals": signals}
 
@@ -417,16 +444,38 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
     signals = []
 
     # Projects
-    projects = raw.get("projects") or candidate.get("projects") or []
+    parsed_resume = _parse_raw(candidate.get("parsed_resume_json"))
+    # Projects may arrive from resume parsing, chat/voice raw_data, or a
+    # canonical profile column.  All are candidate-provided evidence; the
+    # source affects provenance, not whether the section exists.
+    projects = (
+        raw.get("projects")
+        or candidate.get("projects")
+        or parsed_resume.get("projects")
+        or []
+    )
     vi_state = get_voice_intake_state(candidate)
     has_projects = (
-        (isinstance(projects, list) and len(projects) > 0)
+        bool(_as_list(projects))
         or _has_text(raw.get("project_summary"))
         or "responsibilities_projects" in vi_state.get("known_topics", [])
     )
     if has_projects:
         score += 25
         signals.append("projects")
+
+    # A populated certification section is useful profile evidence even when
+    # its documents have not been uploaded.  Uploaded documents receive the
+    # larger verified-evidence credit below, so this does not equate a claim
+    # with verification.
+    claimed_certs = _as_list(
+        candidate.get("certifications")
+        or raw.get("certifications")
+        or parsed_resume.get("certifications")
+    )
+    if claimed_certs:
+        score += 10
+        signals.append("certifications_claimed")
 
     # Uploaded certificates
     certs = candidate.get("candidate_certificates") or []
@@ -447,13 +496,25 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
 
     # Work experience with descriptions (evidence of doing, not just claiming)
     work_exp = candidate.get("work_experience") or []
-    described = sum(
-        1 for w in work_exp
-        if isinstance(w, dict) and _has_text(w.get("description"))
-    )
+    described = sum(1 for w in work_exp if isinstance(w, dict) and _has_text(w.get("description") or w.get("summary")))
     if described >= 1:
         score += 10
         signals.append("described_experience")
+
+    # Credit complete, substantive employment records rather than merely a
+    # list of job titles.  This is capped and requires real role, employer,
+    # timeline, and responsibility information.
+    complete_roles = sum(
+        1 for w in work_exp
+        if isinstance(w, dict)
+        and _has_text(w.get("title"))
+        and _has_text(w.get("company"))
+        and _experience_has_dates(w)
+        and _has_text(w.get("description") or w.get("summary"))
+    )
+    if complete_roles:
+        score += min(15, 5 + complete_roles * 5)
+        signals.append("complete_experience_records")
 
     # Non-technical roles: communication evidence counts here too
     if role_category in ("sales", "management"):
