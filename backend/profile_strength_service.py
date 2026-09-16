@@ -371,6 +371,28 @@ def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) 
         if "availability_location" in voice_topics:
             _add("preferences", "extracted_from_voice", EVIDENCE_CLAIMED, 0.75)
 
+    # Direct candidate statements from Chat or Voice may demonstrate an
+    # *existing* skill.  These records are deliberately written by the intake
+    # and chat persistence paths only after matching an explicit usage
+    # statement against the candidate's pre-existing skills.  A resume skill,
+    # a project technology list, or a newly extracted skill can never create
+    # one of these records by itself.
+    demonstrated_skill_evidence = raw.get("demonstrated_skill_evidence") or []
+    if isinstance(demonstrated_skill_evidence, list):
+        existing_skill_keys = {
+            _clean(skill).lower() for skill in (candidate.get("skills") or [])
+            if _clean(skill)
+        }
+        for record in demonstrated_skill_evidence:
+            if not isinstance(record, dict):
+                continue
+            supported = record.get("skills") or []
+            if not isinstance(supported, list):
+                continue
+            if any(_clean(skill).lower() in existing_skill_keys for skill in supported):
+                _add("skills", "demonstrated_by_candidate_usage", EVIDENCE_DEMONSTRATED, 0.8)
+                break
+
     # Uploaded certificates = verified_by_document
     certs = candidate.get("candidate_certificates") or []
     if isinstance(certs, list) and len(certs) > 0:

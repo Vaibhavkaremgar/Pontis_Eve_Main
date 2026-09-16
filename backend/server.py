@@ -4942,6 +4942,78 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
     return result
 
 
+_EXPLICIT_SKILL_USAGE = re.compile(
+    r"\b(?:i\s+(?:personally\s+)?(?:used|use|built|developed|implemented|created|wrote|worked\s+with)|"
+    r"my\s+(?:work|role|project)\s+(?:used|uses|involved))\b",
+    re.IGNORECASE,
+)
+
+
+def _existing_skills_explicitly_used(existing_skills: Any, statement: Any) -> list[str]:
+    """Return existing skills named in a candidate's explicit usage statement.
+
+    This intentionally does not infer use from a technology list or project
+    description.  It also never returns a skill that was not already on the
+    profile at the start of the interaction.
+    """
+    text_value = _normalize_profile_text(statement)
+    if not text_value or not _EXPLICIT_SKILL_USAGE.search(text_value):
+        return []
+    supported: list[str] = []
+    seen: set[str] = set()
+    for skill in existing_skills if isinstance(existing_skills, list) else []:
+        name = _normalize_profile_text(skill)
+        key = _normalize_profile_key(name)
+        if not name or not key or key in seen:
+            continue
+        if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text_value, re.IGNORECASE):
+            supported.append(name)
+            seen.add(key)
+    return supported
+
+
+def _append_demonstrated_skill_evidence(raw_data: dict, existing_skills: Any, statement: Any, source: str) -> dict:
+    """Add idempotent direct-usage provenance, retaining only existing skills."""
+    supported = _existing_skills_explicitly_used(existing_skills, statement)
+    if not supported:
+        return raw_data
+    raw = dict(raw_data or {})
+    records = raw.get("demonstrated_skill_evidence") or []
+    records = [record for record in records if isinstance(record, dict)]
+    key = (source, _normalize_profile_text(statement).lower(), tuple(sorted(_normalize_profile_key(s) for s in supported)))
+    for record in records:
+        record_key = (
+            record.get("source"),
+            _normalize_profile_text(record.get("statement")).lower(),
+            tuple(sorted(_normalize_profile_key(s) for s in (record.get("skills") or []))),
+        )
+        if record_key == key:
+            return raw
+    raw["demonstrated_skill_evidence"] = records + [{
+        "source": source,
+        "statement": _normalize_profile_text(statement),
+        "skills": supported,
+    }]
+    return raw
+
+
+async def _record_demonstrated_skill_usage(candidate_id: str, existing_skills: Any, statement: Any, source: str) -> None:
+    """Persist Chat usage evidence after structured profile updates are applied."""
+    if not _existing_skills_explicitly_used(existing_skills, statement):
+        return
+    candidate = await _get_candidate_row(candidate_id)
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    updated_raw = _append_demonstrated_skill_evidence(raw, existing_skills, statement, source)
+    if updated_raw == raw:
+        return
+    async with SessionLocal() as db:
+        await db.execute(
+            text("UPDATE candidates SET raw_data = CAST(:raw_data AS jsonb), updated_at = now() WHERE id = :cid"),
+            {"raw_data": json.dumps(updated_raw), "cid": candidate_id},
+        )
+        await db.commit()
+
+
 async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
     """Validate and apply structured profile updates to PostgreSQL, merging lists.
     Also handles profile_deletions to remove specific items from profile sections.
@@ -5668,6 +5740,20 @@ async def chat(request: ChatRequest):
             logger.exception("Profile update failed: %s", e)
             clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
             profile_updates = None
+
+    # A direct candidate statement can demonstrate a skill already on their
+    # profile even when it does not produce a normal profile field update.
+    # Use the pre-turn profile so an LLM-extracted new skill cannot qualify.
+    if request.candidate_id and frontend_profile:
+        try:
+            await _record_demonstrated_skill_usage(
+                request.candidate_id,
+                frontend_profile.get("skills") or frontend_profile.get("keySkills") or [],
+                last_user.content,
+                "eve_chat",
+            )
+        except Exception as e:
+            logger.warning("Chat demonstrated-skill persistence failed: %s", e)
 
     if request.candidate_id:
         try:
@@ -6903,6 +6989,17 @@ async def _persist_voice_intake_profile_state(
         "voice_intake_resume": voice_intake_state,
     }
     merged_raw["voice_intake"] = voice_intake_state
+    # Store only direct candidate assertions of having used a skill that was
+    # already present before this intake.  The extracted voice skills and
+    # project technology lists remain claimed/corroborated evidence.
+    voice_usage_text = "\n".join(
+        _normalize_profile_text(turn.get("answer"))
+        for turn in (voice_intake_state.get("completed_turns") or [])
+        if isinstance(turn, dict)
+    )
+    merged_raw = _append_demonstrated_skill_evidence(
+        merged_raw, candidate.get("skills") or [], voice_usage_text, "eve_voice"
+    )
     set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
     update_params["raw_data"] = json.dumps(merged_raw)
 
