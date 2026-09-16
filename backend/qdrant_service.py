@@ -31,12 +31,24 @@ def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[
     Returns a list of (jobId, score) tuples, deduplicated by jobId (best score kept).
     """
     client = _get_client()
-    results = client.search(
-        collection_name=JOB_COLLECTION,
-        query_vector=query_vector,
-        limit=limit,
-        with_payload=True,
-    )
+    # qdrant-client 1.17 removed ``search`` in favour of ``query_points``.
+    # Retain the older call as a fallback for deployments using the pinned 1.9 client.
+    if hasattr(client, "query_points"):
+        response = client.query_points(
+            collection_name=JOB_COLLECTION,
+            query=query_vector,
+            limit=limit,
+            with_payload=True,
+        )
+        results = response.points
+    else:
+        results = client.search(
+            collection_name=JOB_COLLECTION,
+            query_vector=query_vector,
+            limit=limit,
+            with_payload=True,
+        )
+    logger.info("[matching] Qdrant raw hits=%d requested_limit=%d", len(results), limit)
 
     seen: dict[str, float] = {}
     for hit in results:
@@ -48,5 +60,6 @@ def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[
         if job_id not in seen or score > seen[job_id]:
             seen[job_id] = score
 
-    # Return sorted by score descending
-    return sorted(seen.items(), key=lambda x: x[1], reverse=True)
+    deduplicated = sorted(seen.items(), key=lambda x: x[1], reverse=True)
+    logger.info("[matching] Qdrant unique job IDs after deduplication=%d", len(deduplicated))
+    return deduplicated

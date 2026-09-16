@@ -416,12 +416,21 @@ def _count_skill_matches(candidate_skills: List[str], job_text: str) -> int:
 
 def _job_is_eligible(signals: Dict[str, Any], candidate_years: float, job_title: str, job_description: str, job_requirements: Any = "", job_skills: Any = None) -> bool:
     job_text = _job_text(job_title, job_description, job_requirements, job_skills)
+    if not _job_passes_experience(candidate_years, job_text):
+        return False
+    return _job_passes_skills_or_role(signals, job_title, job_text)
+
+
+def _job_passes_experience(candidate_years: float, job_text: str) -> bool:
     min_years, max_years = _job_experience_bounds(job_text)
     if min_years is not None and candidate_years + EXPERIENCE_EPSILON_YEARS < min_years:
         return False
     if max_years is not None and candidate_years - EXPERIENCE_EPSILON_YEARS > max_years:
         return False
+    return True
 
+
+def _job_passes_skills_or_role(signals: Dict[str, Any], job_title: str, job_text: str) -> bool:
     skill_hits = _count_skill_matches(signals["skills"], job_text)
     role_score = _target_role_score(signals["target_roles"], job_title, job_text)
     return skill_hits > 0 or role_score > 0.0
@@ -756,6 +765,7 @@ async def refresh_candidate_job_matches(
 
     semantic_map = {jid: score for jid, score in job_scores}
     candidate_job_ids = [jid for jid, _ in job_scores]
+    logger.info("[matching] candidate=%s unique Qdrant job IDs=%d", candidate_id, len(candidate_job_ids))
     candidate_years = _candidate_total_experience_years(candidate)
 
     # 2. Fetch job details for all candidates
@@ -784,8 +794,15 @@ async def refresh_candidate_job_matches(
                        for r in rows.fetchall()}
 
     if not job_details:
-        logger.info("[matching] No valid active jobs found for candidate %s", candidate_id)
+        logger.info(
+            "[matching] candidate=%s active DB overlap=0 discarded_missing_or_inactive=%d",
+            candidate_id, len(candidate_job_ids),
+        )
         return
+    logger.info(
+        "[matching] candidate=%s active DB overlap=%d discarded_missing_or_inactive=%d",
+        candidate_id, len(job_details), len(candidate_job_ids) - len(job_details),
+    )
 
     # 3. Extract candidate signals once
     signals = _build_candidate_signals(candidate)
@@ -795,19 +812,15 @@ async def refresh_candidate_job_matches(
 
     # 4. Hybrid re-ranking
     scored: List[Tuple[str, float, Dict]] = []
+    rejected_experience = 0
+    rejected_skills_role = 0
     for job_id, job_data in job_details.items():
-        if not _job_is_eligible(
-            signals,
-            candidate_years,
-            job_data["title"],
-            job_data["description"],
-            job_data["requirements"],
-            job_data["skills"],
-        ):
-            logger.info(
-                "[job-match] job=%r filtered out by experience/skills-role eligibility",
-                job_data["title"],
-            )
+        job_text = _job_text(job_data["title"], job_data["description"], job_data["requirements"], job_data["skills"])
+        if not _job_passes_experience(candidate_years, job_text):
+            rejected_experience += 1
+            continue
+        if not _job_passes_skills_or_role(signals, job_data["title"], job_text):
+            rejected_skills_role += 1
             continue
         sem = semantic_map.get(job_id, 0.0)
         final, components = _hybrid_score(
@@ -833,6 +846,11 @@ async def refresh_candidate_job_matches(
 
     scored.sort(key=lambda x: x[1], reverse=True)
     ranked_jobs = scored[:MAX_RECOMMENDATIONS]
+    logger.info(
+        "[matching] candidate=%s passing_eligibility=%d rejected_experience=%d "
+        "rejected_skills_or_role=%d final_recommendations=%d",
+        candidate_id, len(scored), rejected_experience, rejected_skills_role, len(ranked_jobs),
+    )
 
     # 5. Load existing recommendations to preserve tracked_at / hidden_at
     async with SessionLocal() as db:

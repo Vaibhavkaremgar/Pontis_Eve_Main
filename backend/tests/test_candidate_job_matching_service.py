@@ -56,7 +56,7 @@ class FakeSession:
             rows = []
             for job_id in job_ids:
                 job = self.state["jobs"].get(job_id)
-                if job:
+                if job and job.get("visible", True):
                     rows.append(
                         (
                             job_id,
@@ -272,3 +272,41 @@ def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeyp
 
     assert state["inserted"] == ["new-job"]
     assert "hidden_updates" not in state
+
+
+def test_refresh_can_recommend_more_than_two_distinct_active_eligible_jobs(monkeypatch):
+    state = {"jobs": {
+        f"job-{i}": {
+            "title": "Java Backend Engineer",
+            "description": "Build APIs using Java and Spring Boot.",
+            "requirements": "",
+            "skills": ["Java", "Spring Boot"],
+        } for i in range(4)
+    }}
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java backend engineer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [(f"job-{i}", 0.9 - i / 100) for i in range(4)])
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate", {"skills": ["Java"], "current_role": "Java Backend Engineer"}, FakeSessionFactory(state),
+    ))
+
+    assert state["inserted"] == ["job-0", "job-1", "job-2", "job-3"]
+
+
+def test_refresh_preserves_active_database_filtering(monkeypatch):
+    state = {"jobs": {
+        "active": {"title": "Java Engineer", "description": "Java APIs", "skills": ["Java"]},
+        "inactive": {"title": "Java Engineer", "description": "Java APIs", "skills": ["Java"], "visible": False},
+    }}
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java engineer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("active", .9), ("inactive", .8)])
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate", {"skills": ["Java"], "current_role": "Java Engineer"}, FakeSessionFactory(state),
+    ))
+
+    assert state["inserted"] == ["active"]
