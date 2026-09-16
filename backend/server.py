@@ -410,10 +410,12 @@ PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resu
   "experience_years": 0,
   "skills": ["skill1"],
   "work_experience": [{"title":"","company":"","start_date":"","end_date":"","description":""}],
+  "projects": [{"title":"","description":"","technologies":[]}],
   "education": [{"degree":"","institution":"","start_date":"","end_date":""}],
   "certifications": ["cert1"]
 }
 For education, extract the actual stated start and completion dates. Do not use "Present" for a completed degree; use it only when the resume explicitly says the course is current or ongoing. If only a completion year is stated, place it in end_date and leave start_date empty.
+For projects, extract only explicitly described named projects or products. Keep the candidate's project title, their stated work, and explicitly named technologies. Do not turn a general job responsibility into a project and do not infer a title.
 Return only the JSON object, no markdown, no explanation."""
 
 
@@ -556,6 +558,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "salary_expectation": raw_data.get("salary_expectation", ""),
         "preferred_roles": raw_data.get("preferred_roles") or [],
         "certifications": certifications,
+        "projects": _normalize_projects(raw_data.get("projects")),
         "additional_information": raw_data.get("additional_information", ""),
         "parsing_status": c.get("parsing_status", ""),
         "photo_url": _candidate_photo_url(c, raw_data),
@@ -3041,6 +3044,9 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "parsed_resume_json": parsed,
                 }
             )
+            existing_raw_data["projects"] = _merge_projects(
+                existing_raw_data.get("projects"), parsed.get("projects")
+            )
 
             # UPDATE existing candidate — merge resume into existing profile.
             # Identity (name, email, phone) is always preserved from the DB.
@@ -3147,7 +3153,10 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "exp_years": parsed.get("experience_years"),
                     "resume_file_path": str(dest_path),
                     "resume_text": resume_text,
-                    "raw_data": json.dumps({"certifications": _candidate_certification_sources({"parsed_resume_json": parsed})}),
+                    "raw_data": json.dumps({
+                        "certifications": _candidate_certification_sources({"parsed_resume_json": parsed}),
+                        "projects": _normalize_projects(parsed.get("projects")),
+                    }),
                     "parsed_resume_json": json.dumps(parsed),
                     "parsed_resume_text": resume_text,
                 },
@@ -5799,6 +5808,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "current_role": "",
   "current_company": "",
   "work_experience": [{"title":"","company":"","start_date":"","end_date":"","description":""}],
+  "projects": [{"title":"","description":"","technologies":[]}],
   "education": [{"degree":"","institution":""}],
   "certifications": [],
   "additional_information": "",
@@ -5810,6 +5820,7 @@ For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "F
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
+For "projects", extract only projects the candidate explicitly says they worked on or built. Preserve the stated project/product name, responsibilities, and technologies. Do not infer projects from general role duties, and do not create a title when none was stated.
 Return only the JSON object."""
 
 
@@ -6295,6 +6306,61 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
     return merged
 
 
+def _normalize_projects(items: Any) -> list[dict]:
+    """Keep explicitly supplied project records in one durable profile shape.
+
+    This deliberately does not mine ordinary responsibility prose: a project is
+    promoted only when an extractor or existing structured payload supplied a
+    title/name.  That prevents manufacturing project evidence from a job title.
+    """
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            title = _normalize_profile_text(item)
+            record = {"title": title} if title else {}
+        elif isinstance(item, dict):
+            title = _normalize_profile_text(item.get("title") or item.get("name") or item.get("project_name"))
+            description = _normalize_profile_text(item.get("description") or item.get("summary") or item.get("responsibilities"))
+            technologies = item.get("technologies") or item.get("skills") or []
+            if isinstance(technologies, str):
+                technologies = [technologies]
+            technologies = [
+                _normalize_profile_text(value) for value in technologies
+                if _normalize_profile_text(value)
+            ] if isinstance(technologies, list) else []
+            record = {"title": title} if title else {}
+            if description:
+                record["description"] = description
+            if technologies:
+                record["technologies"] = list(dict.fromkeys(technologies))
+        else:
+            continue
+        title = record.get("title", "")
+        if not title:
+            continue
+        key = _normalize_profile_key(title)
+        if key in seen:
+            existing = next(p for p in normalized if _normalize_profile_key(p.get("title")) == key)
+            if not existing.get("description") and record.get("description"):
+                existing["description"] = record["description"]
+            existing_tech = existing.get("technologies") or []
+            incoming_tech = record.get("technologies") or []
+            if incoming_tech:
+                existing["technologies"] = list(dict.fromkeys([*existing_tech, *incoming_tech]))
+            continue
+        seen.add(key)
+        normalized.append(record)
+    return normalized
+
+
+def _merge_projects(existing: Any, incoming: Any) -> list[dict]:
+    """Merge candidate-provided project records without duplicating titles."""
+    return _normalize_projects([*_normalize_projects(existing), *_normalize_projects(incoming)])
+
+
 def _merge_education(existing: list, new_items: list) -> list:
     """Merge education lists, deduplicating by normalized degree + institution."""
     if not new_items:
@@ -6632,6 +6698,10 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     )
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
+    if raw_data.get("projects") or voice.get("projects"):
+        raw_data["projects"] = _merge_projects(
+            raw_data.get("projects"), voice.get("projects")
+        )
 
     # Merge lists after raw_data is normalized so certifications can be excluded
     # from the skill list when they are clearly certifications.
@@ -6958,8 +7028,16 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         "intake_id": intake_id,
         "candidate_id": request.candidate_id,
         "fields_updated": [
-            field for field in ("summary", "current_role", "current_company", "location", "experience_years", "skills", "work_experience", "education")
-            if merged.get(field) != candidate.get(field)
+            *[
+                field for field in ("summary", "current_role", "current_company", "location", "experience_years", "skills", "work_experience", "education")
+                if merged.get(field) != candidate.get(field)
+            ],
+            *(
+                ["projects"]
+                if _parse_raw_data(merged.get("raw_data")).get("projects")
+                != _parse_raw_data(candidate.get("raw_data")).get("projects")
+                else []
+            ),
         ],
         "profile": updated_profile,
         "voice_intake_state": voice_intake_state,

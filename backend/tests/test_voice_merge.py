@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from server import (
     _merge_certifications,
     _merge_list,
+    _merge_projects,
     _merge_skills,
     _merge_voice_into_profile,
     _normalize_certifications,
@@ -38,6 +39,23 @@ class TestMergeList:
         new = [{"title": "Lead", "company": "B"}]
         result = _merge_list(existing, new)
         assert len(result) == 2
+
+
+class TestProjectNormalization:
+    def test_preserves_only_explicit_projects_and_merges_duplicate_titles(self):
+        projects = _merge_projects(
+            [{"title": "AI job aggregation", "description": "Aggregated jobs", "technologies": ["Python"]}],
+            [
+                {"name": "AI Job Aggregation", "technologies": ["FastAPI", "Python"]},
+                {"description": "Built backend APIs without naming a project"},
+            ],
+        )
+
+        assert projects == [{
+            "title": "AI job aggregation",
+            "description": "Aggregated jobs",
+            "technologies": ["Python", "FastAPI"],
+        }]
 
 
 class TestMergeVoiceIntoProfile:
@@ -99,6 +117,25 @@ class TestMergeVoiceIntoProfile:
         lower = [s.lower() for s in merged["skills"]]
         assert "python" in lower
         assert "django" in lower
+
+    def test_explicit_voice_projects_are_persisted_in_raw_data_idempotently(self):
+        profile = self._base_profile()
+        voice = {
+            "projects": [{
+                "title": "ATS API integration",
+                "description": "Integrated the ATS API for job matching.",
+                "technologies": ["FastAPI", "REST API"],
+            }]
+        }
+
+        once = _merge_voice_into_profile(profile, voice)
+        twice = _merge_voice_into_profile(once, voice)
+
+        assert twice["raw_data"]["projects"] == [{
+            "title": "ATS API integration",
+            "description": "Integrated the ATS API for job matching.",
+            "technologies": ["FastAPI", "REST API"],
+        }]
 
     def test_missing_summary_filled_from_voice(self):
         profile = self._base_profile()

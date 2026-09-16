@@ -347,6 +347,20 @@ class TestCandidate3StrongEvidence:
         r_no_proj = calculate_profile_strength_v2(c_no_proj)
         assert d_evidence >= r_no_proj["dimensions"]["evidence"]["score"]
 
+    def test_structured_projects_are_evidence_not_an_assessment(self):
+        c = _with_resume()
+        c["raw_data"] = {
+            "projects": [{
+                "title": "Semantic job matching",
+                "description": "Built embedding-based search.",
+                "technologies": ["Python", "Embeddings"],
+            }]
+        }
+        result = calculate_profile_strength_v2(c)
+
+        assert "projects" in result["dimensions"]["evidence"]["signals"]
+        assert "skills_demonstrated" not in result["dimensions"]["skills_capability"]["signals"]
+
     def test_technical_assessment_raises_evidence_level(self):
         c = _with_resume()
         c["interview_technical_score"] = 8.5
