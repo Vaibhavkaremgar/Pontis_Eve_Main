@@ -4951,6 +4951,18 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             if existing_raw.get("salary_expectation") != salary_value:
                 existing_raw["salary_expectation"] = salary_value
                 raw_data_changed = True
+        elif field == "additional_information":
+            # This is free-form profile metadata, not a candidates table column.
+            # Keep it in raw_data so it follows the same storage/read path as
+            # the other supplemental profile fields.
+            if not isinstance(value, str):
+                continue
+            additional_value = value.strip()
+            if not additional_value:
+                continue
+            if existing_raw.get("additional_information") != additional_value:
+                existing_raw["additional_information"] = additional_value
+                raw_data_changed = True
         elif field == "profile_deletions":
             # Handled separately below; must not be added to SQL SET clauses.
             continue

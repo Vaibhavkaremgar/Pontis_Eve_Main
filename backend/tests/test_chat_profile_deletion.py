@@ -84,6 +84,10 @@ def _run_apply(candidate_state, updates):
             # Reject any attempt to set profile_deletions as a column
             assert "profile_deletions" not in sql or "profile_deletions" not in (params or {}), \
                 f"profile_deletions must not appear in SQL params: {sql}"
+            # Supplemental profile fields are persisted inside raw_data, not as
+            # physical candidates columns.
+            assert "additional_information =" not in sql, \
+                f"additional_information must be persisted through raw_data: {sql}"
             if "SELECT * FROM candidates WHERE id = :cid LIMIT 1" in sql:
                 return FakeResult([candidate_state])
             if "FROM candidate_preferences" in sql and "SELECT" in sql:
@@ -142,6 +146,30 @@ class TestNoDatabaseColumn:
         assert "profile_deletions" in updates  # present for backend processing
         # But VALID_UPDATE_FIELDS must include it so _apply_profile_updates handles it
         assert "profile_deletions" in server.VALID_UPDATE_FIELDS
+
+    def test_additional_information_persists_in_raw_data_and_is_returned(self):
+        """Chat saves additional information through JSONB and profile GET exposes it."""
+        state = _make_candidate(
+            raw_data={
+                **_make_candidate()["raw_data"],
+                "unrelated_raw_value": "must be preserved",
+            }
+        )
+
+        _, result = _run_apply(
+            state,
+            {"additional_information": "Open to hybrid roles and relocation."},
+        )
+
+        assert result["updated"] is True
+        assert state["raw_data"]["additional_information"] == "Open to hybrid roles and relocation."
+        assert state["raw_data"]["unrelated_raw_value"] == "must be preserved"
+        # _normalize_for_frontend is the projection used by the candidate
+        # profile API after the persisted row is reloaded.
+        assert (
+            server._normalize_for_frontend(state)["additional_information"]
+            == "Open to hybrid roles and relocation."
+        )
 
 
 # ---------------------------------------------------------------------------
