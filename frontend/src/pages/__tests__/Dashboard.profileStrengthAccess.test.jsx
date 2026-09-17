@@ -178,6 +178,7 @@ describe("Dashboard profile-strength jobs access", () => {
 
     await waitFor(() => dashboard.container.querySelector('[data-testid="jobs-deck"]'));
     act(() => dashboard.container.querySelector('[data-testid="jobs-deck"]').click());
-    await waitFor(() => dashboard.container.textContent.includes("You have 100 jobs matching your profile"));
+    await waitFor(() => dashboard.container.textContent.includes("You’ve reached your 3 free job-match views for today"));
+    expect(dashboard.container.textContent).toContain("You have 100 jobs matching your profile");
   });
 });
