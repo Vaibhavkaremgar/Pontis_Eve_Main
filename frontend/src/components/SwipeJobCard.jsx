@@ -302,8 +302,14 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
         {/* Footer */}
         <div className="shrink-0 px-6 py-4 border-t border-black/[0.05] flex gap-3">
           <button
-            onClick={onNotInterested}
+            onClick={onClose}
             className="flex-1 py-2.5 rounded-xl bg-black/[0.04] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.08] transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onNotInterested}
+            className="py-2.5 px-3 rounded-xl bg-black/[0.04] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.08] transition-colors"
           >
             Not Interested
           </button>
@@ -440,6 +446,34 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
 
 // ─── Deck ────────────────────────────────────────────────────────────────────
 
+function HorizontalJobCard({ job, onOpenDetails, onNotInterested, onApply, onTrack }) {
+  const matchPct = job.match_score != null ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1)) : null;
+  const skills = normalizeSkills(job.skills).slice(0, 4);
+  const description = cleanText(job.description || job.responsibilities || job.requirements);
+
+  return (
+    <article data-testid={`job-card-${job.id}`} role="button" tabIndex={0} onClick={onOpenDetails}
+      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenDetails(); } }}
+      className="w-full cursor-pointer rounded-2xl border border-black/[0.07] bg-white px-4 py-4 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-all hover:border-black/[0.12] sm:px-5">
+      <div className="flex min-w-0 items-start gap-3 sm:gap-4">
+        {job.logo ? <img src={job.logo} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover" /> : <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#E7E3F0]"><span className="text-[14px] font-medium text-[#7B6FB8]">{(job.company || "?")[0].toUpperCase()}</span></div>}
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-[14px] font-semibold leading-tight text-[#1F1F1F]">{job.title}</h3><p className="mt-0.5 truncate text-[12.5px] text-[#9A9A98]">{job.company}</p></div>
+          {matchPct != null && <div data-testid={`match-score-${job.id}`} className="shrink-0 text-right"><p className="text-[18px] font-semibold leading-none text-[#2E7538]">{matchPct}%</p><p className="mt-1 text-[10px] font-medium uppercase tracking-wide text-[#7B927B]">Match</p></div>}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[#4A4A48]">{job.location && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5 text-[#9A9A98]" strokeWidth={1.5} />{job.location}</span>}{job.salary && <span className="font-medium text-[#1F1F1F]">{job.salary}</span>}</div>
+          {description && <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-[#4A4A48]">{description}</p>}
+          {skills.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div>}
+          <div className="mt-3 flex flex-wrap gap-2" onClick={(event) => event.stopPropagation()}>
+            <button type="button" data-testid={`not-interested-${job.id}`} onClick={onNotInterested} className="rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-[12px] text-[#4A4A48] hover:bg-black/[0.03]">Not Interested</button>
+            <button type="button" data-testid={`apply-${job.id}`} onClick={onApply} disabled={!job.job_url} className="rounded-xl bg-[#1F1F1F] px-3 py-2 text-[12px] font-medium text-white hover:bg-black disabled:opacity-50">Apply Now</button>
+            <button type="button" data-testid={`track-${job.id}`} onClick={onTrack} className="rounded-xl bg-black/[0.04] px-3 py-2 text-[12px] font-medium text-[#1F1F1F] hover:bg-black/[0.08]">Track</button>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismissJob, onExhausted }) {
   const [index, setIndex] = React.useState(0);
   const [detailJob, setDetailJob] = React.useState(null);
@@ -476,19 +510,18 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   }, [current, onJobsChange, advance, onDismissJob]);
 
   // RIGHT SWIPE → track (persist to backend before removing card)
-  const handleSwipeRight = React.useCallback(async () => {
-    if (!current) return;
-    const id = current.id;
+  const handleSwipeRight = React.useCallback(async (job = current) => {
+    if (!job) return;
+    const id = job.id;
     try {
       await axios.post(`${API}/candidate/${candidateId}/jobs/${id}/track`);
       setActioned((s) => new Set(s).add(id));
-      advance();
       onJobsChange?.();
     } catch {
       toast.error("Couldn't save this job. Please try again.");
       // Card stays — do NOT advance
     }
-  }, [current, candidateId, onJobsChange, advance]);
+  }, [current, candidateId, onJobsChange]);
 
   // APPLY → open the company's careers page directly in a new tab
   const handleApply = React.useCallback(() => {
@@ -514,14 +547,13 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
       await onDismissJob?.(id, reason);
       setActioned((s) => new Set(s).add(id));
       setPendingDismissJob(null);
-      advance();
       onJobsChange?.();
     } catch {
       toast.error("Couldn't save this choice. Please try again.");
     } finally {
       setDismissing(false);
     }
-  }, [pendingDismissJob, dismissing, onDismissJob, advance, onJobsChange]);
+  }, [pendingDismissJob, dismissing, onDismissJob, onJobsChange]);
 
   if (!jobs) {
     return (
@@ -535,7 +567,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
     );
   }
 
-  if (total === 0 || index >= total) {
+  if (total === 0) {
     if (!exhaustionRequestedRef.current && jobs.length > 0) {
       exhaustionRequestedRef.current = true;
       Promise.resolve().then(() => onExhausted?.());
@@ -564,46 +596,23 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
           onClose={() => setDetailJob(null)}
           onApply={handleApply}
           onNotInterested={() => handleRequestDismiss(detailJob)}
-          applying={applying}
         />
       )}
 
       {/* Header */}
       <div className="shrink-0 px-6 pt-5 pb-3 flex items-center justify-between">
         <h2 className="text-[14px] font-medium text-[#1F1F1F]">Recommended for you</h2>
-        <span className="text-[12px] text-[#9A9A98] font-normal">{index + 1} of {total}</span>
+        <span className="text-[12px] text-[#9A9A98] font-normal">{total} {total === 1 ? "role" : "roles"}</span>
       </div>
 
-      {/* Card stack */}
-      <div className="flex-1 relative mx-6 mb-4 min-h-0">
-        {index + 1 < total && (
-          <div className="absolute inset-x-3 inset-y-2 rounded-2xl border border-black/[0.05] bg-white shadow-sm" />
-        )}
-        <SwipeCard
-          key={current.id}
-          job={current}
-          onSwipeLeft={handleSwipeLeft}
-          onSwipeRight={handleSwipeRight}
-          onViewDetail={() => setDetailJob(current)}
-        />
-      </div>
-
-      {/* Action buttons */}
-      <div className="shrink-0 px-6 pb-6 flex gap-3">
-        <button
-          onClick={() => handleRequestDismiss(current)}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-black/[0.08] bg-white text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.03] transition-colors"
-        >
-          <X className="w-4 h-4" strokeWidth={2} />
-          Not Interested
-        </button>
-        <button
-          onClick={handleSwipeRight}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors"
-        >
-          <Heart className="w-4 h-4" strokeWidth={2} />
-          Interested
-        </button>
+      <div className="flex-1 min-h-0 overflow-y-auto eve-scroll px-4 pb-5 sm:px-6">
+        <div className="space-y-3">
+          {pending.map((job) => (
+            <HorizontalJobCard key={job.id} job={job} onOpenDetails={() => setDetailJob(job)} onNotInterested={() => handleRequestDismiss(job)}
+              onApply={() => { if (!job.job_url) { toast.error("Application link is not available for this job."); return; } window.open(job.job_url, "_blank", "noopener,noreferrer"); }}
+              onTrack={() => handleSwipeRight(job)} />
+          ))}
+        </div>
       </div>
     </div>
   );

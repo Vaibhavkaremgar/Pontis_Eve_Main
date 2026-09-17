@@ -93,6 +93,39 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeNull();
   });
 
+  it("renders a horizontal card with its details and score on the right", () => {
+    renderResult = renderDeck({ jobs: [{
+      id: "job-1", title: "Senior Product Manager", company: "Acme", location: "Remote", salary: "$150k",
+      description: "Lead product strategy.", match_score: 0.92, skills: ["Strategy"], job_url: "https://acme.example/jobs/1",
+    }] });
+
+    const card = renderResult.container.querySelector('[data-testid="job-card-job-1"]');
+    expect(card.textContent).toContain("Senior Product Manager");
+    expect(card.textContent).toContain("Acme");
+    expect(card.textContent).toContain("Remote");
+    expect(card.textContent).toContain("$150k");
+    expect(renderResult.container.querySelector('[data-testid="match-score-job-1"]').textContent).toContain("92%");
+    expect(card.querySelector('[data-testid="not-interested-job-1"]')).toBeTruthy();
+    expect(card.querySelector('[data-testid="apply-job-1"]')).toBeTruthy();
+    expect(card.querySelector('[data-testid="track-job-1"]')).toBeTruthy();
+  });
+
+  it("opens details from the card but not from a card action", () => {
+    renderResult = renderDeck();
+    act(() => {
+      renderResult.container.querySelector('[data-testid="not-interested-job-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(renderResult.container.textContent).toContain("Why are you passing on this role?");
+    expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeNull();
+
+    act(() => {
+      renderResult.container.querySelector('[aria-label="Close"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      renderResult.container.querySelector('[data-testid="job-card-job-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeTruthy();
+    expect(renderResult.container.textContent).toContain("Lead product strategy.");
+  });
+
   it("closes the job details when clicking outside the panel", () => {
     renderResult = renderDeck();
     openDetail();
