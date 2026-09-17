@@ -165,6 +165,55 @@ code {
     }
 }
 
+/* A brief acknowledgement when new profile information improves the score. */
+.profile-strength-meter__label,
+.profile-strength-meter__track {
+    transition: color 240ms ease, box-shadow 240ms ease, background-color 240ms ease;
+}
+
+/* Keep the meter discoverable even before a score change occurs. */
+.profile-strength-meter__label {
+    color: #62578f;
+}
+
+.profile-strength-meter__track {
+    background-color: #ded8f0;
+    box-shadow: 0 0 0 1px rgba(98, 87, 143, 0.08);
+}
+
+.profile-strength-meter--improving .profile-strength-meter__label {
+    color: #62578f;
+    animation: profile-meter-text-highlight 1.4s ease-out;
+}
+
+.profile-strength-meter--improving .profile-strength-meter__track {
+    background-color: #d3cbed;
+    animation: profile-meter-bar-highlight 1.4s ease-out;
+}
+
+.profile-strength-meter--improving .profile-strength-meter__fill {
+    background-color: #6d60ab;
+}
+
+@keyframes profile-meter-text-highlight {
+    0%, 100% { color: #62578f; }
+    30% { color: #4f4579; }
+}
+
+@keyframes profile-meter-bar-highlight {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(98, 87, 143, 0.08); }
+    30% { box-shadow: 0 0 0 4px rgba(123, 111, 184, 0.18); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .profile-strength-meter__fill,
+    .profile-strength-meter__label,
+    .profile-strength-meter__track {
+        transition-duration: 0.01ms;
+        animation-duration: 0.01ms;
+    }
+}
+
 @layer base {
     [data-debug-wrapper="true"] {
         display: contents !important;

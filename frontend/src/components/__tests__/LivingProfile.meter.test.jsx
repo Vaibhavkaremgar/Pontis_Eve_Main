@@ -72,4 +72,29 @@ describe("LivingProfile meter label", () => {
     expect(meter.textContent).toContain("Strong 82%");
     view.unmount();
   });
+
+  it("briefly highlights the meter when the score increases", () => {
+    const view = renderLivingProfile();
+
+    act(() => {
+      view.root.render(
+        <LivingProfile
+          activeTab="profile"
+          userProfile={{
+            name: "Jane Doe", strength: "Strong", strengthPercent: 88,
+            experience: [], education: [], keySkills: [], availability: "",
+            preferred_roles: [], certifications: [], additional_information: "", isOpenToMatches: true,
+          }}
+          jobs={[]} documents={{ resume: null, certificates: [] }} docsLoading={false}
+          candidateId="cand-123" selectedJob={null} setSelectedJob={jest.fn()} onTrackJob={jest.fn()}
+          onDismissJob={jest.fn()} onToggleOpenToMatches={jest.fn()} onResumeReplaced={jest.fn()}
+          onCertUploaded={jest.fn()} onCertReplaced={jest.fn()} onResumeDeleted={jest.fn()}
+          onCertDeleted={jest.fn()} onInterested={jest.fn()} onPhotoChange={jest.fn()} onJobViewed={jest.fn()}
+        />
+      );
+    });
+
+    expect(view.container.querySelector('[data-testid="profile-strength-bar"]')).toHaveClass("profile-strength-meter--improving");
+    view.unmount();
+  });
 });

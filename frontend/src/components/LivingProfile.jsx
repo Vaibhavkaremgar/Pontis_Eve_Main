@@ -21,18 +21,39 @@ function stripHtml(str) {
 }
 
 function ProfileStrengthBar({ label, percent }) {
+  const previousPercent = React.useRef(percent);
+  const [isImproving, setIsImproving] = React.useState(false);
+
+  React.useEffect(() => {
+    const hasImproved = percent > previousPercent.current;
+    previousPercent.current = percent;
+
+    if (!hasImproved) return undefined;
+
+    setIsImproving(true);
+    const timeoutId = window.setTimeout(() => setIsImproving(false), 1400);
+    return () => window.clearTimeout(timeoutId);
+  }, [percent]);
+
   return (
     <div
       data-testid="profile-strength-bar"
-      className="flex items-center gap-2.5"
+      className={`profile-strength-meter flex items-center gap-2.5 ${isImproving ? "profile-strength-meter--improving" : ""}`}
     >
-      <span className="text-[11.5px] text-[#9A9A98] font-normal">
+      <span aria-live="polite" className="profile-strength-meter__label text-[11.5px] text-[#62578F] font-medium">
         Profile Meter:{" "}
         <span className="text-[#1F1F1F] font-medium">{label} {percent}%</span>
       </span>
-      <div className="w-[90px] h-1.5 rounded-full bg-[#E7E3F0] overflow-hidden">
+      <div
+        role="progressbar"
+        aria-label="Profile Meter"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="profile-strength-meter__track w-[90px] h-1.5 rounded-full bg-[#DED8F0] overflow-hidden"
+      >
         <div
-          className="h-full bg-[#7B6FB8] rounded-full transition-all"
+          className="profile-strength-meter__fill h-full bg-[#6D60AB] rounded-full transition-all duration-700 ease-out"
           style={{ width: `${percent}%` }}
         />
       </div>
