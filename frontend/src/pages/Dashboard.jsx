@@ -614,12 +614,12 @@ function Dashboard() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="job-limit-modal-title">
           <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-7 shadow-2xl">
             <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[#EEEAF8] text-[#62578F]" aria-hidden="true">
-              <span className="text-lg font-semibold">3</span>
+              <span className="text-lg font-semibold">{matchingJobsTotal}</span>
             </div>
             <div className="mt-4 text-center">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Daily free limit reached</p>
-              <h2 id="job-limit-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">You’ve viewed your 3 free job matches for today</h2>
-              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">Your free plan includes three job-match accesses each day. Upgrade to explore every matching opportunity as it arrives.</p>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Matching jobs available</p>
+              <h2 id="job-limit-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">You have {matchingJobsTotal} jobs matching your profile</h2>
+              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">Upgrade your plan to access and view all of your matching jobs.</p>
             </div>
             <div className="mt-6 grid gap-2.5">
               <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">View Plans</button>

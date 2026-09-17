@@ -167,7 +167,10 @@ describe("Dashboard profile-strength jobs access", () => {
       if (url.includes("/jobs") && config?.params?.request_more) {
         return Promise.reject({ response: { status: 403, data: { detail: { code: "daily_job_limit_reached" } } } });
       }
-      if (url.includes("/jobs")) return Promise.resolve({ data: [{ id: "job-3" }] });
+      if (url.includes("/jobs")) return Promise.resolve({
+        data: [{ id: "job-3" }],
+        headers: { "x-total-matching-jobs": "100" },
+      });
       if (url.includes("/documents")) return Promise.resolve({ data: { resume: null, certificates: [] } });
       return Promise.resolve({ data: [] });
     });
@@ -175,6 +178,6 @@ describe("Dashboard profile-strength jobs access", () => {
 
     await waitFor(() => dashboard.container.querySelector('[data-testid="jobs-deck"]'));
     act(() => dashboard.container.querySelector('[data-testid="jobs-deck"]').click());
-    await waitFor(() => dashboard.container.textContent.includes("You’ve viewed your 3 free job matches for today"));
+    await waitFor(() => dashboard.container.textContent.includes("You have 100 jobs matching your profile"));
   });
 });
