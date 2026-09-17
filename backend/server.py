@@ -7409,15 +7409,29 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
             detail={"code": "profile_strength_required", "message": "Profile Strength must be at least 90% to view jobs."},
         )
 
-    # If no recommendations exist yet, run matching synchronously so the first load is useful
+    # A free candidate only needs a new match run after exhausting every visible
+    # recommendation.  Historical daily-access rows deliberately make a
+    # recommendation ineligible for another free allocation, even on a later
+    # calendar date.
     async with SessionLocal() as db:
-        count_row = await db.execute(
-            text("SELECT COUNT(*) FROM candidate_job_recommendations WHERE candidate_id = :cid"),
+        available_row = await db.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM candidate_job_recommendations cjr
+                WHERE cjr.candidate_id = :cid
+                  AND cjr.hidden_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM candidate_daily_job_access access
+                    WHERE access.candidate_id = cjr.candidate_id
+                      AND access.recommendation_id = cjr.id
+                  )
+            """),
             {"cid": candidate_id},
         )
-        rec_count = count_row.scalar() or 0
+        unaccessed_visible_count = available_row.scalar() or 0
 
-    if rec_count == 0:
+    if not _has_active_subscription(candidate) and unaccessed_visible_count == 0:
         try:
             from candidate_job_matching_service import refresh_candidate_job_matches
             await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
