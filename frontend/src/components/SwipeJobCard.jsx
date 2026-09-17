@@ -172,6 +172,32 @@ export function NotInterestedReasonModal({ open, job, busy = false, onClose, onC
   );
 }
 
+function ImproveMatchModal({ job, data, busy, onClose, onApplyCurrent, onConfirm }) {
+  const [skills, setSkills] = React.useState("");
+  const [confirmed, setConfirmed] = React.useState(false);
+  React.useEffect(() => { setSkills(""); setConfirmed(false); }, [job?.id]);
+  if (!job) return null;
+  const score = data?.match_score ?? job.match_score;
+  const pct = score == null ? "—" : `${Math.round(score * (score <= 1 ? 100 : 1))}%`;
+  const submittedSkills = skills.split(",").map((value) => value.trim()).filter(Boolean);
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="improve-match-modal">
+    <div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] shadow-2xl">
+      <div className="flex items-start justify-between gap-3 border-b border-black/[.06] px-5 py-4"><div><h3 className="text-[16px] font-medium">Improve Your Match</h3><p className="mt-1 text-[13px] text-[#4A4A48]">Current match: <strong>{pct}</strong></p></div><button aria-label="Close improve match" onClick={onClose}><X className="h-4 w-4" /></button></div>
+      <div className="max-h-[55vh] space-y-4 overflow-y-auto px-5 py-4">
+        <div><p className="text-[12px] font-medium">Missing skills</p>{data ? (data.missing_skills?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{data.missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div> : <p className="mt-1 text-[12px] text-[#4A4A48]">No specific skill gap was identified.</p>) : <p className="mt-1 text-[12px] text-[#9A9A98]">Checking your profile…</p>}</div>
+        {data?.requirements?.length > 0 && <div><p className="text-[12px] font-medium">Job requirements to confirm</p><ul className="mt-2 space-y-1 text-[12px] text-[#4A4A48]">{data.requirements.map((requirement, index) => <li key={index}>• {requirement}</li>)}</ul></div>}
+        <div className="rounded-xl bg-black/[.03] p-3"><label className="text-[12px] font-medium" htmlFor="confirmed-skills">Skills you actually have</label><input id="confirmed-skills" data-testid="confirmed-skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="e.g. Python, SQL" className="mt-2 w-full rounded-lg border border-black/[.1] bg-white px-3 py-2 text-[13px]" /><label className="mt-3 flex gap-2 text-[12px] text-[#4A4A48]"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I confirm these details are accurate and mine.</label></div>
+      </div>
+      <div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onApplyCurrent} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Apply with Current Resume</button><button data-testid="fix-my-resume" disabled={busy || !confirmed || !submittedSkills.length} onClick={() => onConfirm(submittedSkills)} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white disabled:opacity-50">{busy ? "Updating…" : "Fix My Resume"}</button></div>
+    </div>
+  </div>;
+}
+
+function UpdatedResumeModal({ job, score, onDownload, onApply, onClose }) {
+  const pct = score == null ? "updated" : `${Math.round(score * (score <= 1 ? 100 : 1))}%`;
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="updated-resume-modal"><div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] p-5 shadow-2xl"><h3 className="text-[16px] font-medium">Your resume is updated</h3><p className="mt-2 text-[13px] text-[#4A4A48]">Your match has been recalculated: {pct}.</p><div className="mt-5 flex gap-3"><button data-testid="download-updated-resume" onClick={onDownload} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Download updated resume</button><button onClick={onApply} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white">Apply Now</button></div><button onClick={onClose} className="mt-3 w-full text-[12px] text-[#4A4A48]">Close</button></div></div>;
+}
+
 // ─── Job Detail Modal ────────────────────────────────────────────────────────
 
 export function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
@@ -314,7 +340,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
             Not Interested
           </button>
           <button
-            onClick={onApply}
+            onClick={() => onApply?.()}
             disabled={!job.job_url}
             className="flex-1 py-2.5 rounded-xl bg-[#1F1F1F] text-white text-[13px] font-medium hover:bg-black transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
             title={job.job_url ? "Apply on the company's website" : "Application link not available"}
@@ -480,6 +506,10 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
   const [dismissing, setDismissing] = React.useState(false);
+  const [improvementJob, setImprovementJob] = React.useState(null);
+  const [improvementData, setImprovementData] = React.useState(null);
+  const [improving, setImproving] = React.useState(false);
+  const [updatedMatch, setUpdatedMatch] = React.useState(null);
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
   const exhaustionRequestedRef = React.useRef(false);
@@ -524,14 +554,28 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   }, [current, candidateId, onJobsChange]);
 
   // APPLY → open the company's careers page directly in a new tab
-  const handleApply = React.useCallback(() => {
-    if (!detailJob || applying) return;
-    if (!detailJob.job_url) {
-      toast.error("Application link is not available for this job.");
+  const openJobUrl = React.useCallback((job) => {
+    if (!job?.job_url) { toast.error("Application link is not available for this job."); return; }
+    window.open(job.job_url, "_blank", "noopener,noreferrer");
+  }, []);
+  const handleApply = React.useCallback(async (job = detailJob) => {
+    if (!job || applying) return;
+    const score = Number(job.match_score);
+    if (job.job_url && Number.isFinite(score) && score * (score <= 1 ? 100 : 1) < 90) {
+      setImprovementJob(job); setImprovementData(null);
+      try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
+      catch { toast.error("Couldn't load match details. Please try again."); }
       return;
     }
-    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
-  }, [detailJob, applying]);
+    openJobUrl(job);
+  }, [detailJob, applying, candidateId, openJobUrl]);
+  const confirmImprovement = React.useCallback(async (skills) => {
+    if (!improvementJob || improving) return;
+    setImproving(true);
+    try { const response = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/match-improvement`, { skills }); setImprovementJob(null); setUpdatedMatch({ job: improvementJob, ...response.data }); onJobsChange?.(); }
+    catch (error) { toast.error(error?.response?.data?.detail || "Couldn't update your profile. Please try again."); }
+    finally { setImproving(false); }
+  }, [improvementJob, improving, candidateId, onJobsChange]);
 
   const handleRequestDismiss = React.useCallback((job) => {
     if (!job) return;
@@ -589,6 +633,8 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
+      <ImproveMatchModal job={improvementJob} data={improvementData} busy={improving} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); }} onConfirm={confirmImprovement} />
+      {updatedMatch && <UpdatedResumeModal job={updatedMatch.job} score={updatedMatch.match_score} onDownload={() => window.open(`${API}${updatedMatch.resume_download_url}`, "_blank", "noopener,noreferrer")} onApply={() => { openJobUrl(updatedMatch.job); setUpdatedMatch(null); }} onClose={() => setUpdatedMatch(null)} />}
       {/* Detail modal overlay */}
       {detailJob && (
         <JobDetailModal
@@ -609,7 +655,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         <div className="space-y-3">
           {pending.map((job) => (
             <HorizontalJobCard key={job.id} job={job} onOpenDetails={() => setDetailJob(job)} onNotInterested={() => handleRequestDismiss(job)}
-              onApply={() => { if (!job.job_url) { toast.error("Application link is not available for this job."); return; } window.open(job.job_url, "_blank", "noopener,noreferrer"); }}
+              onApply={() => handleApply(job)}
               onTrack={() => handleSwipeRight(job)} />
           ))}
         </div>

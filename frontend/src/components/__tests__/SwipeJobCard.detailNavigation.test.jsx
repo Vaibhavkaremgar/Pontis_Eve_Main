@@ -1,6 +1,7 @@
 import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
+import axios from "axios";
 
 import SwipeJobDeck from "../SwipeJobCard";
 
@@ -26,6 +27,7 @@ function renderDeck(props = {}) {
     salary: "$150k",
     description: "<p>Lead product strategy.</p>",
     requirements: "<ul><li>5+ years experience</li></ul>",
+    match_score: 0.92,
     job_url: "https://acme.example/jobs/1",
   };
 
@@ -173,5 +175,17 @@ describe("SwipeJobDeck job details navigation", () => {
     });
 
     expect(renderResult.container.textContent).toContain("Why are you passing on this role?");
+  });
+
+  it("opens the improvement modal and displays missing requirements below 90%", async () => {
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.72, missing_skills: ["Kubernetes"], requirements: ["Kubernetes experience required"] } });
+    renderResult = renderDeck({ jobs: [{ id: "job-1", title: "Senior Product Manager", company: "Acme", location: "Remote", description: "Lead product strategy.", match_score: 0.72, skills: ["Kubernetes"], job_url: "https://acme.example/jobs/1" }] });
+    await act(async () => {
+      renderResult.container.querySelector('[data-testid="apply-job-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(renderResult.container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
+    expect(renderResult.container.textContent).toContain("Kubernetes");
+    expect(openSpy).not.toHaveBeenCalled();
   });
 });

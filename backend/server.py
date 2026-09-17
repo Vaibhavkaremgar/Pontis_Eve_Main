@@ -105,6 +105,11 @@ class CandidateHelpRequest(BaseModel):
     message: str
 
 
+class JobMatchImprovementRequest(BaseModel):
+    """Candidate-confirmed additions made from the Jobs for You match helper."""
+    skills: List[str] = Field(default_factory=list)
+
+
 # ---------- Helpers ----------
 
 def _extract_pdf_text(file_bytes: bytes) -> tuple[str, bool]:
@@ -7523,6 +7528,73 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
         }
         for r in results
     ]
+
+
+def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict) -> dict:
+    """Explain gaps without altering the matcher or claiming unverified candidate data."""
+    def clean(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+    current_skills = candidate.get("skills") or []
+    known = {clean(skill).lower() for skill in current_skills if clean(skill)}
+    normalized_job_skills = [
+        clean(skill.get("name") if isinstance(skill, dict) else skill)
+        for skill in (job_skills or [])
+    ]
+    missing_skills = [skill for skill in normalized_job_skills if skill and skill.lower() not in known]
+    # Requirement prose is supplied as context for confirmation; it is never added to a profile.
+    requirement_text = clean(requirements)
+    requirement_lines = [line.strip(" -•\t") for line in re.split(r"[\r\n]+|(?<=[.!?])\s+", requirement_text)
+                         if len(line.strip(" -•\t")) > 3]
+    return {"missing_skills": missing_skills, "requirements": requirement_lines[:8]}
+
+
+@api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
+async def get_job_match_improvement(candidate_id: str, rec_id: str):
+    """Return only the selected job's gaps, scoped to an existing recommendation."""
+    candidate = await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT cjr.match_score, jd.skills, jd.requirements
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.id = :rid AND cjr.candidate_id = :cid
+            LIMIT 1
+        """), {"rid": rec_id, "cid": candidate_id})
+        row = result.mappings().fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Recommendation not found.")
+    return {
+        "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
+        **_job_missing_requirements(row["skills"], row["requirements"], candidate),
+    }
+
+
+@api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
+async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImprovementRequest):
+    """Persist only explicitly confirmed skills, then reuse the normal matcher."""
+    await get_job_match_improvement(candidate_id, rec_id)  # ownership check; no daily-limit mutation
+    confirmed_skills = [skill.strip() for skill in request.skills if isinstance(skill, str) and skill.strip()]
+    if not confirmed_skills:
+        raise HTTPException(status_code=422, detail="Confirm at least one skill before updating your profile.")
+    update_result = await _apply_profile_updates(candidate_id, {"skills": confirmed_skills})
+    candidate = await _get_candidate_row(candidate_id)
+    try:
+        from candidate_job_matching_service import refresh_candidate_job_matches
+        await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
+    except Exception as exc:
+        logger.warning("[matching] Match refresh failed after candidate update for %s: %s", candidate_id, exc)
+        raise HTTPException(status_code=503, detail="Your profile was updated, but the match could not be recalculated yet.")
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT match_score FROM candidate_job_recommendations
+            WHERE id = :rid AND candidate_id = :cid LIMIT 1
+        """), {"rid": rec_id, "cid": candidate_id})
+        score = result.scalar()
+    return {
+        "updated": bool(update_result.get("updated")),
+        "match_score": float(score) if score is not None else None,
+        "resume_download_url": f"/api/candidate/{candidate_id}/profile/download",
+    }
 
 
 @api_router.get("/candidate/{candidate_id}/tracked-jobs")
