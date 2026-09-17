@@ -142,6 +142,7 @@ function Dashboard() {
   const [chatRestored, setChatRestored] = React.useState(false);
   const [inputValue, setInputValue] = React.useState("");
   const [availableJobs, setAvailableJobs] = React.useState([]);
+  const [matchingJobsTotal, setMatchingJobsTotal] = React.useState(0);
   const [documents, setDocuments] = React.useState({ resume: null, certificates: [] });
   const [docsLoading, setDocsLoading] = React.useState(false);
   const [selectedJob, setSelectedJob] = React.useState(null);
@@ -415,6 +416,7 @@ function Dashboard() {
   const fetchJobs = React.useCallback((requestMore = false) => {
     if (!candidateId || !hasJobsAccess) {
       setAvailableJobs([]);
+      setMatchingJobsTotal(0);
       setSelectedJob(null);
       setJobsLoading(false);
       return;
@@ -424,6 +426,8 @@ function Dashboard() {
       .get(`${API}/candidate/${candidateId}/jobs`, requestMore ? { params: { request_more: true } } : undefined)
       .then((res) => {
         setAvailableJobs(res.data || []);
+        const total = Number(res.headers?.["x-total-matching-jobs"]);
+        setMatchingJobsTotal(Number.isFinite(total) ? total : (res.data || []).length);
         setSelectedJob((prev) => prev ?? (res.data?.[0] || null));
         setJobsLoading(false);
       })
@@ -607,11 +611,20 @@ function Dashboard() {
     >
       <Toaster position="top-right" richColors closeButton />
       {showSubscriptionPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-label="Subscription required">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl text-center">
-            <h2 className="text-lg font-medium text-[#1F1F1F]">Unlock more jobs</h2>
-            <p className="mt-2 text-sm text-[#4A4A48]">Unlock more jobs by subscribing.</p>
-            <button onClick={() => setShowSubscriptionPopup(false)} className="mt-5 rounded-xl bg-[#1F1F1F] px-5 py-2.5 text-sm font-medium text-white">Close</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="job-limit-modal-title">
+          <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-7 shadow-2xl">
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[#EEEAF8] text-[#62578F]" aria-hidden="true">
+              <span className="text-lg font-semibold">3</span>
+            </div>
+            <div className="mt-4 text-center">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Daily free limit reached</p>
+              <h2 id="job-limit-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">You’ve viewed your 3 free job matches for today</h2>
+              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">Your free plan includes three job-match accesses each day. Upgrade to explore every matching opportunity as it arrives.</p>
+            </div>
+            <div className="mt-6 grid gap-2.5">
+              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">View Plans</button>
+              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Maybe Later</button>
+            </div>
           </div>
         </div>
       )}
@@ -691,7 +704,7 @@ function Dashboard() {
             setActiveTab={setActiveTabPersisted}
             userProfile={userProfile}
             footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
-            jobsCount={availableJobs.filter((j) => !j.viewed).length}
+            jobsCount={matchingJobsTotal}
             opportunitiesCount={opportunitiesCount}
             recentActivity={MOCK_RECENT_ACTIVITY}
             onLogout={handleLogout}
@@ -818,6 +831,7 @@ function Dashboard() {
             activeTab={rightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}
+            matchingJobsTotal={matchingJobsTotal}
             documents={documents}
             docsLoading={docsLoading}
             candidateId={candidateId}

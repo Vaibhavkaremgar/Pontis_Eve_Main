@@ -7400,7 +7400,7 @@ async def _claim_daily_job_access(
     return True
 
 @api_router.get("/candidate/{candidate_id}/jobs")
-async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
+async def get_candidate_jobs(candidate_id: str, request_more: bool = False, response: Response = None):
     """Return semantic job recommendations for this candidate, joined with job_descriptions."""
     candidate = await _get_candidate_row(candidate_id)
     if await _effective_profile_strength_percent(candidate_id, candidate) < 90:
@@ -7437,6 +7437,19 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
             await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
         except Exception as e:
             logger.warning("[matching] On-demand matching failed for %s: %s", candidate_id, e)
+
+    # The free-plan allowance controls which recommendations may be opened,
+    # not how many matches the candidate can see are available.
+    async with SessionLocal() as db:
+        total_row = await db.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM candidate_job_recommendations cjr
+                WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+            """),
+            {"cid": candidate_id},
+        )
+        total_matching_jobs = total_row.scalar() or 0
 
     # Capture once so a request which happens to span midnight has one coherent
     # product-calendar date for both its claim and response.
@@ -7485,6 +7498,8 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False):
             {"cid": candidate_id, "limited": limited, "access_date": access_date},
         )
         results = rows.mappings().fetchall()
+    if response is not None:
+        response.headers["X-Total-Matching-Jobs"] = str(total_matching_jobs)
     return [
         {
             "id": str(r["rec_id"]),
@@ -8534,5 +8549,5 @@ app.add_middleware(
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition", "X-Total-Matching-Jobs"],
 )

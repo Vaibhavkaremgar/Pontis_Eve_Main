@@ -177,7 +177,7 @@ def test_schema_uses_product_calendar_date():
     assert server.PRODUCT_TIMEZONE == "Asia/Kolkata"
 
 
-def _get_jobs(monkeypatch, state, day, refresh, candidate=None):
+def _get_jobs(monkeypatch, state, day, refresh, candidate=None, response=None):
     async def candidate_row(_candidate_id): return candidate or {}
     async def strength(*_args): return 90
     monkeypatch.setattr(server, "_get_candidate_row", candidate_row)
@@ -186,7 +186,22 @@ def _get_jobs(monkeypatch, state, day, refresh, candidate=None):
     monkeypatch.setattr(server, "SessionLocal", _JobsEndpointSessionFactory(state))
     import candidate_job_matching_service as matcher
     monkeypatch.setattr(matcher, "refresh_candidate_job_matches", refresh)
-    return asyncio.run(server.get_candidate_jobs("candidate"))
+    return asyncio.run(server.get_candidate_jobs("candidate", response=response))
+
+
+def test_jobs_exposes_the_full_matching_total_while_returning_free_accesses(monkeypatch):
+    from starlette.responses import Response
+
+    state = _state()
+
+    async def refresh(*_args):
+        pass
+
+    response = Response()
+    jobs = _get_jobs(monkeypatch, state, date(2026, 9, 17), refresh, response=response)
+
+    assert len(jobs) == 3
+    assert response.headers["x-total-matching-jobs"] == "13"
 
 
 def test_jobs_refreshes_when_only_visible_recommendation_was_accessed_before_today(monkeypatch):

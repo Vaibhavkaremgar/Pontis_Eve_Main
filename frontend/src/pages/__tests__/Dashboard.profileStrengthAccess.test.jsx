@@ -175,6 +175,6 @@ describe("Dashboard profile-strength jobs access", () => {
 
     await waitFor(() => dashboard.container.querySelector('[data-testid="jobs-deck"]'));
     act(() => dashboard.container.querySelector('[data-testid="jobs-deck"]').click());
-    await waitFor(() => dashboard.container.textContent.includes("Unlock more jobs by subscribing."));
+    await waitFor(() => dashboard.container.textContent.includes("You’ve viewed your 3 free job matches for today"));
   });
 });

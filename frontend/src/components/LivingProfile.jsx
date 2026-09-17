@@ -527,7 +527,7 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
   );
 }
 
-function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed }) {
+function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed }) {
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -598,7 +598,7 @@ function JobsTab({ jobs, onTrack, onDismiss, selectedJob, setSelectedJob, candid
       )}
       <div className="space-y-4" data-testid="jobs-tab-content">
         <p className="text-[12px] text-[#9A9A98] font-normal">
-          {jobs.length} matches ranked by fit
+          {matchingJobsTotal} matches ranked by fit
         </p>
 
         {jobs.length === 0 && (
@@ -1433,6 +1433,7 @@ export default function LivingProfile({
   onInterested,
   onJobViewed,
   onPhotoChange,
+  matchingJobsTotal = jobs.length,
 }) {
   const profileContentRef = React.useRef(null);
   const [pdfGenerating, setPdfGenerating] = React.useState(false);
@@ -1505,6 +1506,7 @@ export default function LivingProfile({
           {activeTab === "jobs" && (
             <JobsTab
               jobs={jobs}
+              matchingJobsTotal={matchingJobsTotal}
               onTrack={onTrackJob}
               onDismiss={onDismissJob}
               selectedJob={selectedJob}
