@@ -288,6 +288,52 @@ def test_explicit_preferred_roles_prioritize_a_transition_over_current_role(monk
 
     assert state["inserted"] == ["java-job"]
 
+
+def test_preferred_role_retrieval_adds_java_job_for_python_candidate(monkeypatch):
+    """Preferred-role retrieval must reach ranking even when profile search is Python-heavy."""
+    state = {"jobs": {
+        "python-job": {
+            "title": "Python Developer",
+            "description": "Build Python APIs with Django.",
+            "skills": ["Python", "Django"],
+        },
+        "java-job": {
+            "title": "Java Backend Developer",
+            "description": "Build backend APIs with Java and Spring Boot.",
+            "skills": ["Java", "Spring Boot"],
+        },
+    }}
+    embedded_texts = []
+
+    def fake_embedding(text):
+        embedded_texts.append(text)
+        return [0.2] if text.startswith("Target job roles:") else [0.1]
+
+    def fake_search(vector, limit):
+        assert limit == matcher.QDRANT_TOP_K
+        return [("java-job", 0.80)] if vector == [0.2] else [("python-job", 0.99)]
+
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Python Developer Python Django")
+    monkeypatch.setattr(matcher, "generate_embedding", fake_embedding)
+    monkeypatch.setattr(matcher, "search_job_chunks", fake_search)
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate",
+        {
+            "current_role": "Python Developer",
+            "skills": ["Python", "Django", "Java", "Spring Boot"],
+            "raw_data": {"preferred_roles": ["Java Backend Developer"]},
+        },
+        FakeSessionFactory(state),
+    ))
+
+    assert embedded_texts == [
+        "Python Developer Python Django",
+        "Target job roles:\nJava Backend Developer",
+    ]
+    assert state["inserted"] == ["java-job"]
+
 def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeypatch):
     """A refresh result is not a candidate's explicit Not-for-me action."""
     state = {

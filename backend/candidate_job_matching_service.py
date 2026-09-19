@@ -521,6 +521,17 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_target_role_retrieval_text(target_roles: List[str]) -> str:
+    """Build an intent-only Qdrant query, excluding experience and skills.
+
+    Target-role retrieval deliberately contains no current role, resume text, or
+    candidate skills.  Those are qualification and ranking signals, whereas the
+    candidate's saved preferred roles determine which job families must be
+    available to that later stage.
+    """
+    return "Target job roles:\n" + "\n".join(target_roles)
+
+
 def _extract_job_required_skills(job_text: str) -> List[str]:
     """
     Heuristically extract required skills from job text.
@@ -782,15 +793,38 @@ async def refresh_candidate_job_matches(
     Build candidate embedding, search Qdrant, re-rank with hybrid scoring,
     and upsert into candidate_job_recommendations.
     """
+    # Read target intent before retrieval; it is also reused by the existing
+    # eligibility and hybrid ranking logic below.
+    signals = _build_candidate_signals(candidate)
     candidate_text = build_candidate_text(candidate)
     if not candidate_text.strip():
         logger.info("[matching] Candidate %s has no profile text — skipping", candidate_id)
         return
 
+    # Preserve the existing broad candidate-semantic retrieval.
     query_vector = generate_embedding(candidate_text)
-
-    # 1. Semantic search
     job_scores = search_job_chunks(query_vector, limit=QDRANT_TOP_K)
+
+    # An explicit preferred role receives an independent, intent-only path.
+    # Current role, skills, and resume history are intentionally excluded so a
+    # career transition cannot be redirected by past experience before ranking.
+    target_role_scores: List[Tuple[str, float]] = []
+    if signals["has_explicit_target_roles"]:
+        target_role_query = _build_target_role_retrieval_text(signals["target_roles"])
+        logger.info(
+            "[matching] candidate=%s target-role retrieval query=%r normalized_preferred_roles=%r",
+            candidate_id, target_role_query, signals["target_roles"],
+        )
+        target_role_scores = search_job_chunks(
+            generate_embedding(target_role_query), limit=QDRANT_TOP_K
+        )
+
+    # Merge both paths by ID and retain the strongest semantic score.  Hybrid
+    # scoring itself remains exactly as it was.
+    combined_scores: Dict[str, float] = {}
+    for job_id, score in [*job_scores, *target_role_scores]:
+        combined_scores[job_id] = max(combined_scores.get(job_id, float("-inf")), score)
+    job_scores = sorted(combined_scores.items(), key=lambda item: item[1], reverse=True)
     if not job_scores:
         logger.info("[matching] No Qdrant results for candidate %s", candidate_id)
         return
@@ -836,10 +870,7 @@ async def refresh_candidate_job_matches(
         candidate_id, len(job_details), len(candidate_job_ids) - len(job_details),
     )
 
-    # 3. Extract candidate signals once
-    signals = _build_candidate_signals(candidate)
-
-    # Compute candidate intelligence once (evidence quality + constraints)
+    # 3. Compute candidate intelligence once (evidence quality + constraints)
     intelligence = _get_candidate_intelligence(candidate)
 
     # 4. Hybrid re-ranking
