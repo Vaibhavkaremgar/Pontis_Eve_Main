@@ -98,9 +98,23 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
 
     parts = []
 
+    # Put explicit career intent first so semantic retrieval follows the
+    # candidate's desired direction, while their current role remains context.
+    try:
+        from profile_strength_service import get_canonical_preferences
+        preferred_roles = get_canonical_preferences(
+            candidate, candidate.get("_prefs_row")
+        ).get("preferred_roles") or []
+    except Exception:
+        preferred_roles = raw_data.get("preferred_roles") or raw_data.get("target_roles") or []
+    if isinstance(preferred_roles, str):
+        preferred_roles = [preferred_roles]
+    if preferred_roles:
+        parts.append(f"Target / Preferred Roles:\n{', '.join(str(role) for role in preferred_roles if role)}")
+
     current_role = (candidate.get("current_role") or "").strip()
     if current_role:
-        parts.append(f"Candidate Role:\n{current_role}")
+        parts.append(f"Candidate Role / Experience:\n{current_role}")
 
     current_company = (candidate.get("current_company") or "").strip()
     if current_company:
@@ -161,10 +175,6 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
                 lines.append(entry.strip())
         if lines:
             parts.append("Education:\n" + "\n".join(lines))
-
-    preferred_roles = raw_data.get("preferred_roles") or []
-    if preferred_roles:
-        parts.append(f"Target / Preferred Roles:\n{', '.join(preferred_roles)}")
 
     if certifications:
         parts.append(f"Certifications:\n{', '.join(certifications)}")

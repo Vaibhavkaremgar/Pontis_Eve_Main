@@ -447,12 +447,25 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             raw_data = {}
 
-    # Target roles: preferred_roles (voice-stated desired roles) take priority, then current_role
-    preferred_roles = raw_data.get("preferred_roles") or []
+    # preferred_roles is the candidate's stated job direction.  A current role
+    # describes experience; it must not redirect a candidate who is explicitly
+    # seeking a different role or technology.
+    try:
+        from profile_strength_service import get_canonical_preferences
+        preferred_roles = get_canonical_preferences(
+            candidate, candidate.get("_prefs_row")
+        ).get("preferred_roles") or []
+    except Exception:
+        preferred_roles = raw_data.get("preferred_roles") or raw_data.get("target_roles") or []
+    if isinstance(preferred_roles, str):
+        preferred_roles = [preferred_roles]
     current_role = (candidate.get("current_role") or "").strip()
-    target_roles = list({r for r in preferred_roles if r})
-    if current_role:
-        target_roles.append(current_role)
+    target_roles = list(dict.fromkeys(
+        str(role).strip() for role in preferred_roles if str(role).strip()
+    ))
+    # Only use current role as a direction fallback when no preference was saved.
+    if not target_roles and current_role:
+        target_roles = [current_role]
 
     # Skills: merge DB skills with any voice-extracted skills stored in raw_data
     skills_raw = candidate.get("skills") or []
@@ -481,9 +494,12 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             work_exp = []
     past_roles = [w.get("title", "") for w in work_exp if w.get("title")]
+    if current_role:
+        past_roles.append(current_role)
 
     return {
         "target_roles": target_roles,
+        "has_explicit_target_roles": bool(target_roles and preferred_roles),
         "skills": skills,
         "past_roles": past_roles,
     }
@@ -843,6 +859,19 @@ async def refresh_candidate_job_matches(
             components["semantic_score"],
             components["final_score"],
         )
+
+    # When candidates state a target role, preserve that intent as the job
+    # direction. Skills and experience still decide qualification and score,
+    # but a current-role/skill match cannot displace an available target-role
+    # match. Fall back to the broader eligible set only if Qdrant returned no
+    # target-role matches.
+    if signals["has_explicit_target_roles"]:
+        intent_scored = [
+            item for item in scored
+            if item[2].get("target_role_score", 0.0) > 0.0
+        ]
+        if intent_scored:
+            scored = intent_scored
 
     scored.sort(key=lambda x: x[1], reverse=True)
     ranked_jobs = scored[:MAX_RECOMMENDATIONS]

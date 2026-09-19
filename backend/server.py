@@ -3208,6 +3208,16 @@ async def _trigger_matching(candidate_id: str) -> None:
     try:
         from candidate_job_matching_service import refresh_candidate_job_matches
         candidate = await _get_candidate_row(candidate_id)
+        # candidate_preferences is the authoritative persisted source for
+        # career intent. Attach it to the matching profile without changing
+        # the retrieval or recommendation persistence flow.
+        async with SessionLocal() as db:
+            prefs_result = await db.execute(
+                text("SELECT * FROM candidate_preferences WHERE candidate_id = :cid LIMIT 1"),
+                {"cid": candidate_id},
+            )
+            prefs_row = prefs_result.mappings().fetchone()
+        candidate["_prefs_row"] = dict(prefs_row) if prefs_row else None
         await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
     except Exception as e:
         logger.warning("[matching] Failed for candidate %s: %s", candidate_id, e)

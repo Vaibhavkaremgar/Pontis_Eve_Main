@@ -245,6 +245,39 @@ def test_job_eligibility_filters_experience_and_requires_relevance():
     )
 
 
+def test_explicit_preferred_roles_prioritize_a_transition_over_current_role(monkeypatch):
+    """A Python developer seeking Java must receive Java roles, not Python roles."""
+    state = {"jobs": {
+        "python-job": {
+            "title": "Python Developer",
+            "description": "Build Python APIs with Django.",
+            "skills": ["Python", "Django"],
+        },
+        "java-job": {
+            "title": "Java Backend Developer",
+            "description": "Build backend APIs with Java and Spring Boot.",
+            "skills": ["Java", "Spring Boot"],
+        },
+    }}
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java Backend Developer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(
+        matcher, "search_job_chunks", lambda vector, limit: [("python-job", 0.99), ("java-job", 0.70)]
+    )
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate",
+        {
+            "current_role": "Python Developer",
+            "skills": ["Python", "Django", "Java", "Spring Boot"],
+            "raw_data": {"preferred_roles": ["Java Developer", "Java Backend Developer"]},
+        },
+        FakeSessionFactory(state),
+    ))
+
+    assert state["inserted"] == ["java-job"]
+
 def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeypatch):
     """A refresh result is not a candidate's explicit Not-for-me action."""
     state = {
