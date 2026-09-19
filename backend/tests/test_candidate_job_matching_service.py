@@ -246,7 +246,11 @@ def test_job_eligibility_filters_experience_and_requires_relevance():
 
 
 def test_explicit_preferred_roles_prioritize_a_transition_over_current_role(monkeypatch):
-    """A Python developer seeking Java must receive Java roles, not Python roles."""
+    """A Python developer seeking Java must receive Java roles, not Python roles.
+
+    This mirrors candidate f5f8859b-575e-4a68-8b80-100881011bbe: a broad
+    Backend Developer preference accompanies the more specific Java target.
+    """
     state = {"jobs": {
         "python-job": {
             "title": "Python Developer",
@@ -271,7 +275,13 @@ def test_explicit_preferred_roles_prioritize_a_transition_over_current_role(monk
         {
             "current_role": "Python Developer",
             "skills": ["Python", "Django", "Java", "Spring Boot"],
-            "raw_data": {"preferred_roles": ["Java Developer", "Java Backend Developer"]},
+            "raw_data": {
+                "preferred_roles": [
+                    "Java Developer",
+                    "Java Backend Developer",
+                    "Backend Developer",
+                ]
+            },
         },
         FakeSessionFactory(state),
     ))

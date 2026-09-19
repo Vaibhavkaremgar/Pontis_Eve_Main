@@ -463,6 +463,22 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     target_roles = list(dict.fromkeys(
         str(role).strip() for role in preferred_roles if str(role).strip()
     ))
+    # A broad role saved alongside a more specific role is useful profile
+    # context, but it must not dilute the candidate's explicit direction.
+    # For example, "Backend Developer" is subsumed by "Java Backend
+    # Developer"; allowing the former to be a target match makes a Python
+    # backend job look like an intent match.  Keep distinct directions (for
+    # example, "Java Backend Developer" and "Team Lead") intact.
+    target_role_tokens = [_role_tokens(role) for role in target_roles]
+    target_roles = [
+        role
+        for index, role in enumerate(target_roles)
+        if not any(
+            target_role_tokens[index] < other_tokens
+            for other_index, other_tokens in enumerate(target_role_tokens)
+            if other_index != index
+        )
+    ]
     # Only use current role as a direction fallback when no preference was saved.
     if not target_roles and current_role:
         target_roles = [current_role]
