@@ -188,6 +188,24 @@ _NON_ROLE_PREFERENCE_VALUES = {
     "on site",
 }
 
+# Role-family words say what kind of work a job involves, but not which
+# technology it uses.  They are deliberately separate from _GENERIC_ROLE_WORDS:
+# the former can make a broad role match, while the latter carry no role intent.
+_BROAD_ROLE_TOKENS = {
+    "backend", "frontend", "fullstack", "full", "stack", "software",
+    "web", "mobile", "platform", "cloud", "data", "devops",
+}
+
+# Technologies that commonly qualify an otherwise broad engineering title.
+# This is used only for ordering equally-scored target-role matches; it does
+# not affect the hybrid score, eligibility, or retrieval.
+_ROLE_TECHNOLOGY_TOKENS = {
+    "java", "python", "javascript", "typescript", "node", "node.js",
+    "c", "c#", "c++", "dotnet", ".net", "go", "golang", "ruby",
+    "php", "scala", "kotlin", "swift", "rust", "react", "angular",
+    "vue", "django", "flask", "spring", "springboot", "rails",
+}
+
 
 def _role_tokens(role: str) -> set:
     """Return meaningful (non-generic) whole tokens from a role string."""
@@ -216,6 +234,29 @@ def _target_role_score(target_roles: List[str], job_title: str, job_text: str) -
         score = title_hit * 0.8 + text_hit * 0.2
         best = max(best, score)
     return min(best, 1.0)
+
+
+def _target_role_specificity(target_roles: List[str], job_title: str) -> int:
+    """Classify title intent without changing the target-role score.
+
+    A preferred technology in the title is a specific match (2); a title that
+    only shares the role family is broad (1); a role-family title explicitly
+    qualified by another technology is a different-technology match (0).
+    """
+    title_tokens = _phrase_set(job_title)
+    best = 0
+    for role in target_roles:
+        role_tokens = _role_tokens(role)
+        target_technologies = role_tokens & _ROLE_TECHNOLOGY_TOKENS
+        broad_tokens = role_tokens & _BROAD_ROLE_TOKENS
+        if target_technologies & title_tokens:
+            best = max(best, 2)
+        elif broad_tokens & title_tokens:
+            if (title_tokens & _ROLE_TECHNOLOGY_TOKENS) - target_technologies:
+                best = max(best, 0)
+            else:
+                best = max(best, 1)
+    return best
 
 
 def _skills_score(candidate_skills: List[str], job_text: str) -> float:
@@ -946,7 +987,11 @@ async def refresh_candidate_job_matches(
     # final-score ordering.
     if target_matches_available:
         scored.sort(
-            key=lambda item: (item[2].get("target_role_score", 0.0), item[1]),
+            key=lambda item: (
+                _target_role_specificity(signals["target_roles"], job_details[item[0]]["title"]),
+                item[2].get("target_role_score", 0.0),
+                item[1],
+            ),
             reverse=True,
         )
     else:

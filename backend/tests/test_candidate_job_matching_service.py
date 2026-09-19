@@ -383,6 +383,57 @@ def test_explicit_target_role_priority_beats_higher_python_match_score(monkeypat
     assert state["inserted"] == ["java-job", "python-job"]
     assert state["match_scores"] == {"java-job": java_score, "python-job": python_score}
 
+
+def test_specific_java_target_outranks_python_backend_without_changing_final_scores(monkeypatch):
+    """Technology-specific intent breaks the broad-role tie only at selection time."""
+    state = {"jobs": {
+        "java-job": {
+            "title": "Java Developer",
+            "description": "Build services using Java.",
+            "skills": ["Java"],
+        },
+        "python-job": {
+            "title": "Python Backend Developer",
+            "description": "Build backend services using Python and Django.",
+            "skills": ["Python", "Django"],
+        },
+    }}
+    candidate = {
+        "skills": ["Java", "Python", "Django"],
+        "raw_data": {"preferred_roles": ["Java Backend Developer"]},
+    }
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java Backend Developer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(
+        matcher, "search_job_chunks", lambda vector, limit: [("python-job", .99), ("java-job", .80)],
+    )
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    signals = matcher._build_candidate_signals(candidate)
+    java_score, java_components = matcher._hybrid_score(
+        signals, "Java Developer", "Build services using Java.", "", ["Java"], .80,
+    )
+    python_score, python_components = matcher._hybrid_score(
+        signals, "Python Backend Developer", "Build backend services using Python and Django.", "", ["Python", "Django"], .99,
+    )
+
+    # The existing hybrid formula and displayed values are deliberately intact:
+    # both jobs retain the old 0.5 target-role score and Python's higher final.
+    assert java_components["target_role_score"] == python_components["target_role_score"] == .5
+    assert python_score > java_score
+    assert java_components["final_score"] == round(java_score, 4)
+    assert python_components["final_score"] == round(python_score, 4)
+
+    # Specific technology > broad role > explicitly different technology.
+    assert matcher._target_role_specificity(signals["target_roles"], "Java Developer") == 2
+    assert matcher._target_role_specificity(signals["target_roles"], "Backend Developer") == 1
+    assert matcher._target_role_specificity(signals["target_roles"], "Python Backend Developer") == 0
+
+    asyncio.run(matcher.refresh_candidate_job_matches("candidate", candidate, FakeSessionFactory(state)))
+
+    assert state["inserted"] == ["java-job", "python-job"]
+    assert state["match_scores"] == {"java-job": java_score, "python-job": python_score}
+
 def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeypatch):
     """A refresh result is not a candidate's explicit Not-for-me action."""
     state = {
