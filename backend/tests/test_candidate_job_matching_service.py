@@ -83,6 +83,7 @@ class FakeSession:
 
         if "INSERT INTO candidate_job_recommendations" in query:
             self.state.setdefault("inserted", []).append(params["jid"])
+            self.state.setdefault("match_scores", {})[params["jid"]] = params["score"]
             self.state.setdefault("match_reasons", {})[params["jid"]] = params["match_reason"]
             return FakeResult([])
 
@@ -333,6 +334,54 @@ def test_preferred_role_retrieval_adds_java_job_for_python_candidate(monkeypatch
         "Target job roles:\nJava Backend Developer",
     ]
     assert state["inserted"] == ["java-job"]
+
+
+def test_explicit_target_role_priority_beats_higher_python_match_score(monkeypatch):
+    """Selection prioritizes target-role score without changing displayed match scores."""
+    state = {"jobs": {
+        "python-job": {
+            "title": "Python Developer",
+            "description": "Build Python and Django services with team collaboration.",
+            "skills": ["Python", "Django"],
+        },
+        "java-job": {
+            "title": "Java Backend Developer",
+            "description": "Build backend APIs with Java.",
+            "skills": ["Java"],
+        },
+    }}
+    candidate = {
+        "current_role": "Python Developer",
+        "skills": ["Python", "Django"],
+        # Team Lead intentionally causes a weak incidental role score for the
+        # Python description, mirroring generic job-description wording.
+        "raw_data": {"preferred_roles": ["Java Backend Developer", "Team Lead", "relocate"]},
+    }
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Python Developer Python Django")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.2] if text.startswith("Target job roles:") else [0.1])
+    monkeypatch.setattr(
+        matcher,
+        "search_job_chunks",
+        lambda vector, limit: [("java-job", 0.80)] if vector == [0.2] else [("python-job", 0.99), ("java-job", 0.80)],
+    )
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    signals = matcher._build_candidate_signals(candidate)
+    assert signals["target_roles"] == ["Java Backend Developer", "Team Lead"]
+    python_score, _ = matcher._hybrid_score(
+        signals, "Python Developer", "Build Python and Django services with team collaboration.", "", ["Python", "Django"], .99,
+    )
+    java_score, _ = matcher._hybrid_score(
+        signals, "Java Backend Developer", "Build backend APIs with Java.", "", ["Java"], .80,
+    )
+    assert python_score > java_score
+
+    asyncio.run(matcher.refresh_candidate_job_matches("candidate", candidate, FakeSessionFactory(state)))
+
+    # Java is selected first based on its stronger existing target-role score,
+    # while each persisted/displayed match score remains the formula output.
+    assert state["inserted"] == ["java-job", "python-job"]
+    assert state["match_scores"] == {"java-job": java_score, "python-job": python_score}
 
 def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeypatch):
     """A refresh result is not a candidate's explicit Not-for-me action."""

@@ -174,6 +174,20 @@ _GENERIC_ROLE_WORDS = {
     "director", "officer", "head", "expert", "professional",
 }
 
+# These preference values describe availability or work constraints, not a
+# job family.  They must never create a target-role match or retrieval query.
+_NON_ROLE_PREFERENCE_VALUES = {
+    "relocate",
+    "relocation",
+    "willing to relocate",
+    "open to relocate",
+    "remote",
+    "remote only",
+    "hybrid",
+    "onsite",
+    "on site",
+}
+
 
 def _role_tokens(role: str) -> set:
     """Return meaningful (non-generic) whole tokens from a role string."""
@@ -461,7 +475,9 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         preferred_roles = [preferred_roles]
     current_role = (candidate.get("current_role") or "").strip()
     target_roles = list(dict.fromkeys(
-        str(role).strip() for role in preferred_roles if str(role).strip()
+        str(role).strip()
+        for role in preferred_roles
+        if str(role).strip() and _normalize(str(role)) not in _NON_ROLE_PREFERENCE_VALUES
     ))
     # A broad role saved alongside a more specific role is useful profile
     # context, but it must not dilute the candidate's explicit direction.
@@ -479,7 +495,8 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
             if other_index != index
         )
     ]
-    # Only use current role as a direction fallback when no preference was saved.
+    explicit_target_roles = list(target_roles)
+    # Only use current role as a direction fallback when no role preference was saved.
     if not target_roles and current_role:
         target_roles = [current_role]
 
@@ -515,7 +532,7 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "target_roles": target_roles,
-        "has_explicit_target_roles": bool(target_roles and preferred_roles),
+        "has_explicit_target_roles": bool(explicit_target_roles),
         "skills": skills,
         "past_roles": past_roles,
     }
@@ -912,6 +929,7 @@ async def refresh_candidate_job_matches(
     # but a current-role/skill match cannot displace an available target-role
     # match. Fall back to the broader eligible set only if Qdrant returned no
     # target-role matches.
+    target_matches_available = False
     if signals["has_explicit_target_roles"]:
         intent_scored = [
             item for item in scored
@@ -919,8 +937,20 @@ async def refresh_candidate_job_matches(
         ]
         if intent_scored:
             scored = intent_scored
+            target_matches_available = True
 
-    scored.sort(key=lambda x: x[1], reverse=True)
+    # Selection priority is deliberately separate from the match score shown
+    # to candidates.  When explicit target-role matches exist, choose the
+    # strongest target-role matches first, then retain the unchanged hybrid
+    # score as the tie-breaker.  Without explicit intent, preserve the legacy
+    # final-score ordering.
+    if target_matches_available:
+        scored.sort(
+            key=lambda item: (item[2].get("target_role_score", 0.0), item[1]),
+            reverse=True,
+        )
+    else:
+        scored.sort(key=lambda item: item[1], reverse=True)
     ranked_jobs = scored[:MAX_RECOMMENDATIONS]
     logger.info(
         "[matching] candidate=%s passing_eligibility=%d rejected_experience=%d "
