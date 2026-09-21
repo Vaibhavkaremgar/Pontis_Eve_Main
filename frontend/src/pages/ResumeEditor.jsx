@@ -54,6 +54,16 @@ export default function ResumeEditor() {
     try {
       const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: resume });
       setResult(data);
+      // The API re-reads candidates.skills after saving and returns that
+      // canonical profile. Keep the document in sync with it so a combined
+      // value entered here is immediately rendered as individual skills.
+      const canonicalSkills = data?.profile?.keySkills ?? data?.profile?.skills;
+      if (Array.isArray(canonicalSkills)) {
+        setResume((old) => ({ ...old, skills: canonicalSkills }));
+      }
+      if (Array.isArray(data?.remaining_missing_skills)) {
+        setGuidance((old) => old ? { ...old, missing_skills: data.remaining_missing_skills } : old);
+      }
       // The editor is opened in its own tab. Notify the dashboard tab to
       // discard its cached profile and load the persisted canonical payload.
       if (window.opener && data.profile) {

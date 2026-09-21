@@ -6087,7 +6087,9 @@ _CONCATENATED_SKILL_ALIASES = (
     ("React.js", "React.js"), ("React JS", "React.js"), ("Node.js", "Node.js"), ("Node JS", "Node.js"),
     ("TypeScript", "TypeScript"), ("JavaScript", "JavaScript"), ("PostgreSQL", "PostgreSQL"), ("MongoDB", "MongoDB"),
     ("Kubernetes", "Kubernetes"), ("FastAPI", "FastAPI"), ("Spring Boot", "Spring Boot"), ("REST APIs", "REST APIs"),
-    ("GraphQL", "GraphQL"), ("Next.js", "Next.js"), ("HTML5", "HTML5"), ("Docker", "Docker"),
+    ("GraphQL", "GraphQL"), ("Next.js", "Next.js"), ("HTML5", "HTML5"),
+    ("Express.js", "Express.js"), ("ExpressJS", "Express.js"), ("Flask", "Flask"), ("CSS3", "CSS3"),
+    ("Docker", "Docker"),
     ("Angular", "Angular"), ("Vue.js", "Vue.js"), ("Python", "Python"), ("Java", "Java"),
     ("SQL", "SQL"), ("C++", "C++"), ("C#", "C#"), ("AWS", "AWS"), ("Azure", "Azure"),
 )
@@ -6133,6 +6135,9 @@ def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
         cleaned = _normalize_profile_text(item)
         if not cleaned:
             continue
+        # Apply the same canonical aliases to individually supplied values as
+        # to values split from a legacy concatenated string.
+        cleaned = _CONCATENATED_SKILL_CANONICAL.get(cleaned.casefold(), cleaned)
 
         key = _normalize_profile_key(cleaned)
         if key in seen:

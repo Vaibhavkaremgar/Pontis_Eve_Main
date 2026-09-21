@@ -32,6 +32,42 @@ describe("ResumeEditor profile refresh", () => {
     await act(async () => { root.unmount(); });
   });
 
+  it("renders the reported normalized skills as four separate bullet-delimited values", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const canonicalSkills = ["HTML5", "Express.js", "Flask", "CSS3"];
+    axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: canonicalSkills }, match_score: 50, missing_skills: [] } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="resume-skills"]').textContent).toBe(canonicalSkills.join(" \u2022 "));
+    await act(async () => { root.unmount(); });
+  });
+
+  it("renders canonical separate skills after saving one newly entered value", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const canonicalSkills = ["HTML5", "Express.js", "Flask", "CSS3"];
+    axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: [] }, match_score: 50, missing_skills: canonicalSkills } });
+    axios.post.mockResolvedValue({ data: { match_score: 60, profile: { candidate_id: "candidate-1", keySkills: canonicalSkills }, remaining_missing_skills: [] } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    const skills = container.querySelector('[data-testid="resume-skills"]');
+    skills.textContent = "HTML5 Express.js FlaskCSS3";
+    // jsdom does not implement HTMLElement.innerText, which the
+    // contentEditable blur handler reads in browsers.
+    Object.defineProperty(skills, "innerText", { configurable: true, value: "HTML5 Express.js FlaskCSS3" });
+    await act(async () => { skills.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+    await act(async () => { container.querySelector("button").click(); });
+    expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      profile_updates: expect.objectContaining({ skills: ["HTML5 Express.js FlaskCSS3"] }),
+    }));
+    expect(skills.textContent).toBe(canonicalSkills.join(" \u2022 "));
+    expect(container.querySelectorAll("aside .mt-2.flex.flex-wrap.gap-2 span")).toHaveLength(0);
+    await act(async () => { root.unmount(); });
+  });
+
   it("notifies the dashboard to refetch the canonical profile after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });

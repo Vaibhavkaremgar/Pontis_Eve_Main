@@ -73,6 +73,21 @@ def test_skill_normalization_keeps_multi_word_skills_and_repairs_safe_legacy_con
     assert all("Node.jsFrontend" not in skill for skill in skills)
 
 
+def test_skill_normalization_splits_reported_separator_less_skills_and_deduplicates():
+    skills = server._normalize_skills([
+        "HTML5 Express.js FlaskCSS3",
+        "ExpressJS",
+        "CSS3",
+    ])
+
+    assert skills == ["HTML5", "Express.js", "Flask", "CSS3"]
+    assert server._job_missing_requirements(
+        ["HTML5", "Express.js", "Flask", "CSS3"],
+        "",
+        {"skills": skills},
+    )["missing_skills"] == []
+
+
 def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(monkeypatch):
     state = {}
     candidate = _candidate()
@@ -119,6 +134,46 @@ def test_resume_editor_save_never_persists_a_delimited_skill_as_one_item(monkeyp
     saved_skills = json.loads(state["params"]["skills"])
     assert all(skill in saved_skills for skill in ["React.js", "Node.js", "Frontend Development", "AI Applications"])
     assert all("React.js, Node.js" not in skill for skill in saved_skills)
+
+
+def test_resume_editor_save_canonicalizes_new_combined_skills_and_refreshes_gaps(monkeypatch):
+    """New editor input must be canonical before it reaches candidates.skills."""
+    state = {}
+
+    async def get_candidate(_candidate_id):
+        return _candidate()
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    # This models the one contentEditable value sent by Resume Editor, rather
+    # than repairing a pre-existing database row.
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {
+        "skills": ["HTML5 Express.js FlaskCSS3"],
+    }))
+
+    saved_skills = json.loads(state["params"]["skills"])
+    assert saved_skills[-4:] == ["HTML5", "Express.js", "Flask", "CSS3"]
+    assert all(skill != "HTML5 Express.js FlaskCSS3" for skill in saved_skills)
+    assert server._job_missing_requirements(
+        ["HTML5", "Express.js", "Flask", "CSS3"], "", {"skills": saved_skills}
+    )["missing_skills"] == []
+
+
+def test_new_skill_input_supports_all_editor_separators_without_splitting_phrases():
+    assert server._normalize_skills(["HTML5", "Express.js", "Flask", "CSS3"]) == [
+        "HTML5", "Express.js", "Flask", "CSS3",
+    ]
+    assert server._normalize_skills([
+        "HTML5, Express.js; Flask\n• CSS3|HTML5",
+        "Google Cloud Platform",
+        "Frontend Development",
+        "Object-Oriented Programming",
+        "Problem Solving",
+    ]) == [
+        "HTML5", "Express.js", "Flask", "CSS3", "Google Cloud Platform",
+        "Frontend Development", "Object-Oriented Programming", "Problem Solving",
+    ]
 
 
 def test_resume_editor_save_repairs_the_reported_legacy_concatenated_skills(monkeypatch):
