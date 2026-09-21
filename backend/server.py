@@ -106,7 +106,7 @@ class CandidateHelpRequest(BaseModel):
 
 
 class JobMatchImprovementRequest(BaseModel):
-    """Candidate-confirmed canonical profile edits for one recommendation."""
+    """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -7581,6 +7581,85 @@ async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict
     return dict(row)
 
 
+def _resume_editor_payload(candidate: dict) -> dict:
+    """The editable representation of the candidate's uploaded resume.
+
+    parsed_resume_json is the persisted parse of the uploaded file.  The
+    canonical columns are used as fallbacks for older resumes that predate a
+    particular parser field, so this endpoint never invents a second profile.
+    """
+    parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    def value(resume_key: str, candidate_key: str, default=""):
+        return parsed.get(resume_key) if parsed.get(resume_key) not in (None, "") else candidate.get(candidate_key, default)
+    return {
+        "name": value("name", "name"), "email": value("email", "email"),
+        "phone": value("phone", "phone"), "location": value("location", "location"),
+        "headline": value("headline", "current_role"),
+        "bio": value("bio", "summary") or value("summary", "summary"),
+        "skills": parsed.get("skills") if isinstance(parsed.get("skills"), list) else (candidate.get("skills") or []),
+        "work_experience": parsed.get("work_experience") if isinstance(parsed.get("work_experience"), list) else (candidate.get("work_experience") or []),
+        "education": parsed.get("education") if isinstance(parsed.get("education"), list) else (candidate.get("education") or []),
+        "certifications": parsed.get("certifications") if isinstance(parsed.get("certifications"), list) else (raw.get("certifications") or []),
+        "projects": parsed.get("projects") if isinstance(parsed.get("projects"), list) else (raw.get("projects") or []),
+        "experience_years": value("experience_years", "experience_years", None),
+    }
+
+
+async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
+    """Synchronize one edited resume into the canonical Eve profile.
+
+    Unlike conversational profile updates, the editor submits complete resume
+    sections; list fields are therefore replaced (allowing deliberate removal)
+    instead of merged.  The same values are persisted to parsed_resume_json.
+    """
+    if not isinstance(updates, dict):
+        return {"updated": False, "changed": []}
+    candidate = await _get_candidate_row(candidate_id)
+    editable = {"name", "email", "phone", "location", "headline", "bio", "skills", "work_experience", "education", "certifications", "projects", "experience_years"}
+    supplied = {key: value for key, value in updates.items() if key in editable}
+    if not supplied:
+        raise HTTPException(status_code=422, detail="No resume changes were provided.")
+    parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    next_values = _resume_editor_payload(candidate)
+    next_values.update(supplied)
+    for field in ("name", "email", "phone", "location", "headline", "bio"):
+        next_values[field] = str(next_values.get(field) or "").strip()
+    for field in ("skills", "work_experience", "education", "certifications", "projects"):
+        if not isinstance(next_values.get(field), list):
+            raise HTTPException(status_code=422, detail=f"{field} must be a list.")
+    next_values["skills"] = _normalize_skills(next_values["skills"], certifications=next_values["certifications"])
+    next_values["certifications"] = _normalize_certifications(next_values["certifications"])
+    next_values["projects"] = _normalize_projects(next_values["projects"])
+    try:
+        next_values["experience_years"] = float(next_values["experience_years"]) if next_values["experience_years"] not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="experience_years must be numeric.")
+    parsed.update({
+        "name": next_values["name"], "email": next_values["email"], "phone": next_values["phone"],
+        "location": next_values["location"], "headline": next_values["headline"], "current_role": next_values["headline"],
+        "bio": next_values["bio"], "summary": next_values["bio"], "skills": next_values["skills"],
+        "work_experience": next_values["work_experience"], "education": next_values["education"],
+        "certifications": next_values["certifications"], "projects": next_values["projects"],
+        "experience_years": next_values["experience_years"],
+    })
+    raw["certifications"] = next_values["certifications"]
+    raw["projects"] = next_values["projects"]
+    changed = [key for key in supplied if next_values.get(key) != _resume_editor_payload(candidate).get(key)]
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            UPDATE candidates SET name=:name, email=:email, phone=:phone, location=:location,
+              "current_role"=:headline, summary=:bio, skills=CAST(:skills AS json),
+              work_experience=CAST(:work_experience AS json), education=CAST(:education AS json),
+              experience_years=:experience_years, raw_data=CAST(:raw_data AS jsonb),
+              parsed_resume_json=CAST(:parsed_resume_json AS jsonb), updated_at=now(), updated_by_source='resume_editor'
+            WHERE id=:cid
+        """), {**next_values, "skills": json.dumps(next_values["skills"]), "work_experience": json.dumps(next_values["work_experience"]), "education": json.dumps(next_values["education"]), "raw_data": json.dumps(raw), "parsed_resume_json": json.dumps(parsed), "cid": candidate_id})
+        await db.commit()
+    return {"updated": bool(changed), "changed": changed}
+
+
 @api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
 async def get_job_match_improvement(candidate_id: str, rec_id: str):
     """Return only the selected job's gaps, scoped to an existing recommendation."""
@@ -7588,6 +7667,7 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
     row = await _get_job_match_improvement_row(candidate_id, rec_id)
     return {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
+        "resume": _resume_editor_payload(candidate),
         **_job_missing_requirements(row["skills"], row["requirements"], candidate, row["experience_required"]),
     }
 
@@ -7599,16 +7679,10 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
-    # Use the same canonical update path as Eve/chat. Job requirements are
-    # guidance only; they never become profile claims without candidate input.
-    profile_updates = _sanitize_profile_updates(request.profile_updates)
-    if not profile_updates:
-        raise HTTPException(status_code=422, detail="Add or confirm profile information before saving.")
-    confirmed_skills = [
-        skill.strip() for skill in profile_updates.get("skills", [])
-        if isinstance(skill, str) and skill.strip()
-    ]
-    update_result = await _apply_profile_updates(candidate_id, profile_updates)
+    # Save the complete, candidate-edited uploaded-resume representation into
+    # both its parsed snapshot and the canonical candidate profile.
+    profile_updates = request.profile_updates
+    update_result = await _save_resume_editor_updates(candidate_id, profile_updates)
     candidate = await _get_candidate_row(candidate_id)
     try:
         from candidate_job_matching_service import refresh_candidate_job_match
@@ -7623,7 +7697,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         """), {"rid": rec_id, "cid": candidate_id})
         score = result.scalar()
     current_skills = {str(skill).strip().lower() for skill in (before.get("skills") or []) if str(skill).strip()}
-    changed_skills = [skill for skill in confirmed_skills if skill.lower() not in current_skills]
+    changed_skills = [str(skill) for skill in (candidate.get("skills") or []) if str(skill).strip().lower() not in current_skills]
     remaining = _job_missing_requirements(
         # Re-use the selected job's guidance rather than creating a new job or
         # substituting a recommendation from a fresh retrieval.
@@ -7637,6 +7711,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "previous_match_score": previous_score,
         "match_score": float(score) if score is not None else None,
         "changed_skills": changed_skills,
+        "changes_applied": update_result.get("changed", []),
         "remaining_missing_skills": remaining["missing_skills"],
         "remaining_requirements": remaining["requirements"],
         "experience_requirement": remaining["experience_requirement"],
