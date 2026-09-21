@@ -7597,7 +7597,10 @@ def _resume_editor_payload(candidate: dict) -> dict:
         "phone": value("phone", "phone"), "location": value("location", "location"),
         "headline": value("headline", "current_role"),
         "bio": value("bio", "summary") or value("summary", "summary"),
-        "skills": parsed.get("skills") if isinstance(parsed.get("skills"), list) else (candidate.get("skills") or []),
+        # Skills have historically been enriched after the resume was parsed
+        # (chat, voice intake, etc.).  The editable document must therefore
+        # start with the union, not let an old parse hide canonical skills.
+        "skills": _merge_skills(candidate.get("skills") or [], parsed.get("skills") or []),
         "work_experience": parsed.get("work_experience") if isinstance(parsed.get("work_experience"), list) else (candidate.get("work_experience") or []),
         "education": parsed.get("education") if isinstance(parsed.get("education"), list) else (candidate.get("education") or []),
         "certifications": parsed.get("certifications") if isinstance(parsed.get("certifications"), list) else (raw.get("certifications") or []),
@@ -7609,9 +7612,9 @@ def _resume_editor_payload(candidate: dict) -> dict:
 async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     """Synchronize one edited resume into the canonical Eve profile.
 
-    Unlike conversational profile updates, the editor submits complete resume
-    sections; list fields are therefore replaced (allowing deliberate removal)
-    instead of merged.  The same values are persisted to parsed_resume_json.
+    The same values are persisted to parsed_resume_json. Skills are merged
+    with the canonical list so an older parsed-resume snapshot cannot erase
+    skills added elsewhere in the Eve profile.
     """
     if not isinstance(updates, dict):
         return {"updated": False, "changed": []}
@@ -7629,7 +7632,11 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     for field in ("skills", "work_experience", "education", "certifications", "projects"):
         if not isinstance(next_values.get(field), list):
             raise HTTPException(status_code=422, detail=f"{field} must be a list.")
-    next_values["skills"] = _normalize_skills(next_values["skills"], certifications=next_values["certifications"])
+    next_values["skills"] = _merge_skills(
+        candidate.get("skills") or [],
+        next_values["skills"],
+        certifications=next_values["certifications"],
+    )
     next_values["certifications"] = _normalize_certifications(next_values["certifications"])
     next_values["projects"] = _normalize_projects(next_values["projects"])
     try:
@@ -7665,6 +7672,9 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
     """Return only the selected job's gaps, scoped to an existing recommendation."""
     candidate = await _get_candidate_row(candidate_id)
     row = await _get_job_match_improvement_row(candidate_id, rec_id)
+    # Return the canonical payload used by GET /profile so callers can refresh
+    # their profile without trusting their local editor snapshot.
+    profile = await _get_candidate_profile_payload(candidate_id)
     return {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
         "resume": _resume_editor_payload(candidate),
@@ -7716,6 +7726,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "remaining_missing_skills": remaining["missing_skills"],
         "remaining_requirements": remaining["requirements"],
         "experience_requirement": remaining["experience_requirement"],
+        "profile": profile,
         "resume_download_url": f"/api/candidate/{candidate_id}/profile/download",
     }
 

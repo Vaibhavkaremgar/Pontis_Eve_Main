@@ -54,6 +54,11 @@ export default function ResumeEditor() {
     try {
       const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: resume });
       setResult(data);
+      // The editor is opened in its own tab. Notify the dashboard tab to
+      // discard its cached profile and load the persisted canonical payload.
+      if (window.opener && data.profile) {
+        window.opener.postMessage({ type: "eve:candidate-profile-updated", candidateId, profile: data.profile }, window.location.origin);
+      }
     } catch (e) { setError(e?.response?.data?.detail || "Could not save your resume."); }
     finally { setSaving(false); }
   };

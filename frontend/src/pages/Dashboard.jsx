@@ -313,6 +313,18 @@ function Dashboard() {
     }
   }, [candidateId]);
 
+  React.useEffect(() => {
+    const onProfileUpdated = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "eve:candidate-profile-updated" || event.data.candidateId !== candidateId) return;
+      // Always refetch: the server remains the source of truth and may have
+      // applied normalization beyond the response snapshot.
+      refreshProfile();
+    };
+    window.addEventListener("message", onProfileUpdated);
+    return () => window.removeEventListener("message", onProfileUpdated);
+  }, [candidateId, refreshProfile]);
+
   const handlePhotoChange = React.useCallback((url) => {
     setUserProfile((prev) => ({ ...prev, avatar: url }));
     refreshProfile();
