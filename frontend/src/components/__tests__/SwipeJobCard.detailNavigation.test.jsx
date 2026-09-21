@@ -112,6 +112,36 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(card.querySelector('[data-testid="track-job-1"]')).toBeTruthy();
   });
 
+  it("uses the final 33% recommendation score after a Resume Editor save for both the card and Apply Now gauge", async () => {
+    const job = {
+      id: "job-1", title: "Senior Product Manager", company: "Acme",
+      description: "Lead product strategy.", match_score: 0.31,
+      job_url: "https://acme.example/jobs/1",
+    };
+    renderResult = renderDeck({ jobs: [job] });
+    expect(renderResult.container.querySelector('[data-testid="match-score-job-1"]').textContent).toContain("31%");
+
+    const refreshedJob = { ...job, match_score: 0.33 };
+    await act(async () => {
+      renderResult.root.render(
+        <SwipeJobDeck
+          jobs={[refreshedJob]}
+          candidateId="cand-123"
+          onJobsChange={jest.fn()}
+          onDismissJob={jest.fn()}
+        />
+      );
+    });
+    expect(renderResult.container.querySelector('[data-testid="match-score-job-1"]').textContent).toContain("33%");
+
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.33, missing_skills: [] } });
+    await act(async () => {
+      renderResult.container.querySelector('[data-testid="apply-job-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(renderResult.container.querySelector('[data-testid="match-score-gauge-value"]').textContent).toBe("33%");
+  });
+
   it("opens details from the card but not from a card action", () => {
     renderResult = renderDeck();
     act(() => {

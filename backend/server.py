@@ -57,7 +57,10 @@ openai_client = GroqClientPool(base_url="https://api.groq.com/openai/v1")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-DOCS_DIR = Path(os.environ.get("EVE_DOCS_DIR", "/tmp/eve_docs"))
+# Deployments should set EVE_DOCS_DIR to a mounted/persistent document volume.
+# Keep the development default outside the OS temporary directory as well: the
+# database stores references to files in this directory for later viewing.
+DOCS_DIR = Path(os.environ.get("EVE_DOCS_DIR", str(ROOT_DIR / "data" / "documents")))
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024
 ALLOWED_PROFILE_PHOTO_CONTENT_TYPES = {
@@ -3610,19 +3613,24 @@ async def get_candidate_documents(candidate_id: str):
 
 @api_router.get("/candidate/{candidate_id}/resume/view")
 async def view_resume(candidate_id: str, download: bool = False):
-    await _get_candidate_row(candidate_id)
+    candidate = await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
-            text("SELECT source_filename, source_path FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
+            # source_filename remains the document-list display metadata.  The
+            # candidate row is authoritative for the persisted upload location;
+            # internal_candidate_resumes.source_path can contain an obsolete
+            # parser/local path from earlier uploads.
+            text("SELECT source_filename FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
             {"cid": candidate_id},
         )
         result = row.fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="No resume found.")
-    filename, source_path = result[0], result[1]
-    file_path = Path(source_path) if source_path else None
+    filename = result[0]
+    persisted_path = candidate.get("resume_file_path")
+    file_path = Path(persisted_path) if persisted_path else None
     if not file_path or not file_path.exists():
-        raise HTTPException(status_code=404, detail="Resume file not available.")
+        raise HTTPException(status_code=404, detail="Resume file not found.")
     disposition = "attachment" if download else "inline"
     return FileResponse(
         str(file_path), media_type="application/pdf", filename=filename,

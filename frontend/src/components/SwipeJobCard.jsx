@@ -71,8 +71,8 @@ function normalizeSkills(skills) {
 }
 
 function MatchBadge({ score }) {
-  if (score == null) return null;
-  const pct = Math.round(score * (score <= 1 ? 100 : 1));
+  const pct = scorePercent(score);
+  if (pct == null) return null;
   return (
     <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2.5 py-1 shrink-0">
       {pct}% match
@@ -279,9 +279,7 @@ function UpdatedResumeModal({ job, result, onDownload, onApply, onClose }) {
 
 export function JobDetailModal({ job, onClose, onApply, onNotInterested, applying }) {
   const skills = normalizeSkills(job.skills);
-  const matchPct = job.match_score != null
-    ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
-    : null;
+  const matchPct = scorePercent(job.match_score);
 
   const MATCH_REASON_LABELS = {
     hybrid_match: "Your skills and experience are a strong fit for this role.",
@@ -449,9 +447,7 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
     }
   };
 
-  const matchPct = job.match_score != null
-    ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
-    : null;
+  const matchPct = scorePercent(job.match_score);
 
   const skills = normalizeSkills(job.skills).slice(0, 4);
   const bullets = extractBullets(job);
@@ -550,7 +546,7 @@ function SwipeCard({ job, onSwipeLeft, onSwipeRight, onViewDetail }) {
 // ─── Deck ────────────────────────────────────────────────────────────────────
 
 function HorizontalJobCard({ job, onOpenDetails, onNotInterested, onApply, onTrack }) {
-  const matchPct = job.match_score != null ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1)) : null;
+  const matchPct = scorePercent(job.match_score);
   const skills = normalizeSkills(job.skills).slice(0, 4);
   const description = cleanText(job.description || job.responsibilities || job.requirements);
 

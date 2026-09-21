@@ -313,18 +313,6 @@ function Dashboard() {
     }
   }, [candidateId]);
 
-  React.useEffect(() => {
-    const onProfileUpdated = (event) => {
-      if (event.origin !== window.location.origin) return;
-      if (event.data?.type !== "eve:candidate-profile-updated" || event.data.candidateId !== candidateId) return;
-      // Always refetch: the server remains the source of truth and may have
-      // applied normalization beyond the response snapshot.
-      refreshProfile();
-    };
-    window.addEventListener("message", onProfileUpdated);
-    return () => window.removeEventListener("message", onProfileUpdated);
-  }, [candidateId, refreshProfile]);
-
   const handlePhotoChange = React.useCallback((url) => {
     setUserProfile((prev) => ({ ...prev, avatar: url }));
     refreshProfile();
@@ -453,6 +441,20 @@ function Dashboard() {
         setJobsLoading(false);
       });
   }, [candidateId, hasJobsAccess]);
+
+  React.useEffect(() => {
+    const onProfileUpdated = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "eve:candidate-profile-updated" || event.data.candidateId !== candidateId) return;
+      // Resume Editor persists and re-scores the selected recommendation.
+      // Reload both resources so the card and Apply Now gauge use that final
+      // backend score, rather than any prior score or calculated delta.
+      refreshProfile();
+      fetchJobs();
+    };
+    window.addEventListener("message", onProfileUpdated);
+    return () => window.removeEventListener("message", onProfileUpdated);
+  }, [candidateId, fetchJobs, refreshProfile]);
 
   React.useEffect(() => {
     fetchJobs();
