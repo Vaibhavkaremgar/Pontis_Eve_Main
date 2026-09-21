@@ -60,6 +60,19 @@ def test_resume_editor_payload_unions_canonical_and_parsed_skills():
     ]
 
 
+def test_skill_normalization_keeps_multi_word_skills_and_repairs_safe_legacy_concatenation():
+    skills = server._normalize_skills([
+        "React.js Node.jsFrontend DevelopmentAI Applications",
+        "Google Cloud Platform; Object-Oriented Programming\nReact.js",
+    ])
+
+    assert skills == [
+        "React.js", "Node.js", "Frontend Development", "AI Applications",
+        "Google Cloud Platform", "Object-Oriented Programming",
+    ]
+    assert all("Node.jsFrontend" not in skill for skill in skills)
+
+
 def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(monkeypatch):
     state = {}
     candidate = _candidate()
@@ -88,6 +101,24 @@ def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(mon
     # The selected-job matcher/gap calculation receives the same canonical row.
     gaps = server._job_missing_requirements(["Java", "Spring Boot"], "", {"skills": saved_skills})
     assert gaps["missing_skills"] == []
+
+
+def test_resume_editor_save_never_persists_a_delimited_skill_as_one_item(monkeypatch):
+    state = {}
+
+    async def get_candidate(_candidate_id):
+        return _candidate()
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {
+        "skills": ["React.js, Node.js; Frontend Development\nAI Applications"],
+    }))
+
+    saved_skills = json.loads(state["params"]["skills"])
+    assert all(skill in saved_skills for skill in ["React.js", "Node.js", "Frontend Development", "AI Applications"])
+    assert all("React.js, Node.js" not in skill for skill in saved_skills)
 
 
 def test_missing_skills_uses_normalized_canonical_profile_skills():

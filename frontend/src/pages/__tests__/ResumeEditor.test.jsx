@@ -9,6 +9,17 @@ jest.mock("react-router-dom", () => ({ useSearchParams: () => [new URLSearchPara
 const resume = { name: "Candidate", headline: "Engineer", skills: ["Python", "FastAPI"], work_experience: [], education: [], certifications: [], projects: [] };
 
 describe("ResumeEditor profile refresh", () => {
+  it("renders separate skills with bullet separators", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: ["React.js", "Node.js", "Frontend Development"] }, match_score: 50, missing_skills: [] } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="resume-skills"]').textContent).toBe("React.js • Node.js • Frontend Development");
+    await act(async () => { root.unmount(); });
+  });
+
   it("notifies the dashboard to refetch the canonical profile after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });

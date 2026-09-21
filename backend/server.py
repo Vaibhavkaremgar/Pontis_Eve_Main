@@ -6074,19 +6074,51 @@ def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
     return len(cert_relaxed.split()) >= 2
 
 
+_CONCATENATED_SKILL_NAMES = (
+    # Split separator-less legacy text only when every segment is a recognized skill.
+    "Google Cloud Platform", "Object-Oriented Programming", "Frontend Development",
+    "Backend Development", "Full Stack Development", "AI Applications",
+    "Machine Learning", "Deep Learning", "Data Analysis", "Data Science",
+    "Project Management", "Product Management", "Software Development",
+    "React Native", "React.js", "React JS", "Node.js", "Node JS",
+    "TypeScript", "JavaScript", "PostgreSQL", "MongoDB", "Kubernetes",
+    "Docker", "FastAPI", "Spring Boot", "REST APIs", "GraphQL", "Next.js",
+    "Angular", "Vue.js", "Python", "Java", "C++", "C#", "AWS", "Azure",
+)
+
+
+def _split_skill_value(value: Any) -> list[str]:
+    """Turn a skill value into individual skills without splitting phrases."""
+    if isinstance(value, dict):
+        value = value.get("name")
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [part for item in value for part in _split_skill_value(item)]
+    text_value = _normalize_profile_text(value)
+    if not text_value:
+        return []
+    # Slash is intentionally not a delimiter: it is meaningful in CI/CD.
+    pieces = [piece.strip() for piece in re.split(r"[,;|\n\r\u2022]+", text_value) if piece.strip()]
+    if len(pieces) != 1:
+        return [part for piece in pieces for part in _split_skill_value(piece)]
+    pattern = re.compile("|".join(re.escape(name) for name in sorted(_CONCATENATED_SKILL_NAMES, key=len, reverse=True)), re.IGNORECASE)
+    matches = list(pattern.finditer(text_value))
+    if len(matches) >= 2 and not pattern.sub("", text_value).strip():
+        return [match.group(0).strip() for match in matches]
+    return [text_value]
+
+
 def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
-    if not isinstance(skills, list):
+    if not isinstance(skills, (list, tuple, set, str, dict)):
         return []
 
     normalized_certs = _normalize_certifications(certifications or [])
     normalized: list[str] = []
     seen: set[str] = set()
 
-    for item in skills:
-        if isinstance(item, dict):
-            cleaned = _normalize_profile_text(item.get("name"))
-        else:
-            cleaned = _normalize_profile_text(item)
+    for item in _split_skill_value(skills):
+        cleaned = _normalize_profile_text(item)
         if not cleaned:
             continue
 
@@ -6107,9 +6139,9 @@ def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
     return normalized
 
 
-def _merge_skills(existing: list, new_items: list, certifications: Any = None) -> list[str]:
+def _merge_skills(existing: Any, new_items: Any, certifications: Any = None) -> list[str]:
     """Merge skill lists with case-insensitive and whitespace-normalized deduplication."""
-    return _normalize_skills([*(existing or []), *(new_items or [])], certifications=certifications)
+    return _normalize_skills([existing, new_items], certifications=certifications)
 
 
 _EXPERIENCE_TITLE_STOPWORDS = {
@@ -7568,7 +7600,7 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
 
     # candidates.skills is the canonical profile column and is updated by the
     # Resume Editor before this calculation is re-run.
-    current_skills = candidate.get("skills") or []
+    current_skills = _normalize_skills(candidate.get("skills") or [])
     known = {skill_key(skill_name(skill)) for skill in current_skills if skill_key(skill_name(skill))}
     missing_skills = []
     seen_job_skills = set()
