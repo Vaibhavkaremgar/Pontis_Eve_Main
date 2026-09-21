@@ -112,6 +112,13 @@ function Dashboard() {
     const rightPanelTab = (persisted && VALID_TABS.includes(persisted)) ? persisted : "profile";
     return rightPanelTab;
   });
+  // The sidebar and the center-view toggle are independent controls. Keep the
+  // panel selection explicit so changing one cannot leave content from the
+  // other visible in the right panel.
+  const [rightPanelTab, setRightPanelTab] = React.useState(() => {
+    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities"];
+    return VALID_TABS.includes(stored.activeTab) ? stored.activeTab : "profile";
+  });
 
   const setActiveTabPersisted = React.useCallback((tab) => {
     setActiveTab(tab);
@@ -157,14 +164,9 @@ function Dashboard() {
   const [voiceIntakeProfile, setVoiceIntakeProfile] = React.useState(null);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
   const hasJobsAccess = userProfile.strengthPercent >= 90;
-  // Recommendations live exclusively in the middle "Jobs for you" view. Keep
-  // the right panel available for profile, tracked jobs, and other utilities.
-  const rightPanelTab = hasJobsAccess && centerView === "swipe"
-    ? "profile"
-    : activeTab === "jobs" ? "profile" : activeTab;
-
   const handleSidebarTabChange = React.useCallback((tab) => {
     setActiveTabPersisted(tab);
+    setRightPanelTab(tab);
     if (tab === "jobs" && hasJobsAccess) {
       userChoseCenterViewRef.current = true;
       setCenterView("swipe");
@@ -270,12 +272,16 @@ function Dashboard() {
       !userChoseCenterViewRef.current
     ) {
       setCenterView(voiceIntakeCenterView);
+      // Jobs for You keeps matching jobs in the middle panel; Chat and Voice
+      // both use the candidate Profile as their supporting context.
+      setRightPanelTab("profile");
     }
   }, [hasJobsAccess, voiceIntakeCenterView]);
 
   React.useEffect(() => {
     if (!hasJobsAccess && centerView === "swipe") {
       setCenterView("chat");
+      setRightPanelTab("profile");
     }
   }, [centerView, hasJobsAccess]);
 
@@ -658,7 +664,7 @@ function Dashboard() {
       <div className="shrink-0 flex items-center justify-end px-5 py-2 border-b border-black/[0.05]">
         <button
           data-testid="header-bell-btn"
-          onClick={() => setActiveTabPersisted("opportunities")}
+          onClick={() => handleSidebarTabChange("opportunities")}
           className="relative p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
           aria-label="Notifications"
         >
@@ -749,6 +755,7 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
+                    setRightPanelTab("profile");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                     centerView === "swipe"
@@ -761,9 +768,10 @@ function Dashboard() {
               )}
               <button
                 data-testid="chat-tab"
-                onClick={() => {
-                  userChoseCenterViewRef.current = true;
-                  setCenterView("chat");
+                  onClick={() => {
+                    userChoseCenterViewRef.current = true;
+                    setCenterView("chat");
+                    setRightPanelTab("profile");
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "chat" || centerView === "voice"
@@ -851,6 +859,7 @@ function Dashboard() {
                 onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();
+                  setRightPanelTab("profile");
                   setVoiceIntakeProfile(fresh);
                   setCenterView("voice");
                 }}

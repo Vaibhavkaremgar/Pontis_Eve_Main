@@ -41,9 +41,12 @@ jest.mock("../../components/ChatHub", () => (props) => {
     </div>
   );
 });
-jest.mock("../../components/LivingProfile", () => (props) => {
-  lastLivingProfileProps = props;
-  return <div data-testid="living-profile" data-active-tab={props.activeTab} />;
+jest.mock("../../components/LivingProfile", () => {
+  const LivingProfile = (props) => {
+    lastLivingProfileProps = props;
+    return <div data-testid="living-profile" data-active-tab={props.activeTab} />;
+  };
+  return { __esModule: true, default: LivingProfile, JobsTab: () => <div data-testid="jobs-deck" /> };
 });
 jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
@@ -179,6 +182,18 @@ describe("Dashboard right-panel state restoration", () => {
     unmount();
   });
 
+  it("keeps Jobs for you matches in the middle panel and Profile in the right panel", async () => {
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
+    const { container, unmount } = renderDashboard();
+    await flush();
+    act(() => { container.querySelector('[data-testid="jobs-tab"]')?.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeTruthy();
+    expect(getRightPanelTab(container)).toBe("profile");
+    expect(lastLivingProfileProps.activeTab).not.toBe("jobs");
+    unmount();
+  });
+
   // 5. Tracked Jobs tab → right panel shows tracked
   it("Tracked Jobs sidebar tab → right panel shows tracked", async () => {
     setupAxios();
@@ -187,6 +202,17 @@ describe("Dashboard right-panel state restoration", () => {
     act(() => { container.querySelector('[data-testid="nav-tab-tracked"]').click(); });
     await flush();
     expect(getRightPanelTab(container)).toBe("tracked");
+    unmount();
+  });
+
+  it("replaces stale right-panel content when Profile is selected", async () => {
+    setupAxios();
+    const { container, unmount } = renderDashboard();
+    await flush();
+    act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
+    expect(getRightPanelTab(container)).toBe("documents");
+    act(() => { container.querySelector('[data-testid="nav-tab-profile"]').click(); });
+    expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });
 
@@ -212,41 +238,41 @@ describe("Dashboard right-panel state restoration", () => {
     unmount();
   });
 
-  // 8. Browser refresh restores persisted tab
-  it("browser refresh restores persisted tab (tracked) and shows correct right panel", async () => {
+  // 8. An auto-routed Chat view takes precedence over a persisted sidebar tab.
+  it("browser refresh routes a Chat center view to Profile", async () => {
     setupAxios();
     // Simulate a previous session that left the user on "tracked"
     saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "tracked" });
     const { container, unmount } = renderDashboard();
     await flush();
-    expect(getRightPanelTab(container)).toBe("tracked");
+    expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });
 
-  it("browser refresh restores persisted tab (documents) and shows correct right panel", async () => {
+  it("browser refresh routes a Chat center view to Profile instead of Documents", async () => {
     setupAxios();
     saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "documents" });
     const { container, unmount } = renderDashboard();
     await flush();
-    expect(getRightPanelTab(container)).toBe("documents");
+    expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });
 
-  it("browser refresh restores persisted tab (opportunities) and shows correct right panel", async () => {
+  it("browser refresh routes a Chat center view to Profile instead of Notifications", async () => {
     setupAxios();
     saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "opportunities" });
     const { container, unmount } = renderDashboard();
     await flush();
-    expect(getRightPanelTab(container)).toBe("opportunities");
+    expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });
 
-  it("browser refresh restores persisted tab (jobs) and shows correct right panel", async () => {
+  it("browser refresh routes a Chat center view to Profile instead of New Jobs", async () => {
     setupAxios();
     saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" });
     const { container, unmount } = renderDashboard();
     await flush();
-    expect(getRightPanelTab(container)).toBe("jobs");
+    expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });
 
