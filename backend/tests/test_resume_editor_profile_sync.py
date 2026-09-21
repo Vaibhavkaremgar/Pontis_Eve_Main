@@ -3,10 +3,22 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import server
+
+
+@pytest.fixture(autouse=True)
+def _use_test_updated_resume_directory(monkeypatch, tmp_path):
+    """Keep Resume Editor PDF artifacts out of the development document store."""
+    monkeypatch.setattr(
+        server, "_updated_resume_pdf_path",
+        lambda candidate_id: tmp_path / candidate_id / "updated_resume.pdf",
+    )
 
 
 class _Session:
@@ -141,6 +153,32 @@ def test_resume_editor_save_never_persists_a_delimited_skill_as_one_item(monkeyp
     saved_skills = json.loads(state["params"]["skills"])
     assert all(skill in saved_skills for skill in ["React.js", "Node.js", "Frontend Development", "AI Applications"])
     assert all("React.js, Node.js" not in skill for skill in saved_skills)
+
+
+def test_resume_editor_save_keeps_new_comma_separated_multi_word_skills_as_distinct_candidates_skills(monkeypatch):
+    """The save payload, DB column, parsed resume, and gap refresh share one array."""
+    state = {}
+
+    async def get_candidate(_candidate_id):
+        return _candidate()
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {
+        "skills": [
+            "OpenCV, Computer Vision, Responsive Web Development, Data Structures",
+            "opencv",
+        ],
+    }))
+
+    saved_skills = json.loads(state["params"]["skills"])
+    saved_parse = json.loads(state["params"]["parsed_resume_json"])
+    assert saved_skills == [
+        "OpenCV", "Computer Vision", "Responsive Web Development", "Data Structures",
+    ]
+    assert saved_parse["skills"] == saved_skills
+    assert server._job_missing_requirements(saved_skills, "", {"skills": saved_skills})["missing_skills"] == []
 
 
 def test_resume_editor_save_canonicalizes_new_combined_skills_and_refreshes_gaps(monkeypatch):
@@ -321,3 +359,39 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
     assert response["remaining_missing_skills"] == []
     assert state["refresh_calls"] == [("candidate-1", "rec-1", ["Python", "FastAPI", "PostgreSQL", "Rust"])]
     assert state["recommendation_ids"] == ["rec-1"]
+
+
+def test_updated_resume_download_serves_the_pdf_generated_by_resume_editor_save(monkeypatch):
+    state = {}
+    candidate = _candidate()
+
+    async def get_candidate(_candidate_id):
+        return candidate
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {"skills": ["Python", "FastAPI"]}))
+    saved_raw = json.loads(state["params"]["raw_data"])
+    candidate["raw_data"] = saved_raw
+    response = asyncio.run(server.download_updated_resume("candidate-1"))
+
+    assert response.path == saved_raw["updated_resume_file_path"]
+    assert Path(response.path).read_bytes().startswith(b"%PDF")
+    assert response.headers["content-type"] == "application/pdf"
+
+
+def test_updated_resume_download_returns_404_when_generated_pdf_is_missing(monkeypatch, tmp_path):
+    missing_path = tmp_path / "candidate-1" / "updated_resume.pdf"
+
+    async def get_candidate(_candidate_id):
+        return {"id": "candidate-1", "name": "Candidate", "raw_data": {"updated_resume_file_path": str(missing_path)}}
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "_updated_resume_pdf_path", lambda _candidate_id: missing_path)
+
+    with pytest.raises(server.HTTPException) as exc_info:
+        asyncio.run(server.download_updated_resume("candidate-1"))
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Updated resume PDF not found."

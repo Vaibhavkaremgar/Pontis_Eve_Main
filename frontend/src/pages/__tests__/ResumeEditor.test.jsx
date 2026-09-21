@@ -103,4 +103,30 @@ describe("ResumeEditor profile refresh", () => {
     await act(async () => { root.unmount(); });
     postMessage.mockRestore();
   });
+
+  it("downloads the persisted updated-resume endpoint without duplicating the API prefix", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
+    axios.post.mockResolvedValue({ data: {
+      match_score: 60,
+      profile: { candidate_id: "candidate-1", keySkills: ["Python", "FastAPI"] },
+      resume_download_url: "/candidate/candidate-1/resume/updated/download",
+    } });
+    const open = jest.spyOn(window, "open").mockImplementation(() => null);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { container.querySelector("button").click(); });
+    const downloadButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Download Updated Resume");
+    await act(async () => { downloadButton.click(); });
+    expect(open).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/candidate\/candidate-1\/resume\/updated\/download$/),
+      "_blank",
+      "noopener,noreferrer",
+    );
+    await act(async () => { root.unmount(); });
+    open.mockRestore();
+  });
 });
