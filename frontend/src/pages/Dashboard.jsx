@@ -6,8 +6,7 @@ import { Bell } from "lucide-react";
 
 import Sidebar from "../components/Sidebar";
 import ChatHub from "../components/ChatHub";
-import LivingProfile from "../components/LivingProfile";
-import SwipeJobDeck from "../components/SwipeJobCard";
+import LivingProfile, { JobsTab } from "../components/LivingProfile";
 import CandidateSettingsModal from "../components/CandidateSettingsModal";
 import { MOCK_RECENT_ACTIVITY } from "../mock";
 import { getDynamicChatSuggestions } from "../lib/chatSuggestions";
@@ -158,7 +157,19 @@ function Dashboard() {
   const [voiceIntakeProfile, setVoiceIntakeProfile] = React.useState(null);
   const [opportunitiesCount, setOpportunitiesCount] = React.useState(0);
   const hasJobsAccess = userProfile.strengthPercent >= 90;
-  const rightPanelTab = hasJobsAccess && centerView === "swipe" ? activeTab : "profile";
+  // Recommendations live exclusively in the middle "Jobs for you" view. Keep
+  // the right panel available for profile, tracked jobs, and other utilities.
+  const rightPanelTab = hasJobsAccess && centerView === "swipe"
+    ? "profile"
+    : activeTab === "jobs" ? "profile" : activeTab;
+
+  const handleSidebarTabChange = React.useCallback((tab) => {
+    setActiveTabPersisted(tab);
+    if (tab === "jobs" && hasJobsAccess) {
+      userChoseCenterViewRef.current = true;
+      setCenterView("swipe");
+    }
+  }, [hasJobsAccess, setActiveTabPersisted]);
 
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
@@ -582,7 +593,7 @@ function Dashboard() {
 
   const handleTrackJob = async (jobId) => {
     const job = availableJobs.find((j) => j.id === jobId);
-    if (!job || !candidateId) return;
+    if (!job || job.locked || !candidateId) return;
     const willTrack = !job.tracked;
     setAvailableJobs((prev) =>
       prev.map((j) => (j.id === jobId ? { ...j, tracked: willTrack } : j))
@@ -605,7 +616,7 @@ function Dashboard() {
 
   const handleDismissJob = async (jobId, reason = null) => {
     const job = availableJobs.find((j) => j.id === jobId);
-    if (!job || !candidateId) return;
+    if (!job || job.locked || !candidateId) return;
     setAvailableJobs((prev) => prev.filter((j) => j.id !== jobId));
     if (selectedJob?.id === jobId) {
       setSelectedJob(availableJobs.find((j) => j.id !== jobId) || null);
@@ -715,7 +726,7 @@ function Dashboard() {
         <Panel id="left-panel" order={1} defaultSize={18} minSize={12} maxSize={28} className="h-full">
           <Sidebar
             activeTab={activeTab}
-            setActiveTab={setActiveTabPersisted}
+            setActiveTab={handleSidebarTabChange}
             userProfile={userProfile}
             footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
             jobsCount={matchingJobsTotal}
@@ -810,13 +821,23 @@ function Dashboard() {
                   </button>
                 </div>
               ) : (
-              <SwipeJobDeck
-                  jobs={availableJobs}
-                  candidateId={candidateId}
-                  onJobsChange={fetchJobs}
-                  onDismissJob={handleDismissJob}
-                  onExhausted={() => fetchJobs(true)}
-                />
+                <div className="flex-1 overflow-y-auto eve-scroll px-4 py-5">
+                  <JobsTab
+                    jobs={availableJobs}
+                    matchingJobsTotal={matchingJobsTotal}
+                    onTrack={handleTrackJob}
+                    onDismiss={handleDismissJob}
+                    selectedJob={selectedJob}
+                    setSelectedJob={setSelectedJob}
+                    candidateId={candidateId}
+                    onJobViewed={(jobId) =>
+                      setAvailableJobs((prev) =>
+                        prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j))
+                      )
+                    }
+                    onLockedJobClick={() => setShowSubscriptionPopup(true)}
+                  />
+                </div>
               )
             ) : (
               <ChatHub
@@ -866,6 +887,7 @@ function Dashboard() {
                 prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j))
               )
             }
+            onLockedJobClick={() => setShowSubscriptionPopup(true)}
           />
         </Panel>
       </PanelGroup>
