@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2 } from "lucide-react";
+import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole } from "lucide-react";
 import { JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
@@ -527,7 +527,7 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
   );
 }
 
-function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed }) {
+export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed, onLockedJobClick }) {
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -609,18 +609,53 @@ function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, set
           </div>
         )}
 
-        <div className="space-y-2">
+        <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1 eve-scroll" data-testid="jobs-horizontal-list">
           {jobs.map((job) => {
+            if (job.locked) {
+              return (
+                <button
+                  key={job.id}
+                  type="button"
+                  data-testid={`locked-job-card-${job.id}`}
+                  aria-label="Locked job match. View plans to unlock."
+                  onClick={onLockedJobClick}
+                  className="relative h-[224px] w-[278px] shrink-0 overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
+                >
+                  <div className="pointer-events-none select-none p-4 blur-[7px]" aria-hidden="true">
+                    <div className="h-10 w-10 rounded-lg bg-[#E7E3F0]" />
+                    <div className="mt-3 h-3 w-36 rounded bg-black/[0.12]" />
+                    <div className="mt-2 h-3 w-24 rounded bg-black/[0.08]" />
+                    <div className="mt-7 h-3 w-full rounded bg-black/[0.07]" />
+                    <div className="mt-2 h-3 w-5/6 rounded bg-black/[0.07]" />
+                    <div className="mt-6 flex gap-2"><span className="h-8 w-24 rounded-full bg-black/[0.08]" /><span className="h-8 w-24 rounded-full bg-black/[0.08]" /></div>
+                  </div>
+                  <span className="absolute inset-0 flex flex-col items-center justify-center bg-white/25 text-center">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/95 text-[#62578F] shadow-sm"><LockKeyhole className="h-4 w-4" /></span>
+                    <span className="mt-2 text-[12px] font-semibold text-[#3E394E]">Unlock this match</span>
+                    <span className="mt-1 text-[11px] text-[#62578F]">View plans</span>
+                  </span>
+                </button>
+              );
+            }
             const isSelected = selectedJob?.id === job.id;
             const matchPct = job.match_score != null
               ? `${Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))}%`
               : null;
             return (
-              <button
+              <div
                 key={job.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => { setSelectedJob(job); openDetail(job); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedJob(job);
+                    openDetail(job);
+                  }
+                }}
                 data-testid={`job-card-${job.id}`}
-                className={`text-left w-full rounded-xl px-4 py-4 transition-colors eve-hover-row ${
+                className={`h-[224px] w-[278px] shrink-0 overflow-hidden text-left rounded-xl px-4 py-4 transition-colors eve-hover-row ${
                   isSelected ? "bg-black/[0.04]" : ""
                 }`}
               >
@@ -690,7 +725,7 @@ function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, set
                     )}
                   </button>
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -1432,6 +1467,7 @@ export default function LivingProfile({
   onCertDeleted,
   onInterested,
   onJobViewed,
+  onLockedJobClick,
   onPhotoChange,
   matchingJobsTotal = jobs.length,
 }) {
@@ -1513,6 +1549,7 @@ export default function LivingProfile({
               setSelectedJob={setSelectedJob}
               candidateId={candidateId}
               onJobViewed={onJobViewed}
+              onLockedJobClick={onLockedJobClick}
             />
           )}
           {activeTab === "tracked" && (

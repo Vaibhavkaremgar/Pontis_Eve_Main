@@ -79,10 +79,11 @@ class _JobsEndpointSession:
         if "INSERT INTO candidate_daily_job_access" in query:
             self.state["access"].add((params["cid"], params["rid"], params["access_date"]))
             return _EndpointResult()
+        if "SELECT recommendation_id" in query and "FROM candidate_daily_job_access" in query:
+            claimed = [rec_id for cid, rec_id, day in self.state["access"]
+                       if cid == params["cid"] and day == params["access_date"]]
+            return _EndpointResult([(rec_id,) for rec_id in claimed])
         if "cjr.id AS rec_id" in query:
-            today = params["access_date"]
-            claimed = {rec_id for cid, rec_id, day in self.state["access"]
-                       if cid == params["cid"] and day == today}
             rows = [
                 {"rec_id": rec_id, "job_id": f"job-{rec_id}", "match_score": 0.9,
                  "recommendation_rank": index, "match_reason": None, "tracked_at": None,
@@ -91,9 +92,9 @@ class _JobsEndpointSession:
                  "application_job_role": None, "title": f"Job {rec_id}",
                  "company_name": "Company", "location": "Remote", "salary_range": None,
                  "description": None, "requirements": None, "skills": [],
-                 "company_logo_url": None, "job_url": None}
+                "company_logo_url": None, "job_url": None}
                 for index, (rec_id, hidden) in enumerate(self.state["recommendations"], start=1)
-                if not hidden and (not params["limited"] or rec_id in claimed)
+                if not hidden
             ]
             return _EndpointResult(rows)
         raise AssertionError(f"Unexpected query: {query}")
@@ -189,7 +190,7 @@ def _get_jobs(monkeypatch, state, day, refresh, candidate=None, response=None):
     return asyncio.run(server.get_candidate_jobs("candidate", response=response))
 
 
-def test_jobs_exposes_the_full_matching_total_while_returning_free_accesses(monkeypatch):
+def test_jobs_exposes_all_matches_and_redacts_locked_free_jobs(monkeypatch):
     from starlette.responses import Response
 
     state = _state()
@@ -200,7 +201,10 @@ def test_jobs_exposes_the_full_matching_total_while_returning_free_accesses(monk
     response = Response()
     jobs = _get_jobs(monkeypatch, state, date(2026, 9, 17), refresh, response=response)
 
-    assert len(jobs) == 3
+    assert len(jobs) == 13
+    assert [job["locked"] for job in jobs[:3]] == [False, False, False]
+    assert all(job["locked"] for job in jobs[3:])
+    assert "title" not in jobs[3]
     assert response.headers["x-total-matching-jobs"] == "13"
 
 
@@ -215,7 +219,9 @@ def test_jobs_refreshes_when_only_visible_recommendation_was_accessed_before_tod
     jobs = _get_jobs(monkeypatch, state, date(2026, 9, 17), refresh)
 
     assert refreshes == [True]
-    assert [job["id"] for job in jobs] == ["new-1", "new-2"]
+    assert [job["id"] for job in jobs] == ["old", "new-1", "new-2"]
+    assert jobs[0]["locked"] is True
+    assert all(not job["locked"] for job in jobs[1:])
     assert _day_accesses(state, date(2026, 9, 17)) == {"new-1", "new-2"}
 
 
@@ -231,7 +237,10 @@ def test_jobs_does_not_refresh_when_visible_unaccessed_recommendations_exist(mon
     jobs = _get_jobs(monkeypatch, state, date(2026, 9, 17), refresh)
 
     assert refreshes == []
-    assert [job["id"] for job in jobs] == ["new-1", "new-2", "new-3"]
+    assert [job["id"] for job in jobs] == ["old", "new-1", "new-2", "new-3", "new-4"]
+    assert jobs[0]["locked"] is True
+    assert all(not job["locked"] for job in jobs[1:4])
+    assert jobs[4]["locked"] is True
     assert _day_accesses(state, date(2026, 9, 17)) == {"new-1", "new-2", "new-3"}
 
 

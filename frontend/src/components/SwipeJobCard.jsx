@@ -586,7 +586,10 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const exhaustionRequestedRef = React.useRef(false);
 
   // Only show jobs that haven't been actioned this session AND aren't already tracked
-  const pending = jobs.filter((j) => !actioned.has(j.id) && !j.tracked);
+  // Locked recommendation placeholders belong in the horizontal Jobs list;
+  // never place one in the interactive swipe deck where an action could be
+  // triggered accidentally.
+  const pending = jobs.filter((j) => !j.locked && !actioned.has(j.id) && !j.tracked);
   const current = pending[index] ?? null;
   const total = pending.length;
 

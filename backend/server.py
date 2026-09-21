@@ -7630,23 +7630,39 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
-                  AND (
-                    :limited = false OR EXISTS (
-                      SELECT 1 FROM candidate_daily_job_access access
-                      WHERE access.candidate_id = cjr.candidate_id
-                        AND access.recommendation_id = cjr.id
-                        AND access.access_date = :access_date
-                    )
-                  )
+                -- Return the complete ranked list so the client can render
+                -- locked placeholders.  The access predicate is projected
+                -- below instead of filtering the rows out: free candidates
+                -- must not receive details for rows they have not claimed.
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
             """),
-            {"cid": candidate_id, "limited": limited, "access_date": access_date},
+            {"cid": candidate_id},
         )
         results = rows.mappings().fetchall()
     if response is not None:
         response.headers["X-Total-Matching-Jobs"] = str(total_matching_jobs)
-    return [
-        {
+    accessible_ids = set()
+    if limited:
+        async with SessionLocal() as db:
+            access_rows = await db.execute(text("""
+                SELECT recommendation_id
+                FROM candidate_daily_job_access
+                WHERE candidate_id = :cid AND access_date = :access_date
+            """), {"cid": candidate_id, "access_date": access_date})
+            accessible_ids = {str(row[0]) for row in access_rows.fetchall()}
+
+    def serialize_job(r):
+        accessible = not limited or str(r["rec_id"]) in accessible_ids
+        if not accessible:
+            # Deliberately omit all job metadata.  These identifiers exist
+            # only to keep the UI list stable; the locked card renders generic
+            # content and cannot invoke job actions.
+            return {
+                "id": str(r["rec_id"]),
+                "locked": True,
+                "recommendation_rank": r["recommendation_rank"],
+            }
+        return {
             "id": str(r["rec_id"]),
             "job_id": str(r["job_id"]) if r["job_id"] else None,
             "title": r["title"] or "",
@@ -7665,9 +7681,9 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
             "viewed": r["viewed_at"] is not None,
             "application_status": r["application_status"],
             "job_url": r["job_url"] or None,
+            "locked": False,
         }
-        for r in results
-    ]
+    return [serialize_job(r) for r in results]
 
 
 def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None) -> dict:
