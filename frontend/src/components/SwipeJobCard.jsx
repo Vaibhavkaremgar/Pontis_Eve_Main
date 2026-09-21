@@ -201,17 +201,45 @@ export function NotInterestedReasonModal({ open, job, busy = false, onClose, onC
   );
 }
 
+function gaugePoint(value, radius = 84) {
+  const angle = ((180 + value * 1.8) * Math.PI) / 180;
+  return { x: 100 + radius * Math.cos(angle), y: 100 + radius * Math.sin(angle) };
+}
+
+function GaugeArc({ from, to, color }) {
+  const start = gaugePoint(from);
+  const end = gaugePoint(to);
+  return <path d={`M ${start.x} ${start.y} A 84 84 0 0 1 ${end.x} ${end.y}`} fill="none" stroke={color} strokeWidth="13" />;
+}
+
+function MatchScoreGauge({ score }) {
+  const rawScore = scorePercent(score);
+  const value = rawScore == null ? null : Math.max(0, Math.min(100, rawScore));
+  const needle = value == null ? null : gaugePoint(value, 66);
+  return <section className="rounded-2xl border border-black/[.06] bg-white px-3 pb-2 pt-4 text-center" aria-label={value == null ? "Match score unavailable" : `Match score ${value} out of 100`} data-testid="match-score-gauge">
+    <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#7B927B]">Match score</p>
+    <div className="relative mx-auto mt-1 w-full max-w-[300px]">
+      <svg viewBox="0 0 200 116" className="block h-auto w-full" role="img" aria-hidden="true">
+        <GaugeArc from={0} to={40} color="#D9826B" /><GaugeArc from={41} to={69} color="#D8A84C" /><GaugeArc from={70} to={100} color="#6E9B72" />
+        {[0, 25, 50, 75, 100].map((tick) => { const outer = gaugePoint(tick, 94); const inner = gaugePoint(tick, 80); return <line key={tick} x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke="#FBFBF9" strokeWidth="2" />; })}
+        {needle && <><line x1="100" y1="100" x2={needle.x} y2={needle.y} stroke="#1F1F1F" strokeWidth="3" strokeLinecap="round" /><circle cx="100" cy="100" r="5" fill="#1F1F1F" /></>}
+      </svg>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-between px-[4%] text-[10px] font-medium text-[#7A7A78]"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+      <p className="pointer-events-none absolute inset-x-0 bottom-4 tabular-nums text-[32px] font-semibold tracking-tight text-[#1F1F1F]" data-testid="match-score-gauge-value">{value == null ? "—" : `${value}%`}</p>
+    </div>
+    <div className="mx-auto mt-1 flex max-w-[300px] justify-between text-[10px] text-[#7A7A78]"><span>Needs work</span><span>Developing</span><span>Strong match</span></div>
+  </section>;
+}
+
 function ImproveMatchModal({ job, data, onClose, onApplyCurrent, onFixResume }) {
   if (!job) return null;
   const score = data?.match_score ?? job.match_score;
-  const pct = score == null ? "—" : `${Math.round(score * (score <= 1 ? 100 : 1))}%`;
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="improve-match-modal">
-    <div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] shadow-2xl">
-      <div className="flex items-start justify-between gap-3 border-b border-black/[.06] px-5 py-4"><div><h3 className="text-[16px] font-medium">Improve Your Match</h3><p className="mt-1 text-[13px] text-[#4A4A48]">Current match: <strong>{pct}</strong></p></div><button aria-label="Close improve match" onClick={onClose}><X className="h-4 w-4" /></button></div>
+    <div className="w-full max-w-md overflow-hidden rounded-2xl bg-[#FBFBF9] shadow-2xl">
+      <div className="flex items-start justify-between gap-3 border-b border-black/[.06] px-5 py-4"><h3 className="text-[16px] font-medium">Improve Your Match</h3><button aria-label="Close improve match" onClick={onClose}><X className="h-4 w-4" /></button></div>
       <div className="max-h-[55vh] space-y-4 overflow-y-auto px-5 py-4">
+        <MatchScoreGauge score={score} />
         <div><p className="text-[12px] font-medium">Missing skills</p>{data ? (data.missing_skills?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{data.missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div> : <p className="mt-1 text-[12px] text-[#4A4A48]">No specific skill gap was identified.</p>) : <p className="mt-1 text-[12px] text-[#9A9A98]">Checking your profile…</p>}</div>
-        {data?.requirements?.length > 0 && <div><p className="text-[12px] font-medium">Job requirements to confirm</p><ul className="mt-2 space-y-1 text-[12px] text-[#4A4A48]">{data.requirements.map((requirement, index) => <li key={index}>• {requirement}</li>)}</ul></div>}
-        {data?.experience_requirement ? <div><p className="text-[12px] font-medium">Experience / qualification requirement</p><p className="mt-1 text-[12px] text-[#4A4A48]">{data.experience_requirement}</p></div> : <p className="text-[12px] text-[#4A4A48]">No specific experience requirement provided.</p>}
       </div>
       <div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onApplyCurrent} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Apply with Current Resume</button><button data-testid="fix-my-resume" onClick={onFixResume} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white">Fix My Resume</button></div>
     </div>

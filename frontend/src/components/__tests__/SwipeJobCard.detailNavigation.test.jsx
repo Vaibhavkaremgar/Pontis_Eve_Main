@@ -177,7 +177,7 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(renderResult.container.textContent).toContain("Why are you passing on this role?");
   });
 
-  it("opens the improvement modal and displays missing requirements below 90%", async () => {
+  it("opens the improvement modal with a scored gauge and missing skills below 90%", async () => {
     axios.get.mockResolvedValueOnce({ data: { match_score: 0.72, missing_skills: ["Kubernetes"], requirements: ["Kubernetes experience required"] } });
     renderResult = renderDeck({ jobs: [{ id: "job-1", title: "Senior Product Manager", company: "Acme", location: "Remote", description: "Lead product strategy.", match_score: 0.72, skills: ["Kubernetes"], job_url: "https://acme.example/jobs/1" }] });
     await act(async () => {
@@ -186,6 +186,12 @@ describe("SwipeJobDeck job details navigation", () => {
     });
     expect(renderResult.container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
     expect(renderResult.container.textContent).toContain("Kubernetes");
+    expect(renderResult.container.querySelector('[data-testid="match-score-gauge"]')).toBeTruthy();
+    expect(renderResult.container.querySelector('[data-testid="match-score-gauge-value"]').textContent).toBe("72%");
+    expect(renderResult.container.textContent).toContain("Needs work");
+    expect(renderResult.container.textContent).toContain("Strong match");
+    expect(renderResult.container.textContent).not.toContain("Job requirements to confirm");
+    expect(renderResult.container.textContent).not.toContain("Kubernetes experience required");
     expect(openSpy).not.toHaveBeenCalled();
   });
 
