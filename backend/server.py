@@ -7541,16 +7541,35 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
 
 
 def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None) -> dict:
-    """Explain gaps without altering the matcher or claiming unverified candidate data."""
+    """Explain gaps from canonical profile skills without altering matcher scores."""
     def clean(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def skill_key(value: Any) -> str:
+        """Return a comparison key while retaining meaningful skill symbols.
+
+        Dots, whitespace, underscores, and hyphens are presentation variants
+        for names such as ``React.js``, ``React JS``, and ``ReactJS``.  Keep
+        symbols such as ``+`` and ``#`` so distinct skills (for example C++
+        and C#) are not collapsed together.
+        """
+        return re.sub(r"[\s._-]+", "", clean(value).casefold())
+
+    def skill_name(skill: Any) -> str:
+        return clean(skill.get("name") if isinstance(skill, dict) else skill)
+
+    # candidates.skills is the canonical profile column and is updated by the
+    # Resume Editor before this calculation is re-run.
     current_skills = candidate.get("skills") or []
-    known = {clean(skill).lower() for skill in current_skills if clean(skill)}
-    normalized_job_skills = [
-        clean(skill.get("name") if isinstance(skill, dict) else skill)
-        for skill in (job_skills or [])
-    ]
-    missing_skills = [skill for skill in normalized_job_skills if skill and skill.lower() not in known]
+    known = {skill_key(skill_name(skill)) for skill in current_skills if skill_key(skill_name(skill))}
+    missing_skills = []
+    seen_job_skills = set()
+    for raw_skill in (job_skills or []):
+        skill = skill_name(raw_skill)
+        key = skill_key(skill)
+        if skill and key and key not in known and key not in seen_job_skills:
+            missing_skills.append(skill)
+            seen_job_skills.add(key)
     # Requirement prose is supplied as context for confirmation; it is never added to a profile.
     requirement_text = clean(requirements)
     requirement_lines = [line.strip(" -•\t") for line in re.split(r"[\r\n]+|(?<=[.!?])\s+", requirement_text)
@@ -7695,6 +7714,10 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     profile_updates = request.profile_updates
     update_result = await _save_resume_editor_updates(candidate_id, profile_updates)
     candidate = await _get_candidate_row(candidate_id)
+    # Re-read the canonical profile after the resume transaction commits.  This
+    # is deliberately separate from parsed_resume_json so the response matches
+    # GET /profile and includes canonical fields such as merged skills.
+    profile = await _get_candidate_profile_payload(candidate_id)
     try:
         from candidate_job_matching_service import refresh_candidate_job_match
         await refresh_candidate_job_match(candidate_id, rec_id, candidate, SessionLocal)

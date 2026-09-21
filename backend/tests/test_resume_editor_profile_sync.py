@@ -88,3 +88,101 @@ def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(mon
     # The selected-job matcher/gap calculation receives the same canonical row.
     gaps = server._job_missing_requirements(["Java", "Spring Boot"], "", {"skills": saved_skills})
     assert gaps["missing_skills"] == []
+
+
+def test_missing_skills_uses_normalized_canonical_profile_skills():
+    gaps = server._job_missing_requirements(
+        ["React.js", "Node.js", "Type Script", "Docker", "React JS"],
+        "",
+        {"skills": [" reactjs ", "NODE JS", "TypeScript"]},
+    )
+
+    # Case, surrounding whitespace, and punctuation/spacing variants are
+    # represented by the already-saved canonical candidate skills.
+    assert gaps["missing_skills"] == ["Docker"]
+
+
+def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate_recommendation(monkeypatch):
+    """Saving an edited resume must return its canonical profile and update only its selected match."""
+    state = {
+        "candidate": _candidate(),
+        "recommendation_ids": ["rec-1"],
+        "refresh_calls": [],
+    }
+
+    async def get_guidance(candidate_id, rec_id):
+        assert (candidate_id, rec_id) == ("candidate-1", "rec-1")
+        return {"match_score": 90.0}
+
+    async def get_job_context(candidate_id, rec_id):
+        assert (candidate_id, rec_id) == ("candidate-1", "rec-1")
+        return {
+            "skills": ["Python", "Rust"],
+            "requirements": "",
+            "experience_required": None,
+        }
+
+    async def save_updates(candidate_id, updates):
+        assert candidate_id == "candidate-1"
+        assert "Rust" in updates["skills"]
+        state["candidate"] = {
+            **state["candidate"],
+            "skills": ["Python", "FastAPI", "PostgreSQL", "Rust"],
+        }
+        return {"updated": True, "changed": ["skills"]}
+
+    async def get_candidate(candidate_id):
+        assert candidate_id == "candidate-1"
+        return state["candidate"]
+
+    async def get_profile(candidate_id):
+        assert candidate_id == "candidate-1"
+        # Model the canonical GET /profile payload, not parsed_resume_json.
+        return server._normalize_for_frontend(state["candidate"])
+
+    async def refresh_match(candidate_id, rec_id, candidate, _session_factory):
+        state["refresh_calls"].append((candidate_id, rec_id, candidate["skills"]))
+        assert candidate_id == "candidate-1"
+        assert rec_id == "rec-1"
+        assert "Rust" in candidate["skills"]
+        # Updating the existing selected recommendation must not insert one.
+        state["match_score"] = 84.0
+
+    class _ScoreResult:
+        def scalar(self):
+            return state["match_score"]
+
+    class _ScoreSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _statement, params=None):
+            assert params == {"rid": "rec-1", "cid": "candidate-1"}
+            return _ScoreResult()
+
+    import candidate_job_matching_service
+    monkeypatch.setattr(server, "get_job_match_improvement", get_guidance)
+    monkeypatch.setattr(server, "_get_job_match_improvement_row", get_job_context)
+    monkeypatch.setattr(server, "_save_resume_editor_updates", save_updates)
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "_get_candidate_profile_payload", get_profile)
+    monkeypatch.setattr(server, "SessionLocal", lambda: _ScoreSession())
+    monkeypatch.setattr(candidate_job_matching_service, "refresh_candidate_job_match", refresh_match)
+
+    response = asyncio.run(server.improve_job_match(
+        "candidate-1",
+        "rec-1",
+        server.JobMatchImprovementRequest(profile_updates={"skills": ["Python", "Rust"]}),
+    ))
+
+    assert response["match_score"] == 84.0
+    assert response["profile"]
+    assert "Rust" in response["profile"]["keySkills"]
+    # The persisted Resume Editor skill is immediately used for refreshed
+    # selected-job gap guidance.
+    assert response["remaining_missing_skills"] == []
+    assert state["refresh_calls"] == [("candidate-1", "rec-1", ["Python", "FastAPI", "PostgreSQL", "Rust"])]
+    assert state["recommendation_ids"] == ["rec-1"]
