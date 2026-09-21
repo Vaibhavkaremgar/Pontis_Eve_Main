@@ -64,6 +64,27 @@ describe("JobsTab locked recommendations", () => {
     view.unmount();
   });
 
+  it("renders accessible jobs before locked jobs while preserving backend order within each group", () => {
+    const view = renderJobs([
+      { id: "locked-1", locked: true },
+      { id: "free-1", title: "Engineer 1", company: "Acme", description: "Build products", locked: false },
+      { id: "locked-2", locked: true },
+      { id: "free-2", title: "Engineer 2", company: "Acme", description: "Build products" },
+      { id: "locked-3", locked: true },
+    ]);
+
+    const cards = [...view.container.querySelector('[data-testid="jobs-vertical-list"]').children];
+    expect(cards.map((card) => card.dataset.testid)).toEqual([
+      "job-card-free-1",
+      "job-card-free-2",
+      "locked-job-card-locked-1",
+      "locked-job-card-locked-2",
+      "locked-job-card-locked-3",
+    ]);
+
+    view.unmount();
+  });
+
   it("routes a locked-card click only to the subscription-popup callback", () => {
     const view = renderJobs([{ id: "job-4", locked: true }]);
     act(() => view.container.querySelector('[data-testid="locked-job-card-job-4"]').click());

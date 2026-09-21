@@ -532,6 +532,11 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
   const [dismissing, setDismissing] = React.useState(false);
+  // Keep backend ranking intact within each access group, while presenting the
+  // jobs a candidate can open before the subscription-locked placeholders.
+  const accessibleJobs = jobs.filter((job) => !job.locked);
+  const lockedJobs = jobs.filter((job) => job.locked);
+  const orderedJobs = [...accessibleJobs, ...lockedJobs];
 
   const openDetail = React.useCallback(async (job) => {
     setDetailJob(job);
@@ -610,7 +615,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         )}
 
         <div className="flex flex-col gap-3" data-testid="jobs-vertical-list">
-          {jobs.map((job) => {
+          {orderedJobs.map((job) => {
             if (job.locked) {
               return (
                 <button
