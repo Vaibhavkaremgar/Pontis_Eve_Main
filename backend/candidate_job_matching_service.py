@@ -1060,3 +1060,52 @@ async def refresh_candidate_job_matches(
         "[matching] Upserted %d job recommendations for candidate %s",
         len(ranked_jobs), candidate_id,
     )
+
+
+async def refresh_candidate_job_match(
+    candidate_id: str,
+    recommendation_id: str,
+    candidate: Dict[str, Any],
+    SessionLocal: async_sessionmaker,
+) -> None:
+    """Re-score one existing recommendation without retrieval or insertion.
+
+    This intentionally reuses the established hybrid scorer and the semantic
+    component recorded on the recommendation. It never changes daily access,
+    subscription behaviour, recommendation selection, or Qdrant retrieval.
+    """
+    import json as _json
+    async with SessionLocal() as db:
+        row = await db.execute(text("""
+            SELECT cjr.match_reason, jd.title, jd.description, jd.requirements, jd.skills
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.id = :rid AND cjr.candidate_id = :cid
+            LIMIT 1
+        """), {"rid": recommendation_id, "cid": candidate_id})
+        selected = row.mappings().fetchone()
+    if not selected:
+        return
+    reason = selected["match_reason"] or {}
+    if isinstance(reason, str):
+        try:
+            reason = _json.loads(reason)
+        except Exception:
+            reason = {}
+    semantic_score = float(reason.get("semantic_score", 0.0)) if isinstance(reason, dict) else 0.0
+    signals = _build_candidate_signals(candidate)
+    score, components = _hybrid_score(
+        signals, selected["title"] or "", selected["description"] or "",
+        selected["requirements"] or "", selected["skills"] or [], semantic_score,
+        intelligence=_get_candidate_intelligence(candidate),
+    )
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            UPDATE candidate_job_recommendations
+            SET match_score = :score,
+                match_reason = CAST(:reason AS jsonb),
+                generated_at = now()
+            WHERE id = :rid AND candidate_id = :cid
+        """), {"score": score, "reason": _json.dumps({"type": "hybrid_match", **components}),
+                  "rid": recommendation_id, "cid": candidate_id})
+        await db.commit()

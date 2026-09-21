@@ -106,8 +106,8 @@ class CandidateHelpRequest(BaseModel):
 
 
 class JobMatchImprovementRequest(BaseModel):
-    """Candidate-confirmed additions made from the Jobs for You match helper."""
-    skills: List[str] = Field(default_factory=list)
+    """Candidate-confirmed canonical profile edits for one recommendation."""
+    profile_updates: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------- Helpers ----------
@@ -7594,19 +7594,25 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
 async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImprovementRequest):
-    """Persist only explicitly confirmed skills, then reuse the normal matcher."""
+    """Persist candidate-confirmed profile edits, then reuse the normal matcher."""
     guidance = await get_job_match_improvement(candidate_id, rec_id)  # ownership check; no daily-limit mutation
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
-    confirmed_skills = [skill.strip() for skill in request.skills if isinstance(skill, str) and skill.strip()]
-    if not confirmed_skills:
-        raise HTTPException(status_code=422, detail="Confirm at least one skill before updating your profile.")
-    update_result = await _apply_profile_updates(candidate_id, {"skills": confirmed_skills})
+    # Use the same canonical update path as Eve/chat. Job requirements are
+    # guidance only; they never become profile claims without candidate input.
+    profile_updates = _sanitize_profile_updates(request.profile_updates)
+    if not profile_updates:
+        raise HTTPException(status_code=422, detail="Add or confirm profile information before saving.")
+    confirmed_skills = [
+        skill.strip() for skill in profile_updates.get("skills", [])
+        if isinstance(skill, str) and skill.strip()
+    ]
+    update_result = await _apply_profile_updates(candidate_id, profile_updates)
     candidate = await _get_candidate_row(candidate_id)
     try:
-        from candidate_job_matching_service import refresh_candidate_job_matches
-        await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
+        from candidate_job_matching_service import refresh_candidate_job_match
+        await refresh_candidate_job_match(candidate_id, rec_id, candidate, SessionLocal)
     except Exception as exc:
         logger.warning("[matching] Match refresh failed after candidate update for %s: %s", candidate_id, exc)
         raise HTTPException(status_code=503, detail="Your profile was updated, but the match could not be recalculated yet.")

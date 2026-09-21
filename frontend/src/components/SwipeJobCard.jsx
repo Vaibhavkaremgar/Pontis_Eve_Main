@@ -201,14 +201,10 @@ export function NotInterestedReasonModal({ open, job, busy = false, onClose, onC
   );
 }
 
-function ImproveMatchModal({ job, data, busy, onClose, onApplyCurrent, onConfirm }) {
-  const [skills, setSkills] = React.useState("");
-  const [confirmed, setConfirmed] = React.useState(false);
-  React.useEffect(() => { setSkills(""); setConfirmed(false); }, [job?.id]);
+function ImproveMatchModal({ job, data, onClose, onApplyCurrent, onFixResume }) {
   if (!job) return null;
   const score = data?.match_score ?? job.match_score;
   const pct = score == null ? "—" : `${Math.round(score * (score <= 1 ? 100 : 1))}%`;
-  const submittedSkills = skills.split(",").map((value) => value.trim()).filter(Boolean);
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="improve-match-modal">
     <div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] shadow-2xl">
       <div className="flex items-start justify-between gap-3 border-b border-black/[.06] px-5 py-4"><div><h3 className="text-[16px] font-medium">Improve Your Match</h3><p className="mt-1 text-[13px] text-[#4A4A48]">Current match: <strong>{pct}</strong></p></div><button aria-label="Close improve match" onClick={onClose}><X className="h-4 w-4" /></button></div>
@@ -216,11 +212,20 @@ function ImproveMatchModal({ job, data, busy, onClose, onApplyCurrent, onConfirm
         <div><p className="text-[12px] font-medium">Missing skills</p>{data ? (data.missing_skills?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{data.missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div> : <p className="mt-1 text-[12px] text-[#4A4A48]">No specific skill gap was identified.</p>) : <p className="mt-1 text-[12px] text-[#9A9A98]">Checking your profile…</p>}</div>
         {data?.requirements?.length > 0 && <div><p className="text-[12px] font-medium">Job requirements to confirm</p><ul className="mt-2 space-y-1 text-[12px] text-[#4A4A48]">{data.requirements.map((requirement, index) => <li key={index}>• {requirement}</li>)}</ul></div>}
         {data?.experience_requirement && <div><p className="text-[12px] font-medium">Experience / qualification requirement</p><p className="mt-1 text-[12px] text-[#4A4A48]">{data.experience_requirement}</p></div>}
-        <div className="rounded-xl bg-black/[.03] p-3"><label className="text-[12px] font-medium" htmlFor="confirmed-skills">Skills you actually have</label><input id="confirmed-skills" data-testid="confirmed-skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="e.g. Python, SQL" className="mt-2 w-full rounded-lg border border-black/[.1] bg-white px-3 py-2 text-[13px]" /><label className="mt-3 flex gap-2 text-[12px] text-[#4A4A48]"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I confirm these details are accurate and mine.</label></div>
       </div>
-      <div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onApplyCurrent} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Apply with Current Resume</button><button data-testid="fix-my-resume" disabled={busy || !confirmed || !submittedSkills.length} onClick={() => onConfirm(submittedSkills)} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white disabled:opacity-50">{busy ? "Updating…" : "Fix My Resume"}</button></div>
+      <div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onApplyCurrent} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Apply with Current Resume</button><button data-testid="fix-my-resume" onClick={onFixResume} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white">Fix My Resume</button></div>
     </div>
   </div>;
+}
+
+function ResumeImprovementEditor({ job, data, busy, onClose, onSave }) {
+  const [skills, setSkills] = React.useState("");
+  const [experienceYears, setExperienceYears] = React.useState("");
+  const [confirmed, setConfirmed] = React.useState(false);
+  const submittedSkills = skills.split(",").map((value) => value.trim()).filter(Boolean);
+  const hasChanges = submittedSkills.length > 0 || experienceYears.trim() !== "";
+  if (!job) return null;
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="resume-improvement-editor"><div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] shadow-2xl"><div className="flex items-start justify-between gap-3 border-b border-black/[.06] px-5 py-4"><div><h3 className="text-[16px] font-medium">Update your Eve profile</h3><p className="mt-1 text-[13px] text-[#4A4A48]">Add only information you genuinely have for {job.title}.</p></div><button aria-label="Close resume editor" onClick={onClose}><X className="h-4 w-4" /></button></div><div className="max-h-[55vh] space-y-4 overflow-y-auto px-5 py-4"><div><p className="text-[12px] font-medium">Relevant missing skills</p>{data?.missing_skills?.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{data.missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div>}</div>{data?.experience_requirement && <div><p className="text-[12px] font-medium">Experience / qualification requirement</p><p className="mt-1 text-[12px] text-[#4A4A48]">{data.experience_requirement}</p></div>}<div><label className="text-[12px] font-medium" htmlFor="confirmed-skills">Skills you genuinely have</label><input id="confirmed-skills" data-testid="confirmed-skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="e.g. Python, SQL" className="mt-2 w-full rounded-lg border border-black/[.1] bg-white px-3 py-2 text-[13px]" /></div><div><label className="text-[12px] font-medium" htmlFor="experience-years">Total years of experience (optional)</label><input id="experience-years" value={experienceYears} onChange={(event) => setExperienceYears(event.target.value)} inputMode="decimal" className="mt-2 w-full rounded-lg border border-black/[.1] bg-white px-3 py-2 text-[13px]" /></div><label className="flex gap-2 text-[12px] text-[#4A4A48]"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I confirm these details are accurate and mine.</label></div><div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onClose} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Cancel</button><button data-testid="save-resume-improvements" disabled={busy || !confirmed || !hasChanges} onClick={() => onSave({ skills: submittedSkills, ...(experienceYears.trim() ? { experience_years: experienceYears.trim() } : {}) })} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white disabled:opacity-50">{busy ? "Saving…" : "Save changes"}</button></div></div></div>;
 }
 
 function UpdatedResumeModal({ job, result, onDownload, onApply, onClose }) {
@@ -540,6 +545,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
+  const [editingImprovement, setEditingImprovement] = React.useState(false);
   const [improving, setImproving] = React.useState(false);
   const [updatedMatch, setUpdatedMatch] = React.useState(null);
   // actioned: ids removed from deck this session (dismissed or tracked)
@@ -594,17 +600,17 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
     if (!job || applying) return;
     const score = Number(job.match_score);
     if (job.job_url && Number.isFinite(score) && score * (score <= 1 ? 100 : 1) < 90) {
-      setImprovementJob(job); setImprovementData(null);
+      setImprovementJob(job); setImprovementData(null); setEditingImprovement(false);
       try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
       catch { toast.error("Couldn't load match details. Please try again."); }
       return;
     }
     openJobUrl(job);
   }, [detailJob, applying, candidateId, openJobUrl]);
-  const confirmImprovement = React.useCallback(async (skills) => {
+  const confirmImprovement = React.useCallback(async (profileUpdates) => {
     if (!improvementJob || improving) return;
     setImproving(true);
-    try { const response = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/match-improvement`, { skills }); setImprovementJob(null); setUpdatedMatch({ job: improvementJob, ...response.data }); onJobsChange?.(); }
+    try { const response = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/match-improvement`, { profile_updates: profileUpdates }); setEditingImprovement(false); setImprovementJob(null); setUpdatedMatch({ job: improvementJob, ...response.data }); onJobsChange?.(); }
     catch (error) { toast.error(error?.response?.data?.detail || "Couldn't update your profile. Please try again."); }
     finally { setImproving(false); }
   }, [improvementJob, improving, candidateId, onJobsChange]);
@@ -665,7 +671,8 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
-      <ImproveMatchModal job={improvementJob} data={improvementData} busy={improving} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); }} onConfirm={confirmImprovement} />
+      <ImproveMatchModal job={improvementJob && !editingImprovement ? improvementJob : null} data={improvementData} onClose={() => { setImprovementJob(null); setEditingImprovement(false); }} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); setEditingImprovement(false); }} onFixResume={() => setEditingImprovement(true)} />
+      <ResumeImprovementEditor job={editingImprovement ? improvementJob : null} data={improvementData} busy={improving} onClose={() => setEditingImprovement(false)} onSave={confirmImprovement} />
       {updatedMatch && <UpdatedResumeModal job={updatedMatch.job} result={updatedMatch} onDownload={() => window.open(`${API}${updatedMatch.resume_download_url}`, "_blank", "noopener,noreferrer")} onApply={() => { openJobUrl(updatedMatch.job); setUpdatedMatch(null); }} onClose={() => setUpdatedMatch(null)} />}
       {/* Detail modal overlay */}
       {detailJob && (

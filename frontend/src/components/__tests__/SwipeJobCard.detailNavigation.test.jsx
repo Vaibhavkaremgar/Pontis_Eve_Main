@@ -188,4 +188,18 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(renderResult.container.textContent).toContain("Kubernetes");
     expect(openSpy).not.toHaveBeenCalled();
   });
+
+  it("lets Fix My Resume enter the job-scoped editor without preliminary claims", async () => {
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.72, missing_skills: ["Kubernetes"], requirements: ["Kubernetes experience required"] } });
+    renderResult = renderDeck({ jobs: [{ id: "job-1", title: "Senior Product Manager", company: "Acme", match_score: 0.72, job_url: "https://acme.example/jobs/1" }] });
+    await act(async () => {
+      renderResult.container.querySelector('[data-testid="apply-job-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    const fix = renderResult.container.querySelector('[data-testid="fix-my-resume"]');
+    expect(fix.disabled).toBe(false);
+    act(() => fix.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(renderResult.container.querySelector('[data-testid="resume-improvement-editor"]')).toBeTruthy();
+    expect(renderResult.container.textContent).toContain("Kubernetes");
+  });
 });
