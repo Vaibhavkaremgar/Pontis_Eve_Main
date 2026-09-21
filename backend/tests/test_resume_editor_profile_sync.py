@@ -88,6 +88,13 @@ def test_skill_normalization_splits_reported_separator_less_skills_and_deduplica
     )["missing_skills"] == []
 
 
+def test_skill_normalization_repairs_exact_css3_opencv_legacy_case():
+    assert server._normalize_skills(["CSS3", "CSS3 OpenCV Computer Vision"]) == [
+        "CSS3", "OpenCV", "Computer Vision",
+    ]
+    assert server._normalize_skills(["Computer Vision"]) == ["Computer Vision"]
+
+
 def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(monkeypatch):
     state = {}
     candidate = _candidate()
@@ -176,7 +183,7 @@ def test_new_skill_input_supports_all_editor_separators_without_splitting_phrase
     ]
 
 
-def test_resume_editor_save_repairs_the_reported_legacy_concatenated_skills(monkeypatch):
+def test_resume_editor_save_does_not_restore_legacy_members_omitted_by_editor(monkeypatch):
     state = {}
 
     async def get_candidate(_candidate_id):
@@ -195,14 +202,27 @@ def test_resume_editor_save_repairs_the_reported_legacy_concatenated_skills(monk
     }))
 
     saved_skills = json.loads(state["params"]["skills"])
-    assert saved_skills == [
-        "React.js", "Node.js", "Frontend Development", "AI Applications",
-        "Google Cloud Platform", "Database Design", "Problem Solving",
-        "Object-Oriented Programming", "SQL", "HTML5",
-    ]
-    assert all("Frontend DevelopmentAI" not in skill for skill in saved_skills)
-    assert all("ProgrammingSQL" not in skill for skill in saved_skills)
+    assert saved_skills == ["React.js", "Node.js", "HTML5", "SQL"]
     assert server._job_missing_requirements(saved_skills, "", {"skills": saved_skills})["missing_skills"] == []
+
+
+def test_resume_editor_save_repairs_exact_legacy_case_before_persisting(monkeypatch):
+    state = {}
+
+    async def get_candidate(_candidate_id):
+        candidate = _candidate()
+        candidate["skills"] = ["CSS3", "CSS3 OpenCV Computer Vision"]
+        return candidate
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    # This is the complete editor document returned from the legacy candidate.
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {
+        "skills": ["CSS3", "CSS3 OpenCV Computer Vision"],
+    }))
+
+    assert json.loads(state["params"]["skills"]) == ["CSS3", "OpenCV", "Computer Vision"]
 
 
 def test_missing_skills_uses_normalized_canonical_profile_skills():

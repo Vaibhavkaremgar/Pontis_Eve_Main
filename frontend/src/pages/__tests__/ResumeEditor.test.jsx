@@ -68,6 +68,25 @@ describe("ResumeEditor profile refresh", () => {
     await act(async () => { root.unmount(); });
   });
 
+  it("posts every bullet-delimited skill as an individual array member", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: ["CSS3"] }, match_score: 50, missing_skills: [] } });
+    axios.post.mockResolvedValue({ data: { match_score: 60, profile: { candidate_id: "candidate-1", keySkills: ["CSS3", "OpenCV", "Computer Vision"] } } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    const skills = container.querySelector('[data-testid="resume-skills"]');
+    Object.defineProperty(skills, "innerText", { configurable: true, value: "CSS3 \u2022 OpenCV \u2022 Computer Vision" });
+    await act(async () => { skills.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); });
+    await act(async () => { container.querySelector("button").click(); });
+    expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      profile_updates: expect.objectContaining({ skills: ["CSS3", "OpenCV", "Computer Vision"] }),
+    }));
+    expect(skills.textContent).toBe("CSS3 \u2022 OpenCV \u2022 Computer Vision");
+    await act(async () => { root.unmount(); });
+  });
+
   it("notifies the dashboard to refetch the canonical profile after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });

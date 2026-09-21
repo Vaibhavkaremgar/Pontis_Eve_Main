@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const plain = (value) => (value == null ? "" : String(value));
 const list = (value) => Array.isArray(value) ? value : [];
+const parseSkills = (value) => plain(value).split(/[,;|\n\u2022]+/).map((item) => item.trim()).filter(Boolean);
 const score = (value) => value == null || !Number.isFinite(Number(value)) ? null : Math.round(Number(value) * (Number(value) <= 1 ? 100 : 1));
 
 function Editable({ value, onChange, className = "", multiline = false, testId }) {
@@ -38,12 +39,15 @@ export default function ResumeEditor() {
   const [saving, setSaving] = React.useState(false);
   const [result, setResult] = React.useState(null);
   const [error, setError] = React.useState("");
+  // ContentEditable blur and button click can share one event turn. Keep the
+  // current parsed list outside render state so Save never posts a stale array.
+  const skillsDraftRef = React.useRef([]);
   const previous = score(params.get("previous_match_score"));
 
   React.useEffect(() => {
     if (!candidateId || !recommendationId) { setError("This resume editor needs a candidate and recommendation."); return; }
     axios.get(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`)
-      .then(({ data }) => { setResume(data.resume); setGuidance(data); })
+      .then(({ data }) => { skillsDraftRef.current = list(data.resume?.skills); setResume(data.resume); setGuidance(data); })
       .catch((e) => setError(e?.response?.data?.detail || "Unable to load your resume."));
   }, [candidateId, recommendationId]);
 
@@ -52,13 +56,14 @@ export default function ResumeEditor() {
   const save = async () => {
     setSaving(true); setError("");
     try {
-      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: resume });
+      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current } });
       setResult(data);
       // The API re-reads candidates.skills after saving and returns that
       // canonical profile. Keep the document in sync with it so a combined
       // value entered here is immediately rendered as individual skills.
       const canonicalSkills = data?.profile?.keySkills ?? data?.profile?.skills;
       if (Array.isArray(canonicalSkills)) {
+        skillsDraftRef.current = canonicalSkills;
         setResume((old) => ({ ...old, skills: canonicalSkills }));
       }
       if (Array.isArray(data?.remaining_missing_skills)) {
@@ -89,7 +94,7 @@ export default function ResumeEditor() {
       <article className="min-h-[1056px] bg-white px-8 py-12 shadow-lg md:px-16" data-testid="resume-document">
         <header className="border-b-2 border-slate-800 pb-5 text-center"><Editable value={resume.name} onChange={(v) => update("name", v)} className="text-3xl font-bold tracking-wide" testId="resume-name" /><Editable value={resume.headline} onChange={(v) => update("headline", v)} className="mt-1 text-lg text-slate-600" testId="resume-headline" /><Editable value={[resume.location, resume.email, resume.phone].filter(Boolean).join(" | ")} onChange={(v) => { const [location, email, phone] = v.split("|").map((x) => x.trim()); setResume((old) => ({ ...old, location, email, phone })); }} className="mt-2 text-sm text-slate-600" testId="resume-contact" /></header>
         <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">PROFESSIONAL SUMMARY</h2><Editable value={resume.bio} onChange={(v) => update("bio", v)} className="mt-3 whitespace-pre-wrap leading-6" multiline testId="resume-summary" /></section>
-        <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">SKILLS</h2><Editable value={list(resume.skills).join(" \u2022 ")} onChange={(v) => update("skills", v.split(/[,;|\n\u2022]+/).map((x) => x.trim()).filter(Boolean))} className="mt-3 leading-6" multiline testId="resume-skills" /></section>
+        <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">SKILLS</h2><Editable value={list(resume.skills).join(" \u2022 ")} onChange={(v) => { const skills = parseSkills(v); skillsDraftRef.current = skills; update("skills", skills); }} className="mt-3 leading-6" multiline testId="resume-skills" /></section>
         <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">PROFESSIONAL EXPERIENCE</h2><div className="mt-3">{renderEntries("work_experience")}</div></section>
         {list(resume.projects).length > 0 && <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">PROJECTS</h2><div className="mt-3">{renderEntries("projects")}</div></section>}
         <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">EDUCATION</h2><div className="mt-3">{renderEntries("education")}</div></section>

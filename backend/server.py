@@ -6099,6 +6099,35 @@ _CONCATENATED_SKILL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Spaces are meaningful inside skill names, but lost separators can be safely
+# recovered around technical tokens (acronyms/versioned names and camel-cased
+# product names). The surrounding words remain one phrase.
+_LEGACY_TECHNICAL_SKILL_START = re.compile(
+    r"(?<![A-Za-z0-9+#.])(?:[A-Z]{2,}\d*|[A-Z][A-Za-z]*[a-z][A-Z][A-Za-z0-9+#.]*)\b"
+)
+
+
+def _split_legacy_technical_boundaries(text_value: str) -> list[str]:
+    """Recover lost legacy separators without treating ordinary spaces as delimiters."""
+    starts = list(_LEGACY_TECHNICAL_SKILL_START.finditer(text_value))
+    if len(starts) < 2:
+        return [text_value]
+    parts = [text_value[match.start():next_match.start()].strip() for match, next_match in zip(starts, starts[1:])]
+    parts.append(text_value[starts[-1].start():].strip())
+    recovered: list[str] = []
+    for part in parts:
+        # Keep a trailing title-cased phrase together (e.g. "Computer Vision")
+        # while separating it from the preceding technical token.
+        trailing_phrase = re.fullmatch(
+            r"((?:[A-Z]{2,}\d*|[A-Z][A-Za-z]*[a-z][A-Z][A-Za-z0-9+#.]*))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+            part,
+        )
+        if trailing_phrase:
+            recovered.extend([trailing_phrase.group(1), trailing_phrase.group(2)])
+        elif part:
+            recovered.append(part)
+    return recovered
+
 
 def _split_skill_value(value: Any) -> list[str]:
     """Turn a skill value into individual skills without splitting phrases."""
@@ -6111,6 +6140,10 @@ def _split_skill_value(value: Any) -> list[str]:
     text_value = _normalize_profile_text(value)
     if not text_value:
         return []
+    # Preserve a complete, known multi-word alias before attempting structural
+    # legacy repair (for example, ``Node JS`` is one skill, not two acronyms).
+    if text_value.casefold() in _CONCATENATED_SKILL_CANONICAL:
+        return [_CONCATENATED_SKILL_CANONICAL[text_value.casefold()]]
     # Slash is intentionally not a delimiter: it is meaningful in CI/CD.
     pieces = [piece.strip() for piece in re.split(r"[,;|\n\r\u2022]+", text_value) if piece.strip()]
     if len(pieces) != 1:
@@ -6120,7 +6153,7 @@ def _split_skill_value(value: Any) -> list[str]:
     # spaces or no delimiter while preserving unknown legitimate phrases.
     if len(matches) >= 2 and not _CONCATENATED_SKILL_PATTERN.sub("", text_value).strip():
         return [_CONCATENATED_SKILL_CANONICAL[match.group(0).casefold()] for match in matches]
-    return [text_value]
+    return _split_legacy_technical_boundaries(text_value)
 
 
 def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
@@ -7708,10 +7741,10 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     for field in ("skills", "work_experience", "education", "certifications", "projects"):
         if not isinstance(next_values.get(field), list):
             raise HTTPException(status_code=422, detail=f"{field} must be a list.")
-    next_values["skills"] = _merge_skills(
-        candidate.get("skills") or [],
-        next_values["skills"],
-        certifications=next_values["certifications"],
+    # The editor sends the complete skills document. Do not merge stale
+    # canonical values back into it; that was preserving legacy concatenations.
+    next_values["skills"] = _normalize_skills(
+        next_values["skills"], certifications=next_values["certifications"]
     )
     next_values["certifications"] = _normalize_certifications(next_values["certifications"])
     next_values["projects"] = _normalize_projects(next_values["projects"])
