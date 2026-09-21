@@ -20,6 +20,18 @@ describe("ResumeEditor profile refresh", () => {
     await act(async () => { root.unmount(); });
   });
 
+  it("renders each cleaned canonical skill as a separate bullet-delimited value", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const canonicalSkills = ["React.js", "Node.js", "Frontend Development", "AI Applications", "Google Cloud Platform", "Database Design", "Problem Solving", "Object-Oriented Programming", "SQL", "HTML5"];
+    axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: canonicalSkills }, match_score: 50, missing_skills: [] } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="resume-skills"]').textContent).toBe(canonicalSkills.join(" \u2022 "));
+    await act(async () => { root.unmount(); });
+  });
+
   it("notifies the dashboard to refetch the canonical profile after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });

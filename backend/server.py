@@ -6074,16 +6074,27 @@ def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
     return len(cert_relaxed.split()) >= 2
 
 
-_CONCATENATED_SKILL_NAMES = (
-    # Split separator-less legacy text only when every segment is a recognized skill.
-    "Google Cloud Platform", "Object-Oriented Programming", "Frontend Development",
-    "Backend Development", "Full Stack Development", "AI Applications",
-    "Machine Learning", "Deep Learning", "Data Analysis", "Data Science",
-    "Project Management", "Product Management", "Software Development",
-    "React Native", "React.js", "React JS", "Node.js", "Node JS",
-    "TypeScript", "JavaScript", "PostgreSQL", "MongoDB", "Kubernetes",
-    "Docker", "FastAPI", "Spring Boot", "REST APIs", "GraphQL", "Next.js",
-    "Angular", "Vue.js", "Python", "Java", "C++", "C#", "AWS", "Azure",
+# This deliberately conservative vocabulary repairs historical values such as
+# ``Node.jsFrontend Development`` without guessing at free-form skill phrases.
+_CONCATENATED_SKILL_ALIASES = (
+    ("Google Cloud Platform", "Google Cloud Platform"), ("Object-Oriented Programming", "Object-Oriented Programming"),
+    ("Frontend Development", "Frontend Development"), ("Backend Development", "Backend Development"),
+    ("Full Stack Development", "Full Stack Development"), ("AI Applications", "AI Applications"),
+    ("Database Design", "Database Design"), ("Problem Solving", "Problem Solving"),
+    ("Machine Learning", "Machine Learning"), ("Deep Learning", "Deep Learning"), ("Data Analysis", "Data Analysis"),
+    ("Data Science", "Data Science"), ("Project Management", "Project Management"), ("Product Management", "Product Management"),
+    ("Software Development", "Software Development"), ("React Native", "React Native"),
+    ("React.js", "React.js"), ("React JS", "React.js"), ("Node.js", "Node.js"), ("Node JS", "Node.js"),
+    ("TypeScript", "TypeScript"), ("JavaScript", "JavaScript"), ("PostgreSQL", "PostgreSQL"), ("MongoDB", "MongoDB"),
+    ("Kubernetes", "Kubernetes"), ("FastAPI", "FastAPI"), ("Spring Boot", "Spring Boot"), ("REST APIs", "REST APIs"),
+    ("GraphQL", "GraphQL"), ("Next.js", "Next.js"), ("HTML5", "HTML5"), ("Docker", "Docker"),
+    ("Angular", "Angular"), ("Vue.js", "Vue.js"), ("Python", "Python"), ("Java", "Java"),
+    ("SQL", "SQL"), ("C++", "C++"), ("C#", "C#"), ("AWS", "AWS"), ("Azure", "Azure"),
+)
+_CONCATENATED_SKILL_CANONICAL = {alias.casefold(): canonical for alias, canonical in _CONCATENATED_SKILL_ALIASES}
+_CONCATENATED_SKILL_PATTERN = re.compile(
+    "|".join(re.escape(alias) for alias, _ in sorted(_CONCATENATED_SKILL_ALIASES, key=lambda item: len(item[0]), reverse=True)),
+    re.IGNORECASE,
 )
 
 
@@ -6102,10 +6113,11 @@ def _split_skill_value(value: Any) -> list[str]:
     pieces = [piece.strip() for piece in re.split(r"[,;|\n\r\u2022]+", text_value) if piece.strip()]
     if len(pieces) != 1:
         return [part for piece in pieces for part in _split_skill_value(piece)]
-    pattern = re.compile("|".join(re.escape(name) for name in sorted(_CONCATENATED_SKILL_NAMES, key=len, reverse=True)), re.IGNORECASE)
-    matches = list(pattern.finditer(text_value))
-    if len(matches) >= 2 and not pattern.sub("", text_value).strip():
-        return [match.group(0).strip() for match in matches]
+    matches = list(_CONCATENATED_SKILL_PATTERN.finditer(text_value))
+    # Split only a complete sequence of known skills. This supports values with
+    # spaces or no delimiter while preserving unknown legitimate phrases.
+    if len(matches) >= 2 and not _CONCATENATED_SKILL_PATTERN.sub("", text_value).strip():
+        return [_CONCATENATED_SKILL_CANONICAL[match.group(0).casefold()] for match in matches]
     return [text_value]
 
 

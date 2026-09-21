@@ -121,6 +121,35 @@ def test_resume_editor_save_never_persists_a_delimited_skill_as_one_item(monkeyp
     assert all("React.js, Node.js" not in skill for skill in saved_skills)
 
 
+def test_resume_editor_save_repairs_the_reported_legacy_concatenated_skills(monkeypatch):
+    state = {}
+
+    async def get_candidate(_candidate_id):
+        candidate = _candidate()
+        candidate["skills"] = [
+            "React.js Node.jsFrontend DevelopmentAI Applications Google Cloud Platform Database Design AI Applications",
+            "Problem SolvingObject-Oriented ProgrammingSQLHTML5",
+        ]
+        return candidate
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {
+        "skills": ["React.jsNode.js", "HTML5", "SQL"],
+    }))
+
+    saved_skills = json.loads(state["params"]["skills"])
+    assert saved_skills == [
+        "React.js", "Node.js", "Frontend Development", "AI Applications",
+        "Google Cloud Platform", "Database Design", "Problem Solving",
+        "Object-Oriented Programming", "SQL", "HTML5",
+    ]
+    assert all("Frontend DevelopmentAI" not in skill for skill in saved_skills)
+    assert all("ProgrammingSQL" not in skill for skill in saved_skills)
+    assert server._job_missing_requirements(saved_skills, "", {"skills": saved_skills})["missing_skills"] == []
+
+
 def test_missing_skills_uses_normalized_canonical_profile_skills():
     gaps = server._job_missing_requirements(
         ["React.js", "Node.js", "Type Script", "Docker", "React JS"],
