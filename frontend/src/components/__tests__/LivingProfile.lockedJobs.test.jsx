@@ -32,19 +32,35 @@ function renderJobs(jobs, onLockedJobClick = jest.fn()) {
 }
 
 describe("JobsTab locked recommendations", () => {
-  it("renders accessible jobs normally and redacted locked cards in the horizontal list", () => {
-    const view = renderJobs([
-      { id: "job-1", title: "Engineer", company: "Acme", description: "Build products", locked: false },
-      { id: "job-2", title: "Hidden title", locked: true },
-    ]);
+  it("stacks every ranked match vertically, keeping the first three accessible and later matches redacted", () => {
+    const view = renderJobs(Array.from({ length: 6 }, (_, index) => ({
+      id: `job-${index + 1}`,
+      title: index < 3 ? `Engineer ${index + 1}` : "Hidden title",
+      company: "Acme",
+      description: "Build products",
+      locked: index >= 3,
+    })));
 
-    expect(view.container.querySelector('[data-testid="jobs-horizontal-list"]')).toBeTruthy();
-    expect(view.container.querySelector('[data-testid="job-card-job-1"]')).toBeTruthy();
-    const locked = view.container.querySelector('[data-testid="locked-job-card-job-2"]');
+    const list = view.container.querySelector('[data-testid="jobs-vertical-list"]');
+    expect(list).toBeTruthy();
+    expect(list.className).toContain("flex-col");
+    expect(list.className).not.toContain("overflow-x-auto");
+    expect([...list.children].map((card) => card.dataset.testid)).toEqual([
+      "job-card-job-1",
+      "job-card-job-2",
+      "job-card-job-3",
+      "locked-job-card-job-4",
+      "locked-job-card-job-5",
+      "locked-job-card-job-6",
+    ]);
+    expect(view.container.querySelectorAll('[data-testid^="job-card-"]')).toHaveLength(3);
+    expect(view.container.querySelectorAll('[data-testid^="locked-job-card-"]')).toHaveLength(3);
+    const locked = view.container.querySelector('[data-testid="locked-job-card-job-4"]');
     expect(locked).toBeTruthy();
     expect(locked.textContent).toContain("Unlock this match");
     expect(locked.textContent).not.toContain("Hidden title");
     expect(locked.querySelector(".blur-\\[7px\\]")).toBeTruthy();
+    expect(locked.className).toContain("w-full");
     view.unmount();
   });
 

@@ -609,7 +609,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
           </div>
         )}
 
-        <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1 eve-scroll" data-testid="jobs-horizontal-list">
+        <div className="flex flex-col gap-3" data-testid="jobs-vertical-list">
           {jobs.map((job) => {
             if (job.locked) {
               return (
@@ -619,7 +619,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   data-testid={`locked-job-card-${job.id}`}
                   aria-label="Locked job match. View plans to unlock."
                   onClick={onLockedJobClick}
-                  className="relative h-[224px] w-[278px] shrink-0 overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
+                  className="relative min-h-[176px] w-full overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
                 >
                   <div className="pointer-events-none select-none p-4 blur-[7px]" aria-hidden="true">
                     <div className="h-10 w-10 rounded-lg bg-[#E7E3F0]" />
@@ -655,7 +655,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   }
                 }}
                 data-testid={`job-card-${job.id}`}
-                className={`h-[224px] w-[278px] shrink-0 overflow-hidden text-left rounded-xl px-4 py-4 transition-colors eve-hover-row ${
+                className={`min-h-[176px] w-full overflow-hidden text-left rounded-xl border border-black/[0.06] bg-white px-4 py-4 shadow-sm transition-colors eve-hover-row ${
                   isSelected ? "bg-black/[0.04]" : ""
                 }`}
               >
