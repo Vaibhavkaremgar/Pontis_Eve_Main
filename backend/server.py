@@ -7540,7 +7540,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
     ]
 
 
-def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict) -> dict:
+def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None) -> dict:
     """Explain gaps without altering the matcher or claiming unverified candidate data."""
     def clean(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -7555,16 +7555,21 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
     requirement_text = clean(requirements)
     requirement_lines = [line.strip(" -•\t") for line in re.split(r"[\r\n]+|(?<=[.!?])\s+", requirement_text)
                          if len(line.strip(" -•\t")) > 3]
-    return {"missing_skills": missing_skills, "requirements": requirement_lines[:8]}
+    # Experience requirements are guidance only.  They are deliberately not
+    # inferred into the profile or treated as candidate-provided evidence.
+    experience_requirement = clean(experience_required)
+    return {
+        "missing_skills": missing_skills,
+        "requirements": requirement_lines[:8],
+        "experience_requirement": experience_requirement or None,
+    }
 
 
-@api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
-async def get_job_match_improvement(candidate_id: str, rec_id: str):
-    """Return only the selected job's gaps, scoped to an existing recommendation."""
-    candidate = await _get_candidate_row(candidate_id)
+async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict:
+    """Load the selected recommendation's job context after verifying ownership."""
     async with SessionLocal() as db:
         result = await db.execute(text("""
-            SELECT cjr.match_score, jd.skills, jd.requirements
+            SELECT cjr.match_score, jd.skills, jd.requirements, jd.experience_required
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -7573,16 +7578,27 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
         row = result.mappings().fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Recommendation not found.")
+    return dict(row)
+
+
+@api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
+async def get_job_match_improvement(candidate_id: str, rec_id: str):
+    """Return only the selected job's gaps, scoped to an existing recommendation."""
+    candidate = await _get_candidate_row(candidate_id)
+    row = await _get_job_match_improvement_row(candidate_id, rec_id)
     return {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
-        **_job_missing_requirements(row["skills"], row["requirements"], candidate),
+        **_job_missing_requirements(row["skills"], row["requirements"], candidate, row["experience_required"]),
     }
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
 async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImprovementRequest):
     """Persist only explicitly confirmed skills, then reuse the normal matcher."""
-    await get_job_match_improvement(candidate_id, rec_id)  # ownership check; no daily-limit mutation
+    guidance = await get_job_match_improvement(candidate_id, rec_id)  # ownership check; no daily-limit mutation
+    job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
+    previous_score = guidance["match_score"]
+    before = await _get_candidate_row(candidate_id)
     confirmed_skills = [skill.strip() for skill in request.skills if isinstance(skill, str) and skill.strip()]
     if not confirmed_skills:
         raise HTTPException(status_code=422, detail="Confirm at least one skill before updating your profile.")
@@ -7600,9 +7616,24 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
             WHERE id = :rid AND candidate_id = :cid LIMIT 1
         """), {"rid": rec_id, "cid": candidate_id})
         score = result.scalar()
+    current_skills = {str(skill).strip().lower() for skill in (before.get("skills") or []) if str(skill).strip()}
+    changed_skills = [skill for skill in confirmed_skills if skill.lower() not in current_skills]
+    remaining = _job_missing_requirements(
+        # Re-use the selected job's guidance rather than creating a new job or
+        # substituting a recommendation from a fresh retrieval.
+        job_context["skills"],
+        job_context["requirements"],
+        candidate,
+        job_context["experience_required"],
+    )
     return {
         "updated": bool(update_result.get("updated")),
+        "previous_match_score": previous_score,
         "match_score": float(score) if score is not None else None,
+        "changed_skills": changed_skills,
+        "remaining_missing_skills": remaining["missing_skills"],
+        "remaining_requirements": remaining["requirements"],
+        "experience_requirement": remaining["experience_requirement"],
         "resume_download_url": f"/api/candidate/{candidate_id}/profile/download",
     }
 

@@ -88,6 +88,35 @@ function SkillPill({ label }) {
   );
 }
 
+function scorePercent(score) {
+  if (score == null || !Number.isFinite(Number(score))) return null;
+  const value = Number(score);
+  return Math.round(value * (value <= 1 ? 100 : 1));
+}
+
+function MatchScoreOdometer({ from, to }) {
+  const start = scorePercent(from);
+  const finish = scorePercent(to);
+  const [display, setDisplay] = React.useState(start ?? finish ?? 0);
+
+  React.useEffect(() => {
+    if (finish == null) return undefined;
+    const initial = start ?? finish;
+    let frame;
+    const startedAt = performance.now();
+    const tick = (now) => {
+      const progress = Math.min((now - startedAt) / 950, 1);
+      setDisplay(Math.round(initial + (finish - initial) * progress));
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    setDisplay(initial);
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [start, finish]);
+
+  return <span aria-live="polite" data-testid="match-score-odometer" className="tabular-nums text-[36px] font-semibold tracking-tight text-[#2E7538]">{finish == null ? "—" : `${display}%`}</span>;
+}
+
 export function NotInterestedReasonModal({ open, job, busy = false, onClose, onConfirm }) {
   const [selectedReason, setSelectedReason] = React.useState(NOT_INTERESTED_REASONS[0]);
 
@@ -186,6 +215,7 @@ function ImproveMatchModal({ job, data, busy, onClose, onApplyCurrent, onConfirm
       <div className="max-h-[55vh] space-y-4 overflow-y-auto px-5 py-4">
         <div><p className="text-[12px] font-medium">Missing skills</p>{data ? (data.missing_skills?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{data.missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div> : <p className="mt-1 text-[12px] text-[#4A4A48]">No specific skill gap was identified.</p>) : <p className="mt-1 text-[12px] text-[#9A9A98]">Checking your profile…</p>}</div>
         {data?.requirements?.length > 0 && <div><p className="text-[12px] font-medium">Job requirements to confirm</p><ul className="mt-2 space-y-1 text-[12px] text-[#4A4A48]">{data.requirements.map((requirement, index) => <li key={index}>• {requirement}</li>)}</ul></div>}
+        {data?.experience_requirement && <div><p className="text-[12px] font-medium">Experience / qualification requirement</p><p className="mt-1 text-[12px] text-[#4A4A48]">{data.experience_requirement}</p></div>}
         <div className="rounded-xl bg-black/[.03] p-3"><label className="text-[12px] font-medium" htmlFor="confirmed-skills">Skills you actually have</label><input id="confirmed-skills" data-testid="confirmed-skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="e.g. Python, SQL" className="mt-2 w-full rounded-lg border border-black/[.1] bg-white px-3 py-2 text-[13px]" /><label className="mt-3 flex gap-2 text-[12px] text-[#4A4A48]"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I confirm these details are accurate and mine.</label></div>
       </div>
       <div className="flex gap-3 border-t border-black/[.06] px-5 py-4"><button onClick={onApplyCurrent} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Apply with Current Resume</button><button data-testid="fix-my-resume" disabled={busy || !confirmed || !submittedSkills.length} onClick={() => onConfirm(submittedSkills)} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white disabled:opacity-50">{busy ? "Updating…" : "Fix My Resume"}</button></div>
@@ -193,9 +223,11 @@ function ImproveMatchModal({ job, data, busy, onClose, onApplyCurrent, onConfirm
   </div>;
 }
 
-function UpdatedResumeModal({ job, score, onDownload, onApply, onClose }) {
-  const pct = score == null ? "updated" : `${Math.round(score * (score <= 1 ? 100 : 1))}%`;
-  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="updated-resume-modal"><div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] p-5 shadow-2xl"><h3 className="text-[16px] font-medium">Your resume is updated</h3><p className="mt-2 text-[13px] text-[#4A4A48]">Your match has been recalculated: {pct}.</p><div className="mt-5 flex gap-3"><button data-testid="download-updated-resume" onClick={onDownload} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Download updated resume</button><button onClick={onApply} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white">Apply Now</button></div><button onClick={onClose} className="mt-3 w-full text-[12px] text-[#4A4A48]">Close</button></div></div>;
+function UpdatedResumeModal({ job, result, onDownload, onApply, onClose }) {
+  const previous = scorePercent(result.previous_match_score);
+  const current = scorePercent(result.match_score);
+  const improved = previous != null && current != null && current > previous;
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="updated-resume-modal"><div className="w-full max-w-md rounded-2xl bg-[#FBFBF9] p-5 shadow-2xl"><h3 className="text-[16px] font-medium">Your resume is updated</h3><div className="mt-4 rounded-xl bg-[#E7F2E4] px-4 py-3 text-center"><p className="text-[11px] font-medium uppercase tracking-wide text-[#4A4A48]">Match recalculated</p><MatchScoreOdometer from={result.previous_match_score} to={result.match_score} /><p className="text-[12px] text-[#4A4A48]">Previous match: {previous == null ? "—" : `${previous}%`}</p></div><p className="mt-3 text-[13px] text-[#4A4A48]">{improved ? "Your confirmed details improved this job's match." : "The score did not improve. More relevant, confirmed information may be needed."}</p>{result.changed_skills?.length > 0 && <div className="mt-4"><p className="text-[12px] font-medium">What changed</p><div className="mt-2 flex flex-wrap gap-1.5">{result.changed_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div></div>}{result.remaining_missing_skills?.length > 0 && <div className="mt-4"><p className="text-[12px] font-medium">Still missing for this role</p><div className="mt-2 flex flex-wrap gap-1.5">{result.remaining_missing_skills.map((skill) => <SkillPill key={skill} label={skill} />)}</div></div>}{result.remaining_requirements?.length > 0 && <div className="mt-4"><p className="text-[12px] font-medium">Remaining job requirements</p><ul className="mt-2 space-y-1 text-[12px] text-[#4A4A48]">{result.remaining_requirements.slice(0, 4).map((requirement, index) => <li key={index}>• {requirement}</li>)}</ul></div>}<div className="mt-5 flex gap-3"><button data-testid="download-updated-resume" onClick={onDownload} className="flex-1 rounded-xl bg-black/[.05] py-2.5 text-[13px]">Download updated resume</button><button onClick={onApply} className="flex-1 rounded-xl bg-[#1F1F1F] py-2.5 text-[13px] text-white">Apply Now</button></div><button onClick={onClose} className="mt-3 w-full text-[12px] text-[#4A4A48]">Close</button></div></div>;
 }
 
 // ─── Job Detail Modal ────────────────────────────────────────────────────────
@@ -634,7 +666,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         onConfirm={handleConfirmDismiss}
       />
       <ImproveMatchModal job={improvementJob} data={improvementData} busy={improving} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); }} onConfirm={confirmImprovement} />
-      {updatedMatch && <UpdatedResumeModal job={updatedMatch.job} score={updatedMatch.match_score} onDownload={() => window.open(`${API}${updatedMatch.resume_download_url}`, "_blank", "noopener,noreferrer")} onApply={() => { openJobUrl(updatedMatch.job); setUpdatedMatch(null); }} onClose={() => setUpdatedMatch(null)} />}
+      {updatedMatch && <UpdatedResumeModal job={updatedMatch.job} result={updatedMatch} onDownload={() => window.open(`${API}${updatedMatch.resume_download_url}`, "_blank", "noopener,noreferrer")} onApply={() => { openJobUrl(updatedMatch.job); setUpdatedMatch(null); }} onClose={() => setUpdatedMatch(null)} />}
       {/* Detail modal overlay */}
       {detailJob && (
         <JobDetailModal
