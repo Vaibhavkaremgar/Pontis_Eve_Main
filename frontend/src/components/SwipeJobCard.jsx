@@ -218,7 +218,8 @@ function ImproveMatchModal({ job, data, onClose, onApplyCurrent, onFixResume }) 
   </div>;
 }
 
-function ResumeImprovementEditor({ job, data, busy, onClose, onSave }) {
+/* The full resume editor lives on /resume-editor so it can be opened in its own tab. */
+function LegacyResumeImprovementEditor({ job, data, busy, onClose, onSave }) {
   const [resume, setResume] = React.useState({});
   const [error, setError] = React.useState("");
   React.useEffect(() => { if (data?.resume) setResume(data.resume); }, [data]);
@@ -556,9 +557,6 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
-  const [editingImprovement, setEditingImprovement] = React.useState(false);
-  const [improving, setImproving] = React.useState(false);
-  const [updatedMatch, setUpdatedMatch] = React.useState(null);
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
   const exhaustionRequestedRef = React.useRef(false);
@@ -611,20 +609,24 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
     if (!job || applying) return;
     const score = Number(job.match_score);
     if (job.job_url && Number.isFinite(score) && score * (score <= 1 ? 100 : 1) < 90) {
-      setImprovementJob(job); setImprovementData(null); setEditingImprovement(false);
+      setImprovementJob(job); setImprovementData(null);
       try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
       catch { toast.error("Couldn't load match details. Please try again."); }
       return;
     }
     openJobUrl(job);
   }, [detailJob, applying, candidateId, openJobUrl]);
-  const confirmImprovement = React.useCallback(async (profileUpdates) => {
-    if (!improvementJob || improving) return;
-    setImproving(true);
-    try { const response = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/match-improvement`, { profile_updates: profileUpdates }); setEditingImprovement(false); setImprovementJob(null); setUpdatedMatch({ job: improvementJob, ...response.data }); onJobsChange?.(); }
-    catch (error) { toast.error(error?.response?.data?.detail || "Couldn't update your profile. Please try again."); }
-    finally { setImproving(false); }
-  }, [improvementJob, improving, candidateId, onJobsChange]);
+  const openResumeEditor = React.useCallback(() => {
+    if (!improvementJob) return;
+    const params = new URLSearchParams({
+      candidate_id: candidateId,
+      recommendation_id: improvementJob.id,
+      previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? ""),
+    });
+    if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
+    window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
+    setImprovementJob(null);
+  }, [candidateId, improvementData?.match_score, improvementJob]);
 
   const handleRequestDismiss = React.useCallback((job) => {
     if (!job) return;
@@ -682,9 +684,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
-      <ImproveMatchModal job={improvementJob && !editingImprovement ? improvementJob : null} data={improvementData} onClose={() => { setImprovementJob(null); setEditingImprovement(false); }} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); setEditingImprovement(false); }} onFixResume={() => setEditingImprovement(true)} />
-      <ResumeImprovementEditor job={editingImprovement ? improvementJob : null} data={improvementData} busy={improving} onClose={() => setEditingImprovement(false)} onSave={confirmImprovement} />
-      {updatedMatch && <UpdatedResumeModal job={updatedMatch.job} result={updatedMatch} onDownload={() => window.open(`${API}${updatedMatch.resume_download_url}`, "_blank", "noopener,noreferrer")} onApply={() => { openJobUrl(updatedMatch.job); setUpdatedMatch(null); }} onClose={() => setUpdatedMatch(null)} />}
+      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {/* Detail modal overlay */}
       {detailJob && (
         <JobDetailModal

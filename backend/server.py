@@ -7569,7 +7569,7 @@ async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict
     """Load the selected recommendation's job context after verifying ownership."""
     async with SessionLocal() as db:
         result = await db.execute(text("""
-            SELECT cjr.match_score, jd.skills, jd.requirements, jd.experience_required
+            SELECT cjr.match_score, jd.skills, jd.requirements, jd.experience_required, jd.job_url
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -7668,6 +7668,7 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
     return {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
         "resume": _resume_editor_payload(candidate),
+        "job_url": row.get("job_url") or None,
         **_job_missing_requirements(row["skills"], row["requirements"], candidate, row["experience_required"]),
     }
 

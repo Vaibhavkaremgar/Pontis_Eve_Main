@@ -189,7 +189,7 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(openSpy).not.toHaveBeenCalled();
   });
 
-  it("lets Fix My Resume enter the job-scoped editor without preliminary claims", async () => {
+  it("opens Fix My Resume in a new job-scoped editor tab without preliminary claims", async () => {
     axios.get.mockResolvedValueOnce({ data: { match_score: 0.72, missing_skills: ["Kubernetes"], requirements: ["Kubernetes experience required"] } });
     renderResult = renderDeck({ jobs: [{ id: "job-1", title: "Senior Product Manager", company: "Acme", match_score: 0.72, job_url: "https://acme.example/jobs/1" }] });
     await act(async () => {
@@ -199,7 +199,8 @@ describe("SwipeJobDeck job details navigation", () => {
     const fix = renderResult.container.querySelector('[data-testid="fix-my-resume"]');
     expect(fix.disabled).toBe(false);
     act(() => fix.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(renderResult.container.querySelector('[data-testid="resume-improvement-editor"]')).toBeTruthy();
-    expect(renderResult.container.textContent).toContain("Kubernetes");
+    expect(openSpy).toHaveBeenCalledWith(expect.stringContaining("/resume-editor?"), "_blank", "noopener,noreferrer");
+    expect(openSpy.mock.calls.at(-1)[0]).toContain("candidate_id=cand-123");
+    expect(openSpy.mock.calls.at(-1)[0]).toContain("recommendation_id=job-1");
   });
 });
