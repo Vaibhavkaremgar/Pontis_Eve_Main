@@ -919,7 +919,7 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId }) {
   );
 }
 
-function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
+function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
   const resumeInputRef = React.useRef(null);
   const certInputRef = React.useRef(null);
   const certReplaceRefs = React.useRef({});
@@ -927,7 +927,28 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
   const [deleteError, setDeleteError] = React.useState(null);
   const [confirmDelete, setConfirmDelete] = React.useState(null); // { type: 'resume' } | { type: 'cert', id, filename }
 
-  const viewUrl = (path) => `${API}${path}`;
+  const authHeaders = candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {};
+  const postDocument = (path, formData) => (
+    candidateToken
+      ? axios.post(`${API}${path}`, formData, { headers: authHeaders })
+      : axios.post(`${API}${path}`, formData)
+  );
+
+  const openDocument = async (event, path) => {
+    event.preventDefault();
+    const documentWindow = window.open("", "_blank");
+    if (documentWindow) documentWindow.opener = null;
+    try {
+      const response = await axios.get(`${API}${path}`, { headers: authHeaders, responseType: "blob" });
+      const objectUrl = window.URL.createObjectURL(response.data);
+      if (documentWindow) documentWindow.location.href = objectUrl;
+      else window.location.href = objectUrl;
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 60_000);
+    } catch {
+      documentWindow?.close();
+      setDeleteError("Document could not be opened. Please try again.");
+    }
+  };
 
   const handleResumeReplace = async (file) => {
     if (!file || !candidateId) return;
@@ -942,7 +963,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
       }
       const fd = new FormData();
       fd.append("file", file);
-      const res = await axios.post(`${API}/candidate/${candidateId}/resume/replace`, fd);
+      const res = await postDocument(`/candidate/${candidateId}/resume/replace`, fd);
       onResumeReplaced(file.name, res.data?.profile ?? null);
     } catch {
       onResumeReplaced(file.name, null);
@@ -957,7 +978,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await axios.post(`${API}/candidate/${candidateId}/certificates/upload`, fd);
+      const res = await postDocument(`/candidate/${candidateId}/certificates/upload`, fd);
       onCertUploaded(res.data);
     } catch {
       // silent
@@ -972,7 +993,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
     try {
       const fd = new FormData();
       fd.append("file", file);
-      await axios.post(`${API}/candidate/${candidateId}/certificates/${certId}/replace`, fd);
+      await postDocument(`/candidate/${candidateId}/certificates/${certId}/replace`, fd);
       onCertReplaced(certId, file.name);
     } catch {
       // silent
@@ -987,11 +1008,11 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
     setDeleteError(null);
     try {
       if (confirmDelete.type === "resume") {
-        await axios.delete(`${API}/candidate/${candidateId}/resume`);
+        await axios.delete(`${API}/candidate/${candidateId}/resume`, { headers: authHeaders });
         setConfirmDelete(null);
         onResumeDeleted();
       } else {
-        await axios.delete(`${API}/candidate/${candidateId}/certificates/${confirmDelete.id}`);
+        await axios.delete(`${API}/candidate/${candidateId}/certificates/${confirmDelete.id}`, { headers: authHeaders });
         setConfirmDelete(null);
         onCertDeleted(confirmDelete.id);
       }
@@ -1048,7 +1069,8 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
         {documents.resume ? (
           <div className="eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3">
             <a
-              href={viewUrl(`/candidate/${candidateId}/resume/view`)}
+              href={`${API}/candidate/${candidateId}/resume/view`}
+              onClick={(event) => openDocument(event, `/candidate/${candidateId}/resume/view`)}
               target="_blank"
               rel="noreferrer"
               className="text-[13px] font-medium text-[#1F1F1F] truncate hover:underline min-w-0"
@@ -1057,7 +1079,8 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
             </a>
             <div className="flex items-center gap-2 shrink-0">
               <a
-                href={viewUrl(`/candidate/${candidateId}/resume/view`)}
+                href={`${API}/candidate/${candidateId}/resume/view`}
+                onClick={(event) => openDocument(event, `/candidate/${candidateId}/resume/view`)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors"
@@ -1103,7 +1126,8 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                 className="eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3"
               >
                 <a
-                  href={viewUrl(`/candidate/${candidateId}/certificates/${cert.id}/view`)}
+                  href={`${API}/candidate/${candidateId}/certificates/${cert.id}/view`}
+                  onClick={(event) => openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)}
                   target="_blank"
                   rel="noreferrer"
                   className="text-[13px] font-medium text-[#1F1F1F] truncate hover:underline min-w-0"
@@ -1112,7 +1136,8 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                 </a>
                 <div className="flex items-center gap-2 shrink-0">
                   <a
-                    href={viewUrl(`/candidate/${candidateId}/certificates/${cert.id}/view`)}
+                    href={`${API}/candidate/${candidateId}/certificates/${cert.id}/view`}
+                    onClick={(event) => openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors"
@@ -1122,7 +1147,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
                   <input
                     ref={(el) => { certReplaceRefs.current[cert.id] = el; }}
                     type="file"
-                    accept=".pdf,.png,.jpg,.jpeg"
+                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
                     className="hidden"
                     onChange={(e) => e.target.files?.[0] && handleCertReplace(cert.id, e.target.files[0])}
                   />
@@ -1150,7 +1175,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, onResumeReplaced, o
         <input
           ref={certInputRef}
           type="file"
-          accept=".pdf,.png,.jpg,.jpeg"
+          accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && handleCertUpload(e.target.files[0])}
         />
@@ -1530,6 +1555,7 @@ export default function LivingProfile({
   documents,
   docsLoading,
   candidateId,
+  candidateToken,
   selectedJob,
   setSelectedJob,
   onTrackJob,
@@ -1623,6 +1649,7 @@ export default function LivingProfile({
               selectedJob={selectedJob}
               setSelectedJob={setSelectedJob}
               candidateId={candidateId}
+              candidateToken={candidateToken}
               onJobViewed={onJobViewed}
               onLockedJobClick={onLockedJobClick}
             />
@@ -1635,6 +1662,7 @@ export default function LivingProfile({
               documents={documents}
               docsLoading={docsLoading}
               candidateId={candidateId}
+              candidateToken={candidateToken}
               onResumeReplaced={onResumeReplaced}
               onCertUploaded={onCertUploaded}
               onCertReplaced={onCertReplaced}

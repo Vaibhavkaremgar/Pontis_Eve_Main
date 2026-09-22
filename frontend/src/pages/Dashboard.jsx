@@ -524,11 +524,13 @@ function Dashboard() {
     if (!candidateId) return;
     setDocsLoading(true);
     axios
-      .get(`${API}/candidate/${candidateId}/documents`)
+      .get(`${API}/candidate/${candidateId}/documents`, {
+        headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
+      })
       .then((res) => setDocuments(res.data))
       .catch(() => {})
       .finally(() => setDocsLoading(false));
-  }, [candidateId]);
+  }, [candidateId, candidateToken]);
 
   const sessionIdRef = React.useRef(
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -925,6 +927,7 @@ function Dashboard() {
             documents={documents}
             docsLoading={docsLoading}
             candidateId={candidateId}
+            candidateToken={candidateToken}
             selectedJob={selectedJob}
             setSelectedJob={setSelectedJob}
             onTrackJob={handleTrackJob}

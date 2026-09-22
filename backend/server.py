@@ -27,6 +27,7 @@ import io
 import asyncio
 import html
 import textwrap
+import mimetypes
 from app.job_ingestion.lifecycle import candidate_visible_where
 
 try:  # pragma: no cover - optional dependency
@@ -1256,6 +1257,46 @@ def _parse_raw_data(raw_data: Any) -> dict:
 
 def _candidate_storage_dir(candidate_id: str) -> Path:
     return (DOCS_DIR / candidate_id).resolve()
+
+
+def _resolve_candidate_document_path(candidate_id: str, document_type: str, stored_reference: Any) -> Optional[Path]:
+    """Resolve a document reference inside the configured persistent volume.
+
+    Database rows created before a deployment may contain an absolute path from
+    the previous container/host.  That path is metadata, not an authority: a
+    candidate document may only be served from that candidate's directory in
+    ``EVE_DOCS_DIR``.  Rebuilding the final component under the current volume
+    keeps those rows portable across mount-path changes without ever consulting
+    the upload machine's filesystem.
+    """
+    if document_type not in {"resume", "certificates"} or not isinstance(stored_reference, str):
+        return None
+    reference = stored_reference.strip()
+    if not reference:
+        return None
+    root = (_candidate_storage_dir(candidate_id) / document_type).resolve()
+    try:
+        stored_path = Path(reference).resolve()
+        stored_path.relative_to(root)
+        return stored_path
+    except (OSError, ValueError):
+        pass
+
+    # Legacy absolute paths are portable by their generated storage key (the
+    # basename), not by their old machine-specific parent path.
+    filename = Path(reference).name
+    if not filename or filename in {".", ".."}:
+        return None
+    candidate = (root / filename).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _document_media_type(path: Path) -> str:
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
 def _issue_candidate_session_token(candidate_id: str) -> str:
@@ -3594,7 +3635,8 @@ async def download_candidate_profile(candidate_id: str):
 
 
 @api_router.get("/candidate/{candidate_id}/documents")
-async def get_candidate_documents(candidate_id: str):
+async def get_candidate_documents(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         resume_row = await db.execute(
@@ -3614,15 +3656,12 @@ async def get_candidate_documents(candidate_id: str):
 
 
 @api_router.get("/candidate/{candidate_id}/resume/view")
-async def view_resume(candidate_id: str, download: bool = False):
+async def view_resume(candidate_id: str, download: bool = False, authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     candidate = await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
-            # source_filename remains the document-list display metadata.  The
-            # candidate row is authoritative for the persisted upload location;
-            # internal_candidate_resumes.source_path can contain an obsolete
-            # parser/local path from earlier uploads.
-            text("SELECT source_filename FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
+            text("SELECT source_filename, source_path FROM internal_candidate_resumes WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"),
             {"cid": candidate_id},
         )
         result = row.fetchone()
@@ -3630,18 +3669,21 @@ async def view_resume(candidate_id: str, download: bool = False):
         raise HTTPException(status_code=404, detail="No resume found.")
     filename = result[0]
     persisted_path = candidate.get("resume_file_path")
-    file_path = Path(persisted_path) if persisted_path else None
+    file_path = _resolve_candidate_document_path(candidate_id, "resume", result[1])
     if not file_path or not file_path.exists():
-        raise HTTPException(status_code=404, detail="Resume file not found.")
+        file_path = _resolve_candidate_document_path(candidate_id, "resume", persisted_path)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Resume file is referenced in your profile but is unavailable in document storage.")
     disposition = "attachment" if download else "inline"
     return FileResponse(
-        str(file_path), media_type="application/pdf", filename=filename,
+        str(file_path), media_type=_document_media_type(file_path), filename=filename,
         headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
 
 
 @api_router.delete("/candidate/{candidate_id}/resume")
-async def delete_resume(candidate_id: str):
+async def delete_resume(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -3658,9 +3700,10 @@ async def delete_resume(candidate_id: str):
             {"rid": resume_id, "cid": candidate_id},
         )
         await db.commit()
-    if source_path:
+    stored_file_path = _resolve_candidate_document_path(candidate_id, "resume", source_path)
+    if stored_file_path:
         try:
-            Path(source_path).unlink(missing_ok=True)
+            stored_file_path.unlink(missing_ok=True)
         except Exception as e:
             logger.warning("Could not delete resume file %s: %s", source_path, e)
     return {"status": "deleted"}
@@ -3680,7 +3723,8 @@ async def verify_resume_identity(candidate_id: str, file: UploadFile = File(...)
 
 
 @api_router.post("/candidate/{candidate_id}/resume/replace")
-async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
+async def replace_resume(candidate_id: str, file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF resumes are supported.")
@@ -3705,9 +3749,10 @@ async def replace_resume(candidate_id: str, file: UploadFile = File(...)):
 
 
 @api_router.post("/candidate/{candidate_id}/certificates/upload")
-async def upload_certificate(candidate_id: str, file: UploadFile = File(...)):
+async def upload_certificate(candidate_id: str, file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
-    allowed = (".pdf", ".png", ".jpg", ".jpeg")
+    allowed = (".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg")
     if not any((file.filename or "").lower().endswith(ext) for ext in allowed):
         raise HTTPException(status_code=400, detail="Unsupported file type.")
 
@@ -3729,7 +3774,8 @@ async def upload_certificate(candidate_id: str, file: UploadFile = File(...)):
 
 
 @api_router.get("/candidate/{candidate_id}/certificates/{cert_id}/view")
-async def view_certificate(candidate_id: str, cert_id: str, download: bool = False):
+async def view_certificate(candidate_id: str, cert_id: str, download: bool = False, authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -3740,20 +3786,19 @@ async def view_certificate(candidate_id: str, cert_id: str, download: bool = Fal
     if not result:
         raise HTTPException(status_code=404, detail="Certificate not found.")
     filename, file_path = result[0], result[1]
-    path = Path(file_path)
-    if not path.exists():
+    path = _resolve_candidate_document_path(candidate_id, "certificates", file_path)
+    if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Certificate file not available.")
-    suffix = path.suffix.lower()
-    media_type = "application/pdf" if suffix == ".pdf" else f"image/{suffix.lstrip('.')}"
     disposition = "attachment" if download else "inline"
     return FileResponse(
-        str(path), media_type=media_type, filename=filename,
+        str(path), media_type=_document_media_type(path), filename=filename,
         headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
 
 
 @api_router.delete("/candidate/{candidate_id}/certificates/{cert_id}")
-async def delete_certificate(candidate_id: str, cert_id: str):
+async def delete_certificate(candidate_id: str, cert_id: str, authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -3770,18 +3815,20 @@ async def delete_certificate(candidate_id: str, cert_id: str):
             {"cid": cert_id, "owner": candidate_id},
         )
         await db.commit()
-    if file_path:
+    stored_file_path = _resolve_candidate_document_path(candidate_id, "certificates", file_path)
+    if stored_file_path:
         try:
-            Path(file_path).unlink(missing_ok=True)
+            stored_file_path.unlink(missing_ok=True)
         except Exception as e:
             logger.warning("Could not delete certificate file %s: %s", file_path, e)
     return {"status": "deleted"}
 
 
 @api_router.post("/candidate/{candidate_id}/certificates/{cert_id}/replace")
-async def replace_certificate(candidate_id: str, cert_id: str, file: UploadFile = File(...)):
+async def replace_certificate(candidate_id: str, cert_id: str, file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
     await _get_candidate_row(candidate_id)
-    allowed = (".pdf", ".png", ".jpg", ".jpeg")
+    allowed = (".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg")
     if not any((file.filename or "").lower().endswith(ext) for ext in allowed):
         raise HTTPException(status_code=400, detail="Unsupported file type.")
 
@@ -3794,8 +3841,8 @@ async def replace_certificate(candidate_id: str, cert_id: str, file: UploadFile 
     if not result:
         raise HTTPException(status_code=404, detail="Certificate not found.")
 
-    old_path = Path(result[0])
-    if old_path.exists():
+    old_path = _resolve_candidate_document_path(candidate_id, "certificates", result[0])
+    if old_path and old_path.exists():
         old_path.unlink(missing_ok=True)
 
     file_bytes = await file.read()
@@ -7167,7 +7214,7 @@ async def download_updated_resume(candidate_id: str):
         raise HTTPException(status_code=404, detail="Updated resume PDF not found.")
     filename = _pdf_filename(_pdf_safe_text(candidate.get("name")) or f"candidate_{candidate_id}", candidate_id)
     return FileResponse(
-        str(file_path), media_type="application/pdf", filename=filename,
+        str(file_path), media_type=_document_media_type(file_path), filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
     merged_raw = _append_demonstrated_skill_evidence(
