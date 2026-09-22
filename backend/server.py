@@ -7892,6 +7892,12 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
     requirement_text = clean(requirements)
     requirement_lines = [line.strip(" -•\t") for line in re.split(r"[\r\n]+|(?<=[.!?])\s+", requirement_text)
                          if len(line.strip(" -•\t")) > 3]
+    # Lever and other ATS feeds can provide qualification lists only inside
+    # the full JD, leaving the legacy ``requirements`` column empty.  When
+    # that happens, return the same extracted requirement labels used for the
+    # display-only missing-skill guidance instead of an empty companion list.
+    if not requirement_lines:
+        requirement_lines = required_skills
     # Experience requirements are guidance only.  They are deliberately not
     # inferred into the profile or treated as candidate-provided evidence.
     experience_requirement = clean(experience_required)

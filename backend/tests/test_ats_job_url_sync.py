@@ -51,16 +51,15 @@ class FakeSession:
         sql_lower = " ".join(sql.lower().split())
         self.execute_calls.append((sql, params))
 
-        if "from job_descriptions" in sql_lower and "select id, job_url" in sql_lower:
+        if "from job_descriptions" in sql_lower and "select id, job_url, description" in sql_lower:
             row = self.state["job_row"]
             if row and row["ats_type"] == params["ats_type"] and row["ats_job_id"] == params["ats_job_id"]:
-                return FakeResult([(row["id"], row["job_url"])])
+                return FakeResult([(row["id"], row["job_url"], row["description"])])
             return FakeResult([])
 
         if "update job_descriptions" in sql_lower:
             forbidden_fields = (
                 "title =",
-                "description =",
                 "location =",
                 "salary_range =",
                 "company_name =",
@@ -76,7 +75,10 @@ class FakeSession:
 
             row = self.state["job_row"]
             assert row is not None, "UPDATE job_descriptions executed without an existing row"
-            row["job_url"] = params["job_url"]
+            if params.get("job_url") and not row["job_url"]:
+                row["job_url"] = params["job_url"]
+            if params.get("refresh_description"):
+                row["description"] = params["description"]
             row["updated_at"] = "updated-now"
             row["last_synced_at"] = "synced-now"
             self.state["update_statements"].append((sql, params))
@@ -201,6 +203,29 @@ async def test_upsert_ats_job_only_fills_missing_url(monkeypatch, existing_url, 
         assert state["job_row"]["updated_at"] == "original-updated-at"
         assert state["job_row"]["last_synced_at"] == "original-last-synced"
         assert state["update_statements"] == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_ats_job_refreshes_a_historically_truncated_jd(monkeypatch):
+    state = {
+        "job_row": _base_existing_row("https://example.com/existing"),
+        "update_statements": [],
+        "company_registry_updated": False,
+        "insert_called": False,
+    }
+    state["job_row"]["description"] = "Role overview only."
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", lambda *args: None)
+
+    async with SessionFactory(state)() as db:
+        job_id = await upsert_ats_job(db, {
+            "ats_type": "greenhouse", "ats_job_id": "ats-123", "company_name": "Jumio",
+            "description": "Role overview only.\nRequired Qualifications\nPython\nTerraform",
+            "job_url": "https://example.com/existing",
+        })
+
+    assert job_id == "existing-job-id"
+    assert "Required Qualifications" in state["job_row"]["description"]
+    assert len(state["update_statements"]) == 1
 
 
 @pytest.mark.asyncio

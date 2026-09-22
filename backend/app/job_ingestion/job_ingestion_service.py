@@ -32,7 +32,7 @@ async def upsert_ats_job(
     # Check whether this ATS job already exists.
     result = await db.execute(
         text("""
-            SELECT id, job_url
+            SELECT id, job_url, description
             FROM job_descriptions
             WHERE ats_type = :ats_type
               AND ats_job_id = :ats_job_id
@@ -49,13 +49,21 @@ async def upsert_ats_job(
     if existing:
         job_id = existing[0]
         existing_job_url = existing[1]
+        existing_description = existing[2] or ""
         incoming_job_url = _valid_http_url(job.get("job_url"))
+        incoming_description = str(job.get("description") or "").strip()
+        # Refresh only when the newly collected JD contains strictly more
+        # content.  This repairs historical rows that were saved from Lever's
+        # overview-only field without allowing a partial provider response to
+        # erase an already richer JD.
+        refresh_description = len(incoming_description) > len(existing_description.strip())
 
-        if not (existing_job_url or "").strip() and incoming_job_url is not None:
+        if (not (existing_job_url or "").strip() and incoming_job_url is not None) or refresh_description:
             await db.execute(
                 text("""
                     UPDATE job_descriptions
-                    SET job_url = :job_url,
+                    SET job_url = COALESCE(job_url, :job_url),
+                        description = CASE WHEN :refresh_description THEN :description ELSE description END,
                         is_active = TRUE,
                         status = 'active',
                         job_status = 'active',
@@ -66,12 +74,15 @@ async def upsert_ats_job(
                 {
                     "id": job_id,
                     "job_url": incoming_job_url,
+                    "description": incoming_description,
+                    "refresh_description": refresh_description,
                 },
             )
             await db.commit()
             logger.debug(
-                "[job-scheduler] Filled missing job_url for existing job ats_type=%s ats_job_id=%s db_id=%s",
+                "[job-scheduler] Refreshed existing ATS job ats_type=%s ats_job_id=%s db_id=%s description_refreshed=%s",
                 ats_type, ats_job_id, job_id,
+                refresh_description,
             )
         else:
             # A record seen on a complete current board is current again even

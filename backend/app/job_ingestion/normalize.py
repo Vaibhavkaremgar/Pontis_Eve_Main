@@ -1,3 +1,5 @@
+import html
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -32,6 +34,29 @@ def extract_ashby_job_url(job: dict[str, Any]) -> str | None:
         if url:
             return url
     return None
+
+
+def _lever_description(job: dict[str, Any]) -> str | None:
+    """Preserve Lever's overview *and* labelled JD lists.
+
+    Lever separates the opening prose in ``descriptionPlain`` from sections
+    such as qualifications in ``lists``.  Persisting only the former makes a
+    complete job look like it has no requirements downstream.
+    """
+    parts = [str(job.get("descriptionPlain") or "").strip()]
+    for section in job.get("lists") or []:
+        if not isinstance(section, dict):
+            continue
+        heading = str(section.get("text") or "").strip()
+        content = html.unescape(str(section.get("content") or ""))
+        content = re.sub(r"</?(?:p|li|ul|ol|h[1-6]|br)\b[^>]*>", "\n", content, flags=re.I)
+        content = re.sub(r"<[^>]+>", "", content).strip()
+        if heading:
+            parts.append(heading)
+        if content:
+            parts.append(content)
+    description = "\n".join(part for part in parts if part)
+    return description or None
 
 
 def normalize_greenhouse(
@@ -84,7 +109,7 @@ def normalize_lever(
 
         "title": job.get("text"),
 
-        "description": job.get("descriptionPlain"),
+        "description": _lever_description(job),
 
         "department": (
             job.get("categories", {}).get("team")
