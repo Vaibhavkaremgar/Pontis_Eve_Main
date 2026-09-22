@@ -119,6 +119,10 @@ function getRightPanelTab(container) {
   return container.querySelector('[data-testid="living-profile"]')?.getAttribute("data-active-tab");
 }
 
+function selectJobsForYou(container) {
+  act(() => { container.querySelector('[data-testid="jobs-tab"]')?.click(); });
+}
+
 describe("Dashboard right-panel state restoration", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -173,9 +177,10 @@ describe("Dashboard right-panel state restoration", () => {
 
   // 4. New Jobs tab → right panel shows jobs
   it("New Jobs sidebar tab → right panel shows jobs", async () => {
-    setupAxios();
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
     const { container, unmount } = renderDashboard();
     await flush();
+    selectJobsForYou(container);
     act(() => { container.querySelector('[data-testid="nav-tab-jobs"]').click(); });
     await flush();
     expect(getRightPanelTab(container)).toBe("jobs");
@@ -196,9 +201,10 @@ describe("Dashboard right-panel state restoration", () => {
 
   // 5. Tracked Jobs tab → right panel shows tracked
   it("Tracked Jobs sidebar tab → right panel shows tracked", async () => {
-    setupAxios();
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
     const { container, unmount } = renderDashboard();
     await flush();
+    selectJobsForYou(container);
     act(() => { container.querySelector('[data-testid="nav-tab-tracked"]').click(); });
     await flush();
     expect(getRightPanelTab(container)).toBe("tracked");
@@ -206,9 +212,10 @@ describe("Dashboard right-panel state restoration", () => {
   });
 
   it("replaces stale right-panel content when Profile is selected", async () => {
-    setupAxios();
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
     const { container, unmount } = renderDashboard();
     await flush();
+    selectJobsForYou(container);
     act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
     expect(getRightPanelTab(container)).toBe("documents");
     act(() => { container.querySelector('[data-testid="nav-tab-profile"]').click(); });
@@ -218,9 +225,10 @@ describe("Dashboard right-panel state restoration", () => {
 
   // 6. Documents tab → right panel shows documents
   it("Documents sidebar tab → right panel shows documents", async () => {
-    setupAxios();
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
     const { container, unmount } = renderDashboard();
     await flush();
+    selectJobsForYou(container);
     act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
     await flush();
     expect(getRightPanelTab(container)).toBe("documents");
@@ -229,9 +237,10 @@ describe("Dashboard right-panel state restoration", () => {
 
   // 7. Notifications tab → right panel shows opportunities
   it("Notifications sidebar tab → right panel shows opportunities", async () => {
-    setupAxios();
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
     const { container, unmount } = renderDashboard();
     await flush();
+    selectJobsForYou(container);
     act(() => { container.querySelector('[data-testid="nav-tab-opportunities"]').click(); });
     await flush();
     expect(getRightPanelTab(container)).toBe("opportunities");
@@ -293,6 +302,41 @@ describe("Dashboard right-panel state restoration", () => {
     saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "new-jobs" });
     const { container, unmount } = renderDashboard();
     await flush();
+    expect(getRightPanelTab(container)).toBe("profile");
+    unmount();
+  });
+
+  it.each(["jobs", "documents", "profile"])(
+    "Chat with Eve + %s sidebar navigation keeps Chat with Eve and Profile",
+    async (tab) => {
+      setupAxios(makeProfile({ profile_strength_percent: 90 }));
+      const { container, unmount } = renderDashboard();
+      await flush();
+      act(() => { container.querySelector('[data-testid="chat-tab"]').click(); });
+      await flush();
+      expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
+
+      act(() => { container.querySelector(`[data-testid="nav-tab-${tab}"]`).click(); });
+      await flush();
+      expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
+      expect(container.querySelector('[data-testid="jobs-deck"]')).toBeFalsy();
+      expect(getRightPanelTab(container)).toBe("profile");
+      unmount();
+    }
+  );
+
+  it("only the Jobs for You control changes Chat with Eve to Jobs for You", async () => {
+    setupAxios(makeProfile({ profile_strength_percent: 90 }));
+    const { container, unmount } = renderDashboard();
+    await flush();
+    act(() => { container.querySelector('[data-testid="chat-tab"]').click(); });
+    act(() => { container.querySelector('[data-testid="nav-tab-jobs"]').click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
+
+    selectJobsForYou(container);
+    await flush();
+    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeTruthy();
     expect(getRightPanelTab(container)).toBe("profile");
     unmount();
   });

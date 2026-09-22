@@ -101,7 +101,9 @@ function Dashboard() {
   const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
   const popupShownThisSessionRef = React.useRef(false);
 
-  const [activeTab, setActiveTab] = React.useState(() => {
+  // Sidebar selection, middle content, and supporting right-panel context are
+  // deliberately independent. Sidebar navigation must never select a middle view.
+  const [activeSidebarTab, setActiveSidebarTab] = React.useState(() => {
     if (stored.newlyOnboarded) {
       saveOnboardingState({ ...stored, newlyOnboarded: false });
       return "profile";
@@ -121,7 +123,7 @@ function Dashboard() {
   });
 
   const setActiveTabPersisted = React.useCallback((tab) => {
-    setActiveTab(tab);
+    setActiveSidebarTab(tab);
     saveOnboardingState({ ...loadOnboardingState(), activeTab: tab });
   }, []);
 
@@ -166,12 +168,12 @@ function Dashboard() {
   const hasJobsAccess = userProfile.strengthPercent >= 90;
   const handleSidebarTabChange = React.useCallback((tab) => {
     setActiveTabPersisted(tab);
-    setRightPanelTab(tab);
-    if (tab === "jobs" && hasJobsAccess) {
-      userChoseCenterViewRef.current = true;
-      setCenterView("swipe");
-    }
-  }, [hasJobsAccess, setActiveTabPersisted]);
+    // Chat and Voice always use Profile as their supporting context. When
+    // viewing Jobs for You, sidebar tabs may provide their own right content.
+    setRightPanelTab(centerView === "swipe" ? tab : "profile");
+  }, [centerView, setActiveTabPersisted]);
+
+  const displayedRightPanelTab = centerView === "swipe" ? rightPanelTab : "profile";
 
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
@@ -731,7 +733,7 @@ function Dashboard() {
       <PanelGroup direction="horizontal" className="flex-1 min-h-0">
         <Panel id="left-panel" order={1} defaultSize={18} minSize={12} maxSize={28} className="h-full">
           <Sidebar
-            activeTab={activeTab}
+            activeTab={activeSidebarTab}
             setActiveTab={handleSidebarTabChange}
             userProfile={userProfile}
             footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
@@ -872,7 +874,7 @@ function Dashboard() {
 
         <Panel id="right-panel" order={3} defaultSize={50} minSize={30} className="h-full">
           <LivingProfile
-            activeTab={rightPanelTab}
+            activeTab={displayedRightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}
             matchingJobsTotal={matchingJobsTotal}
