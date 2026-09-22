@@ -1,6 +1,7 @@
 import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
+import axios from "axios";
 
 import LivingProfile from "../LivingProfile";
 
@@ -101,7 +102,7 @@ describe("Tracked Jobs — clickable card opens JD", () => {
     unmount();
   });
 
-  it("Apply opens the job URL in a new tab", () => {
+  it("tracked-job Apply Now opens Improve Match; only confirmation opens the job URL", async () => {
     const openSpy = jest.spyOn(window, "open").mockImplementation(() => null);
     const { container, unmount } = renderTracked();
     click(container.querySelector('[data-testid="tracked-job-card-job-tracked-1"]'));
@@ -109,7 +110,15 @@ describe("Tracked Jobs — clickable card opens JD", () => {
       b.textContent.includes("Apply Now")
     );
     expect(applyBtn).toBeTruthy();
-    click(applyBtn);
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.8, missing_skills: ["TypeScript"] } });
+    await act(async () => {
+      applyBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
+    expect(container.textContent).toContain("TypeScript");
+    expect(openSpy).not.toHaveBeenCalled();
+    click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent.includes("Apply with Current Resume")));
     expect(openSpy).toHaveBeenCalledWith(
       "https://acme.example/jobs/1",
       "_blank",

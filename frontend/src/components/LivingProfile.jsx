@@ -2,7 +2,7 @@ import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole } from "lucide-react";
-import { JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
+import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
 
@@ -532,6 +532,8 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
   const [dismissing, setDismissing] = React.useState(false);
+  const [improvementJob, setImprovementJob] = React.useState(null);
+  const [improvementData, setImprovementData] = React.useState(null);
   // Keep backend ranking intact within each access group, while presenting the
   // jobs a candidate can open before the subscription-locked placeholders.
   const accessibleJobs = jobs.filter((job) => !job.locked);
@@ -550,10 +552,24 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
     }
   }, [candidateId, onJobViewed]);
 
-  const handleApply = React.useCallback(() => {
-    if (!detailJob || !detailJob.job_url) return;
-    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
-  }, [detailJob]);
+  const handleApply = React.useCallback(async () => {
+    if (!detailJob?.job_url) return;
+    setImprovementJob(detailJob);
+    setImprovementData(null);
+    try {
+      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/match-improvement`);
+      setImprovementData(response.data);
+    } catch {
+      // Keep the modal open with the recommendation's current score.
+    }
+  }, [candidateId, detailJob]);
+  const openResumeEditor = React.useCallback(() => {
+    if (!improvementJob) return;
+    const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
+    if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
+    window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
+    setImprovementJob(null);
+  }, [candidateId, improvementData?.match_score, improvementJob]);
 
   const handleNotInterested = React.useCallback(async () => {
     if (!detailJob) return;
@@ -584,6 +600,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
+      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { if (improvementJob?.job_url) window.open(improvementJob.job_url, "_blank", "noopener,noreferrer"); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {detailJob && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
@@ -739,16 +756,32 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
   );
 }
 
-function TrackedTab({ jobs, onTrack, onDismissJob }) {
+function TrackedTab({ jobs, onTrack, onDismissJob, candidateId }) {
   const tracked = jobs.filter((j) => j.tracked);
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [dismissing, setDismissing] = React.useState(false);
+  const [improvementJob, setImprovementJob] = React.useState(null);
+  const [improvementData, setImprovementData] = React.useState(null);
 
-  const handleApply = React.useCallback(() => {
-    if (!detailJob || !detailJob.job_url) return;
-    window.open(detailJob.job_url, "_blank", "noopener,noreferrer");
-  }, [detailJob]);
+  const handleApply = React.useCallback(async () => {
+    if (!detailJob?.job_url) return;
+    setImprovementJob(detailJob);
+    setImprovementData(null);
+    try {
+      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/match-improvement`);
+      setImprovementData(response.data);
+    } catch {
+      // Keep the modal open with the recommendation's current score.
+    }
+  }, [candidateId, detailJob]);
+  const openResumeEditor = React.useCallback(() => {
+    if (!improvementJob) return;
+    const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
+    if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
+    window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
+    setImprovementJob(null);
+  }, [candidateId, improvementData?.match_score, improvementJob]);
 
   const handleNotInterested = React.useCallback(() => {
     if (!detailJob) return;
@@ -778,6 +811,7 @@ function TrackedTab({ jobs, onTrack, onDismissJob }) {
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
+      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { if (improvementJob?.job_url) window.open(improvementJob.job_url, "_blank", "noopener,noreferrer"); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {detailJob && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
@@ -1558,7 +1592,7 @@ export default function LivingProfile({
             />
           )}
           {activeTab === "tracked" && (
-            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} />
+            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} candidateId={candidateId} />
           )}
           {activeTab === "documents" && (
             <DocumentsTab

@@ -177,17 +177,25 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeTruthy();
   });
 
-  it("preserves Apply Now and Not Interested behavior", () => {
+  it("routes detail Apply Now through Improve Match and only opens the job URL on confirmation", async () => {
     renderResult = renderDeck();
     openDetail();
 
-    act(() => {
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.92, missing_skills: ["Leadership"] } });
+    await act(async () => {
       const applyButton = Array.from(renderResult.container.querySelectorAll("button")).find((button) =>
         button.textContent?.includes("Apply Now")
       );
       applyButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
     });
 
+    expect(renderResult.container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
+    expect(renderResult.container.textContent).toContain("Leadership");
+    expect(openSpy).not.toHaveBeenCalled();
+    act(() => {
+      Array.from(renderResult.container.querySelectorAll("button")).find((button) => button.textContent?.includes("Apply with Current Resume")).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(openSpy).toHaveBeenCalledWith("https://acme.example/jobs/1", "_blank", "noopener,noreferrer");
     expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeTruthy();
 

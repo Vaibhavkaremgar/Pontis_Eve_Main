@@ -231,7 +231,7 @@ function MatchScoreGauge({ score }) {
   </section>;
 }
 
-function ImproveMatchModal({ job, data, onClose, onApplyCurrent, onFixResume }) {
+export function ImproveMatchModal({ job, data, onClose, onApplyCurrent, onFixResume }) {
   if (!job) return null;
   const score = data?.match_score ?? job.match_score;
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 px-4" data-testid="improve-match-modal">
@@ -634,15 +634,11 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   }, []);
   const handleApply = React.useCallback(async (job = detailJob) => {
     if (!job || applying) return;
-    const score = Number(job.match_score);
-    if (job.job_url && Number.isFinite(score) && score * (score <= 1 ? 100 : 1) < 90) {
-      setImprovementJob(job); setImprovementData(null);
-      try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
-      catch { toast.error("Couldn't load match details. Please try again."); }
-      return;
-    }
-    openJobUrl(job);
-  }, [detailJob, applying, candidateId, openJobUrl]);
+    if (!job.job_url) { toast.error("Application link is not available for this job."); return; }
+    setImprovementJob(job); setImprovementData(null);
+    try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
+    catch { toast.error("Couldn't load match details. Please try again."); }
+  }, [detailJob, applying, candidateId]);
   const openResumeEditor = React.useCallback(() => {
     if (!improvementJob) return;
     const params = new URLSearchParams({
