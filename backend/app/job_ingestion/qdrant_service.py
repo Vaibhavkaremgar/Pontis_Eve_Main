@@ -30,6 +30,13 @@ def _point_id(job_id: str) -> int:
     return uuid.UUID(job_id).int % (2**63)
 
 
+def delete_job_embedding(job_id: str) -> bool:
+    """Delete exactly this job's deterministic point, never a broad filter."""
+    from qdrant_client.models import PointIdsList
+    _client.delete(collection_name=COLLECTION_NAME, points_selector=PointIdsList(points=[_point_id(job_id)]))
+    return True
+
+
 def _existing_payload(job_id: str) -> dict | None:
     points = _client.retrieve(
         collection_name=COLLECTION_NAME,

@@ -1,4 +1,39 @@
 from typing import Any
+from urllib.parse import urlsplit
+
+
+def _valid_http_url(value: Any) -> str | None:
+    """Return a trimmed HTTP(S) URL, or None for an unusable ATS value."""
+    if not isinstance(value, str):
+        return None
+
+    url = value.strip()
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return url
+
+
+def extract_lever_job_url(job: dict[str, Any]) -> str | None:
+    """Extract Lever's job-specific hosted/show/apply URL without constructing one."""
+    urls = job.get("urls")
+    urls = urls if isinstance(urls, dict) else {}
+    for candidate in (urls.get("show"), job.get("hostedUrl"), urls.get("apply")):
+        url = _valid_http_url(candidate)
+        if url:
+            return url
+    return None
+
+
+def extract_ashby_job_url(job: dict[str, Any]) -> str | None:
+    """Extract Ashby's job-specific job/apply URL without constructing one."""
+    for candidate in (job.get("jobUrl"), job.get("applyUrl")):
+        url = _valid_http_url(candidate)
+        if url:
+            return url
+    return None
+
+
 def normalize_greenhouse(
         job: dict[str, Any],
         company_name: str,
@@ -71,11 +106,7 @@ def normalize_lever(
 
         "salary_range": None,
 
-        "job_url": (
-            job.get("urls", {}).get("show")
-            or job.get("hostedUrl")
-            or job.get("urls", {}).get("apply")
-        ),
+        "job_url": extract_lever_job_url(job),
 
         "ats_type": "lever",
     }
@@ -112,7 +143,7 @@ def normalize_ashby(
 
         "salary_range": None,
 
-        "job_url": job.get("jobUrl") or job.get("applyUrl"),
+        "job_url": extract_ashby_job_url(job),
 
         "ats_type": "ashby",
     }

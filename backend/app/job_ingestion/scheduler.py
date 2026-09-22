@@ -17,6 +17,52 @@ _scheduler: AsyncIOScheduler | None = None
 _sync_lock: asyncio.Lock | None = None
 
 
+async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, current_ats_ids: set[str]) -> list[str]:
+    """Close jobs absent from a *complete successful* current ATS board.
+
+    The registry foreign key scopes this to one configured board, avoiding
+    accidental cross-company deactivation where display names collide.
+    """
+    if ats_type not in {"ashby", "lever"}:
+        return []
+    stored = await db.execute(text("""
+        SELECT id, ats_job_id
+        FROM job_descriptions
+        WHERE company_registry_id = :company_registry_id
+          AND LOWER(ats_type) = :ats_type
+          AND is_active IS TRUE
+    """), {"company_registry_id": company_registry_id, "ats_type": ats_type})
+    missing = [str(row[0]) for row in stored.fetchall() if str(row[1] or "").strip() not in current_ats_ids]
+    if not missing:
+        return []
+    await db.execute(text("""
+        UPDATE job_descriptions
+        SET is_active = FALSE, status = 'closed', job_status = 'closed', updated_at = NOW()
+        WHERE id = ANY(CAST(:job_ids AS uuid[]))
+    """), {"job_ids": missing})
+    # Preserve recommendation/application history while removing it from all
+    # candidate-visible paths.
+    await db.execute(text("""
+        UPDATE candidate_job_recommendations
+        SET hidden_at = COALESCE(hidden_at, NOW())
+        WHERE job_id = ANY(CAST(:job_ids AS uuid[]))
+    """), {"job_ids": missing})
+    return missing
+
+
+def _complete_board_payload(jobs) -> tuple[bool, set[str]]:
+    """Reject malformed/incomplete payloads; an empty valid list means no jobs."""
+    if not isinstance(jobs, list):
+        return False, set()
+    ids = set()
+    for job in jobs:
+        job_id = str(job.get("ats_job_id") or "").strip() if isinstance(job, dict) else ""
+        if not job_id:
+            return False, set()
+        ids.add(job_id)
+    return True, ids
+
+
 def _get_session_local():
     """Import SessionLocal from server to reuse the existing DB setup."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -60,6 +106,11 @@ async def sync_jobs() -> None:
             logger.error("[job-scheduler] failed to fetch jobs for company=%s: %s", company_name, exc, exc_info=True)
             continue
 
+        complete, current_ats_ids = _complete_board_payload(jobs)
+        if not complete:
+            logger.error("[job-scheduler] incomplete ATS payload for company=%s; reconciliation skipped", company_name)
+            continue
+
         total = len(jobs)
         logger.info("[job-scheduler] fetched %d jobs for %s", total, company_name)
 
@@ -89,6 +140,10 @@ async def sync_jobs() -> None:
             synced_at_updated = False
             if failed == 0:
                 try:
+                    missing_ids = await reconcile_missing_ats_jobs(
+                        db, company_registry_id=company_id, ats_type=str(ats_type).lower(),
+                        current_ats_ids=current_ats_ids,
+                    )
                     await db.execute(
                         text("""
                             UPDATE company_registry
@@ -99,6 +154,13 @@ async def sync_jobs() -> None:
                     )
                     await db.commit()
                     synced_at_updated = True
+                    for job_id in missing_ids:
+                        try:
+                            from app.job_ingestion.qdrant_service import delete_job_embedding
+                            delete_job_embedding(job_id)
+                        except Exception as exc:
+                            # DB eligibility and hidden recommendations remain the safety net.
+                            logger.warning("[job-scheduler] Qdrant delete failed for job_id=%s: %s", job_id, exc)
                 except Exception as exc:
                     logger.error("[job-scheduler] failed to update last_synced_at for company=%s: %s", company_name, exc)
 

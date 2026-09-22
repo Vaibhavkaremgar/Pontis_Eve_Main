@@ -143,6 +143,7 @@ def _base_existing_row(job_url):
     "existing_url,incoming_url,should_update",
     [
         (None, "https://example.com/new", True),
+        (None, "not-a-url", False),
         ("https://example.com/existing", "https://example.com/new", False),
         (None, None, False),
     ],

@@ -19,18 +19,13 @@ from sqlalchemy import text
 from server import SessionLocal
 from app.job_ingestion.embedding_service import generate_job_embedding
 from app.job_ingestion.qdrant_service import ensure_collection, upsert_job_embedding
+from app.job_ingestion.lifecycle import candidate_visible_where
 
 BATCH_SIZE = 100
 logger = logging.getLogger(__name__)
 
 # This intentionally mirrors candidate_job_matching_service's DB validation.
-CANDIDATE_VISIBLE_WHERE = """
-(
-    is_active IS TRUE
-    OR status IN ('active', 'open', 'published')
-    OR job_status IN ('active', 'open', 'published')
-)
-"""
+CANDIDATE_VISIBLE_WHERE = candidate_visible_where("job_descriptions")
 
 
 async def backfill(*, reindex: bool = False):

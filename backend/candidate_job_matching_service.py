@@ -11,6 +11,7 @@ from sqlalchemy import text
 from candidate_text import build_candidate_text
 from embedding_service import generate_embedding
 from qdrant_service import search_job_chunks
+from app.job_ingestion.lifecycle import candidate_visible_where
 
 logger = logging.getLogger(__name__)
 
@@ -901,11 +902,7 @@ async def refresh_candidate_job_matches(
                 SELECT id, title, description, requirements, skills
                 FROM job_descriptions
                 WHERE id::text IN ({placeholders})
-                  AND (
-                    is_active IS TRUE
-                    OR status IN ('active', 'open', 'published')
-                    OR job_status IN ('active', 'open', 'published')
-                  )
+                  AND {candidate_visible_where('job_descriptions')}
             """),
             params,
         )

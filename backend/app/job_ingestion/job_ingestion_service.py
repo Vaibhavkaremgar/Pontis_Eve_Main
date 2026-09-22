@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ats_agency_service import get_or_create_ats_agency
+from app.job_ingestion.normalize import _valid_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +49,16 @@ async def upsert_ats_job(
     if existing:
         job_id = existing[0]
         existing_job_url = existing[1]
-        incoming_job_url = job.get("job_url")
+        incoming_job_url = _valid_http_url(job.get("job_url"))
 
-        if existing_job_url is None and incoming_job_url is not None:
+        if not (existing_job_url or "").strip() and incoming_job_url is not None:
             await db.execute(
                 text("""
                     UPDATE job_descriptions
                     SET job_url = :job_url,
+                        is_active = TRUE,
+                        status = 'active',
+                        job_status = 'active',
                         updated_at = NOW(),
                         last_synced_at = NOW()
                     WHERE id = :id
@@ -70,10 +74,29 @@ async def upsert_ats_job(
                 ats_type, ats_job_id, job_id,
             )
         else:
+            # A record seen on a complete current board is current again even
+            # if no URL update was necessary.
+            await db.execute(text("""
+                UPDATE job_descriptions
+                SET is_active = TRUE, status = 'active', job_status = 'active',
+                    updated_at = NOW(), last_synced_at = NOW()
+                WHERE id = :id
+            """), {"id": job_id})
+            await db.commit()
             logger.debug(
                 "[job-scheduler] Existing job unchanged ats_type=%s ats_job_id=%s db_id=%s",
                 ats_type, ats_job_id, job_id,
             )
+        # Recreate a point that may have been removed while the job was closed.
+        # URL-less jobs deliberately remain out of Qdrant.
+        if _valid_http_url(existing_job_url) or incoming_job_url:
+            try:
+                from app.job_ingestion.embedding_service import generate_job_embedding
+                from app.job_ingestion.qdrant_service import ensure_collection, upsert_job_embedding
+                ensure_collection()
+                upsert_job_embedding(str(job_id), generate_job_embedding(job), job)
+            except Exception as exc:
+                logger.error("Qdrant embedding upsert failed for reactivated job_id=%s: %s", job_id, exc)
         return str(job_id)
 
     # Get the default system agency for this ATS.
@@ -180,7 +203,7 @@ async def upsert_ats_job(
             "company_registry_id": company_registry_id,
             "ats_job_id": ats_job_id,
             "ats_type": ats_type,
-            "job_url": job.get("job_url"),
+            "job_url": _valid_http_url(job.get("job_url")),
         },
     )
 
@@ -188,13 +211,15 @@ async def upsert_ats_job(
 
     await db.commit()
 
-    try:
+    # A malformed/no-URL ATS job is retained for audit but never indexed.
+    if _valid_http_url(job.get("job_url")):
+      try:
         from app.job_ingestion.embedding_service import generate_job_embedding
         from app.job_ingestion.qdrant_service import ensure_collection, upsert_job_embedding
 
         ensure_collection()
         upsert_job_embedding(str(new_id), generate_job_embedding(job), job)
-    except Exception as exc:
+      except Exception as exc:
         logger.error("Qdrant embedding upsert failed for job_id=%s: %s", new_id, exc)
 
     return str(new_id)

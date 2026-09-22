@@ -27,6 +27,7 @@ import io
 import asyncio
 import html
 import textwrap
+from app.job_ingestion.lifecycle import candidate_visible_where
 
 try:  # pragma: no cover - optional dependency
     from reportlab.lib import colors
@@ -7560,11 +7561,12 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
     # calendar date.
     async with SessionLocal() as db:
         available_row = await db.execute(
-            text("""
+            text(f"""
                 SELECT COUNT(*)
-                FROM candidate_job_recommendations cjr
+                FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {candidate_visible_where('jd')}
                   AND NOT EXISTS (
                     SELECT 1
                     FROM candidate_daily_job_access access
@@ -7587,10 +7589,11 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
     # not how many matches the candidate can see are available.
     async with SessionLocal() as db:
         total_row = await db.execute(
-            text("""
+            text(f"""
                 SELECT COUNT(*)
-                FROM candidate_job_recommendations cjr
+                FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                  AND {candidate_visible_where('jd')}
             """),
             {"cid": candidate_id},
         )
@@ -7603,7 +7606,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
 
     async with SessionLocal() as db:
         rows = await db.execute(
-            text("""
+            text(f"""
                 SELECT
                     cjr.id AS rec_id,
                     cjr.job_id,
@@ -7630,6 +7633,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {candidate_visible_where('jd')}
                 -- Return the complete ranked list so the client can render
                 -- locked placeholders.  The access predicate is projected
                 -- below instead of filtering the rows out: free candidates
@@ -7733,11 +7737,12 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
 async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict:
     """Load the selected recommendation's job context after verifying ownership."""
     async with SessionLocal() as db:
-        result = await db.execute(text("""
+        result = await db.execute(text(f"""
             SELECT cjr.match_score, jd.skills, jd.requirements, jd.experience_required, jd.job_url
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
+              AND {candidate_visible_where('jd')}
             LIMIT 1
         """), {"rid": rec_id, "cid": candidate_id})
         row = result.mappings().fetchone()
@@ -7916,7 +7921,7 @@ async def get_tracked_jobs(candidate_id: str):
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         rows = await db.execute(
-            text("""
+            text(f"""
                 SELECT
                     cjr.id AS rec_id,
                     cjr.job_id,
@@ -7934,6 +7939,7 @@ async def get_tracked_jobs(candidate_id: str):
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.tracked_at IS NOT NULL
+                  AND {candidate_visible_where('jd')}
                 ORDER BY cjr.tracked_at DESC
             """),
             {"cid": candidate_id},
