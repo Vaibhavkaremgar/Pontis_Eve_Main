@@ -7821,20 +7821,27 @@ def _extract_required_skills_from_jd(job_text: str) -> list[str]:
     lines = [line.strip(" \t-•*") for line in text_value.splitlines()]
     collecting = False
     extracted: list[str] = []
-    markers = re.compile(r"\b(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring))\b", re.I)
+    # Some ATS feeds label their explicit skill list "Competencies" instead
+    # of "Requirements".  Treat that as the same authoritative JD section;
+    # this is still intentionally not a scan of arbitrary role prose.
+    markers = re.compile(r"\b(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring)|competencies)\b", re.I)
     stop = re.compile(r"\b(?:preferred|nice to have|benefits|why join|what we offer|about (?:us|the role)|responsibilities)\b", re.I)
     for line in lines:
         if not line:
             continue
         if markers.search(line):
             collecting = True
-            line = re.sub(r"^.*?(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring))\s*:? ?", "", line, flags=re.I)
+            line = re.sub(r"^.*?(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring)|competencies)\s*:? ?", "", line, flags=re.I)
         elif collecting and stop.search(line):
             break
         if not collecting:
             continue
+        # Preserve examples in an otherwise descriptive competency item.  For
+        # example, ``relational databases (viz: PostgreSQL, SQL)`` should
+        # contribute the explicitly named technologies, not the prose label.
+        line = re.sub(r"[^,;]*\(\s*(?:e\.?g\.?|eg|viz\.?)\s*:?\s*([^)]+)\)", r"\1", line, flags=re.I)
         for item in re.split(r"[,;•]|\band\b", line, flags=re.I):
-            item = re.sub(r"^(?:hands[- ]on\s+)?(?:experience|proficiency|knowledge|expertise|familiarity)\s+(?:with|in|of)\s+", "", item.strip(" .:-()"), flags=re.I)
+            item = re.sub(r"^(?:(?:strong|proven|demonstrated)\s+)?(?:hands[- ]on\s+)?(?:experience|proficiency|knowledge|expertise|familiarity)\s+(?:with|of|in\s+(?:designing|building)\s+|designing\s+|building\s+)\s*", "", item.strip(" .:-()"), flags=re.I)
             item = re.sub(r"^\d+\+?\s+years?\s+(?:of\s+)?(?:experience\s+)?(?:with|in)\s+", "", item, flags=re.I)
             item = re.sub(r"^(?:the|a|an)\s+", "", item, flags=re.I)
             item = re.sub(r"\s+(?:framework|technology|platform|tool)s?$", "", item, flags=re.I)
@@ -8014,16 +8021,43 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
     # Return the canonical payload used by GET /profile so callers can refresh
     # their profile without trusting their local editor snapshot.
     profile = await _get_candidate_profile_payload(candidate_id)
-    return {
+    gaps = _job_missing_requirements(
+        row["skills"], row["requirements"], candidate, row["experience_required"],
+        skills_required=row.get("skills_required"), description=row.get("description"),
+        structured_data=row.get("structured_data"), job_fields=row,
+    )
+    response_payload = {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
         "resume": _resume_editor_payload(candidate),
         "job_url": row.get("job_url") or None,
-        **_job_missing_requirements(
-            row["skills"], row["requirements"], candidate, row["experience_required"],
-            skills_required=row.get("skills_required"), description=row.get("description"),
-            structured_data=row.get("structured_data"), job_fields=row,
-        ),
+        **gaps,
     }
+    # This trace deliberately follows the UI request boundary.  It lets a
+    # production report be tied to the selected recommendation, the exact DB
+    # row, the extraction result, and the JSON handed back to the modal.
+    logger.info("match_improvement_trace=%s", json.dumps({
+        "implementation": "match-improvement-jd-competencies-v1",
+        "candidate_id": candidate_id,
+        "recommendation_id": rec_id,
+        "selected_job_id": str(row.get("id") or ""),
+        "backend_endpoint": "/api/candidate/{candidate_id}/jobs/{rec_id}/match-improvement",
+        "job_from_db": {
+            "title": row.get("title"),
+            "skills": row.get("skills"),
+            "skills_required": row.get("skills_required"),
+            "structured_data": row.get("structured_data"),
+            "requirements": row.get("requirements"),
+            "description": row.get("description"),
+        },
+        "extracted_required_skills": _job_required_skills(
+            row.get("skills"), row.get("skills_required"), row.get("description"),
+            row.get("requirements"), row.get("structured_data"), row,
+        ),
+        "candidate_skills": _candidate_profile_skills(candidate),
+        "missing_skills": gaps["missing_skills"],
+        "api_response": response_payload,
+    }, default=str))
+    return response_payload
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")

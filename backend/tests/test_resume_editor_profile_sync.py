@@ -318,6 +318,59 @@ def test_missing_skills_uses_jd_requirement_list_when_selected_job_has_no_skills
     assert gaps["missing_skills"] == ["FastAPI", "Kubernetes"]
 
 
+def test_match_improvement_endpoint_extracts_competencies_from_live_failure_shape(monkeypatch):
+    """Regression: the live Level AI recommendation had no structured skills.
+
+    Its only declared skill list was a ``Competencies:`` line in ``description``;
+    the GET endpoint must return those gaps to the Improve Your Match modal.
+    """
+    candidate = {
+        "id": "candidate-live-shape",
+        "skills": ["Python", "PostgreSQL", "SQL", "REST APIs", "Redis", "Docker"],
+        "parsed_resume_json": "{}",
+        "raw_data": "{}",
+    }
+    row = {
+        "id": "job-live-shape",
+        "match_score": 0.53,
+        "title": "Senior Backend Engineer -PE",
+        "job_url": "https://example.test/jobs/backend",
+        "skills": None,
+        "skills_required": [],
+        "structured_data": {},
+        "requirements": None,
+        "experience_required": None,
+        "description": (
+            "About the role.\n\nCompetencies : Python, Django, "
+            "Relational database understanding (viz: PostgreSQL, SQL), ETL, "
+            "Database design, Strong experience in designing REST APIs, Cache, "
+            "Redis, Celery, CI/CD, GCP, Kubernetes and Docker."
+        ),
+    }
+
+    async def get_candidate(candidate_id):
+        assert candidate_id == "candidate-live-shape"
+        return candidate
+
+    async def get_row(candidate_id, rec_id):
+        assert (candidate_id, rec_id) == ("candidate-live-shape", "rec-live-shape")
+        return row
+
+    async def get_profile(_candidate_id):
+        return {}
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "_get_job_match_improvement_row", get_row)
+    monkeypatch.setattr(server, "_get_candidate_profile_payload", get_profile)
+
+    response = asyncio.run(server.get_job_match_improvement("candidate-live-shape", "rec-live-shape"))
+
+    assert response["missing_skills"]
+    assert {"Django", "ETL", "Celery", "GCP", "Kubernetes"}.issubset(response["missing_skills"])
+    assert "REST APIs" not in response["missing_skills"]
+    assert not any("Relational database understanding" in skill for skill in response["missing_skills"])
+
+
 def test_missing_skills_reads_nested_structured_required_skills_and_voice_evidence():
     candidate = {
         "skills": ["python"],
