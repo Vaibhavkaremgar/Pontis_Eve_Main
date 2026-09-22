@@ -934,20 +934,31 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
       : axios.post(`${API}${path}`, formData)
   );
 
-  const openDocument = async (event, path) => {
+  const openDocument = (event, path) => {
     event.preventDefault();
-    const documentWindow = window.open("", "_blank");
+    const viewWindowName = `eve-document-${Date.now()}`;
+    const documentWindow = window.open("", viewWindowName);
     if (documentWindow) documentWindow.opener = null;
-    try {
-      const response = await axios.get(`${API}${path}`, { headers: authHeaders, responseType: "blob" });
-      const objectUrl = window.URL.createObjectURL(response.data);
-      if (documentWindow) documentWindow.location.href = objectUrl;
-      else window.location.href = objectUrl;
-      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 60_000);
-    } catch {
+    if (!candidateToken || !documentWindow) {
       documentWindow?.close();
       setDeleteError("Document could not be opened. Please try again.");
+      return;
     }
+    // Submit to the real file endpoint so the browser renders its FileResponse
+    // in a new tab. The session token is form data, never part of the URL.
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = `${API}${path}`;
+    form.target = viewWindowName;
+    form.style.display = "none";
+    const tokenField = document.createElement("input");
+    tokenField.type = "hidden";
+    tokenField.name = "candidate_token";
+    tokenField.value = candidateToken;
+    form.appendChild(tokenField);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
   };
 
   const handleResumeReplace = async (file) => {
@@ -1111,7 +1122,24 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
             </div>
           </div>
         ) : (
-          <p className="text-[13px] text-[#9A9A98] font-normal">No resume on file.</p>
+          <div className="flex items-center gap-3">
+            <p className="text-[13px] text-[#9A9A98] font-normal">No resume on file.</p>
+            <input
+              ref={resumeInputRef}
+              type="file"
+              accept=".pdf"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
+            />
+            <button
+              data-testid="add-resume-btn"
+              onClick={() => resumeInputRef.current?.click()}
+              disabled={busy || !candidateId}
+              className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              Add Resume
+            </button>
+          </div>
         )}
       </div>
 

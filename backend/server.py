@@ -1283,8 +1283,9 @@ def _resolve_candidate_document_path(candidate_id: str, document_type: str, stor
         pass
 
     # Legacy absolute paths are portable by their generated storage key (the
-    # basename), not by their old machine-specific parent path.
-    filename = Path(reference).name
+    # basename), not by their old machine-specific parent path. Split both
+    # separator styles: pathlib treats Windows paths as one filename on Linux.
+    filename = re.split(r"[\\\\/]", reference.rstrip("\\\\/"))[-1]
     if not filename or filename in {".", ".."}:
         return None
     candidate = (root / filename).resolve()
@@ -1325,6 +1326,16 @@ def _get_bearer_token(authorization: Optional[str]) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         return ""
     return authorization[7:].strip()
+
+
+def _verify_document_view_session(candidate_id: str, authorization: Optional[str], candidate_token: Optional[str]) -> None:
+    """Authorize a file GET or a targeted browser form POST.
+
+    Browser navigations cannot carry an Authorization header. The form POST
+    keeps the session token out of the URL and lets the browser render the
+    original FileResponse, rather than a JavaScript Blob.
+    """
+    _verify_candidate_session_token(_get_bearer_token(authorization) or (candidate_token or ""), candidate_id)
 
 
 def _build_support_email_text(message: str) -> str:
@@ -3163,7 +3174,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "education": json.dumps(merged_edu),
                     "exp_years": merged.get("experience_years"),
                     "raw_data": json.dumps(existing_raw_data),
-                    "resume_file_path": str(dest_path),
+                    "resume_file_path": stored_name,
                     "resume_text": resume_text,
                     "parsed_resume_json": json.dumps(parsed),
                     "parsed_resume_text": resume_text,
@@ -3202,7 +3213,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "work_experience": work_exp_json,
                     "education": edu_json,
                     "exp_years": parsed.get("experience_years"),
-                    "resume_file_path": str(dest_path),
+                    "resume_file_path": stored_name,
                     "resume_text": resume_text,
                     "raw_data": json.dumps({
                         "certifications": _candidate_certification_sources({"parsed_resume_json": parsed}),
@@ -3226,7 +3237,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                         resume_fingerprint = :fp, updated_at = now()
                     WHERE candidate_id = :cid
                 """),
-                {"fn": original_filename, "sp": str(dest_path), "fp": fingerprint, "cid": cid},
+                {"fn": original_filename, "sp": stored_name, "fp": fingerprint, "cid": cid},
             )
         else:
             await db.execute(
@@ -3237,7 +3248,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 """),
                 {
                     "id": str(uuid.uuid4()), "cid": cid,
-                    "fn": original_filename, "sp": str(dest_path), "fp": fingerprint,
+                    "fn": original_filename, "sp": stored_name, "fp": fingerprint,
                 },
             )
 
@@ -3656,8 +3667,9 @@ async def get_candidate_documents(candidate_id: str, authorization: Optional[str
 
 
 @api_router.get("/candidate/{candidate_id}/resume/view")
-async def view_resume(candidate_id: str, download: bool = False, authorization: Optional[str] = Header(default=None)):
-    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
+@api_router.post("/candidate/{candidate_id}/resume/view")
+async def view_resume(candidate_id: str, download: bool = False, authorization: Optional[str] = Header(default=None), candidate_token: Optional[str] = Form(default=None)):
+    _verify_document_view_session(candidate_id, authorization, candidate_token)
     candidate = await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -3767,15 +3779,16 @@ async def upload_certificate(candidate_id: str, file: UploadFile = File(...), au
     async with SessionLocal() as db:
         await db.execute(
             text("INSERT INTO candidate_certificates (id, candidate_id, file_name, file_path, created_at) VALUES (:id, :cid, :fn, :fp, now())"),
-            {"id": cert_id, "cid": candidate_id, "fn": file.filename, "fp": str(dest_path)},
+        {"id": cert_id, "cid": candidate_id, "fn": file.filename, "fp": dest_path.name},
         )
         await db.commit()
     return {"id": cert_id, "filename": file.filename}
 
 
 @api_router.get("/candidate/{candidate_id}/certificates/{cert_id}/view")
-async def view_certificate(candidate_id: str, cert_id: str, download: bool = False, authorization: Optional[str] = Header(default=None)):
-    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
+@api_router.post("/candidate/{candidate_id}/certificates/{cert_id}/view")
+async def view_certificate(candidate_id: str, cert_id: str, download: bool = False, authorization: Optional[str] = Header(default=None), candidate_token: Optional[str] = Form(default=None)):
+    _verify_document_view_session(candidate_id, authorization, candidate_token)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
         row = await db.execute(
@@ -3855,7 +3868,7 @@ async def replace_certificate(candidate_id: str, cert_id: str, file: UploadFile 
     async with SessionLocal() as db:
         await db.execute(
             text("UPDATE candidate_certificates SET file_name=:fn, file_path=:fp WHERE id=:cid AND candidate_id=:owner"),
-            {"fn": file.filename, "fp": str(dest_path), "cid": cert_id, "owner": candidate_id},
+            {"fn": file.filename, "fp": dest_path.name, "cid": cert_id, "owner": candidate_id},
         )
         await db.commit()
     return {"id": cert_id, "filename": file.filename}
