@@ -34,11 +34,14 @@ export default function ResumeEditor() {
   const [params] = useSearchParams();
   const candidateId = params.get("candidate_id");
   const recommendationId = params.get("recommendation_id");
+  const fixCreditClaimId = params.get("fix_credit_claim_id");
+  const initialRemainingCredits = params.get("remaining_credits");
   const [resume, setResume] = React.useState(null);
   const [guidance, setGuidance] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
   const [result, setResult] = React.useState(null);
   const [error, setError] = React.useState("");
+  const [remainingCredits] = React.useState(initialRemainingCredits === null ? null : Number(initialRemainingCredits));
   // ContentEditable blur and button click can share one event turn. Keep the
   // current parsed list outside render state so Save never posts a stale array.
   const skillsDraftRef = React.useRef([]);
@@ -56,7 +59,7 @@ export default function ResumeEditor() {
   const save = async () => {
     setSaving(true); setError("");
     try {
-      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current } });
+      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: fixCreditClaimId });
       setResult(data);
       // The API re-reads candidates.skills after saving and returns that
       // canonical profile. Keep the document in sync with it so a combined
@@ -74,7 +77,12 @@ export default function ResumeEditor() {
       if (window.opener && data.profile) {
         window.opener.postMessage({ type: "eve:candidate-profile-updated", candidateId, profile: data.profile }, window.location.origin);
       }
-    } catch (e) { setError(e?.response?.data?.detail || "Could not save your resume."); }
+    } catch (e) {
+      if (e?.response?.status === 403 && e.response.data?.detail?.code === "resume_fix_credits_insufficient") {
+        window.opener?.postMessage({ type: "eve:resume-fix-credits-insufficient" }, window.location.origin);
+      }
+      setError(e?.response?.data?.detail?.message || e?.response?.data?.detail || "Could not save your resume.");
+    }
     finally { setSaving(false); }
   };
   if (error && !resume) return <main className="p-8 text-red-700">{error}</main>;
@@ -89,7 +97,7 @@ export default function ResumeEditor() {
       {typeof item !== "string" && <Editable value={text.detail} onChange={(v) => updateItem(key, index, detailField, v)} className="mt-1 whitespace-pre-wrap text-slate-700" multiline testId={`${key}-${index}-detail`} />}</div>;
   });
   return <main className="min-h-screen bg-slate-100 p-4 text-slate-900 md:p-8" data-testid="resume-editor-page">
-    <header className="mx-auto mb-5 flex max-w-[1180px] items-center justify-between"><div><p className="text-sm font-semibold">Fix My Resume</p><p className="text-xs text-slate-500">Edit the document directly, then save to update your Eve profile.</p></div><button onClick={save} disabled={saving} className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button></header>
+    <header className="mx-auto mb-5 flex max-w-[1180px] items-center justify-between"><div><p className="text-sm font-semibold">Fix My Resume</p><p className="text-xs text-slate-500">Edit the document directly, then save to update your Eve profile.</p>{remainingCredits != null && <p data-testid="resume-fix-credit-balance" className="mt-1 text-xs font-medium text-slate-700">{remainingCredits} daily credits remaining</p>}</div><button onClick={save} disabled={saving} className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button></header>
     <div className="mx-auto grid max-w-[1180px] gap-6 lg:grid-cols-[minmax(0,820px)_280px]">
       <article className="min-h-[1056px] bg-white px-8 py-12 shadow-lg md:px-16" data-testid="resume-document">
         <header className="border-b-2 border-slate-800 pb-5 text-center"><Editable value={resume.name} onChange={(v) => update("name", v)} className="text-3xl font-bold tracking-wide" testId="resume-name" /><Editable value={resume.headline} onChange={(v) => update("headline", v)} className="mt-1 text-lg text-slate-600" testId="resume-headline" /><Editable value={[resume.location, resume.email, resume.phone].filter(Boolean).join(" | ")} onChange={(v) => { const [location, email, phone] = v.split("|").map((x) => x.trim()); setResume((old) => ({ ...old, location, email, phone })); }} className="mt-2 text-sm text-slate-600" testId="resume-contact" /></header>

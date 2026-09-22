@@ -112,6 +112,7 @@ class CandidateHelpRequest(BaseModel):
 class JobMatchImprovementRequest(BaseModel):
     """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
+    fix_credit_claim_id: Optional[str] = None
 
 
 # ---------- Helpers ----------
@@ -5864,6 +5865,29 @@ CREATE INDEX IF NOT EXISTS idx_cdja_candidate_date
 ON candidate_daily_job_access (candidate_id, access_date)
 """
 
+FREE_DAILY_RESUME_FIX_CREDITS = 10
+RESUME_FIX_CREDIT_COST = 3
+
+CREATE_RESUME_FIX_CREDITS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_resume_fix_credit_claims (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    usage_date DATE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    consumed_at TIMESTAMPTZ
+)
+"""
+
+ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ
+"""
+
+CREATE_RESUME_FIX_CREDITS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_crfcc_candidate_date
+ON candidate_resume_fix_credit_claims (candidate_id, usage_date)
+"""
+
 
 async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
@@ -5879,6 +5903,9 @@ async def _ensure_schema():
         await db.execute(text(ALTER_CANDIDATE_JOB_RECS_ADD_REASON))
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_TABLE))
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_INDEX))
+        await db.execute(text(CREATE_RESUME_FIX_CREDITS_TABLE))
+        await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT))
+        await db.execute(text(CREATE_RESUME_FIX_CREDITS_INDEX))
         await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
         await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
         await db.commit()
@@ -7495,6 +7522,99 @@ def _daily_job_limit_reached(used: int, request_more: bool) -> bool:
     return request_more and used >= FREE_DAILY_JOB_LIMIT
 
 
+async def _claim_resume_fix_credits(candidate_id: str, candidate: dict, usage_date=None) -> dict:
+    """Atomically reserve the three free-plan credits for one resume-fix click."""
+    if _has_active_subscription(candidate):
+        return {"claim_id": None, "remaining_credits": None, "is_subscribed": True}
+
+    usage_date = usage_date or _product_current_date()
+    async with SessionLocal() as db:
+        # A candidate can have several browser tabs open, so count and insert
+        # under one advisory lock rather than trusting a displayed balance.
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
+            "lock_key": f"resume-fix-credits:{candidate_id}"
+        })
+        result = await db.execute(text("""
+            SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
+            WHERE candidate_id = :cid AND usage_date = :usage_date
+        """), {"cid": candidate_id, "usage_date": usage_date})
+        used_credits = (result.scalar() or 0) * RESUME_FIX_CREDIT_COST
+        remaining = max(0, FREE_DAILY_RESUME_FIX_CREDITS - used_credits)
+        if remaining < RESUME_FIX_CREDIT_COST:
+            raise HTTPException(status_code=403, detail={
+                "code": "resume_fix_credits_insufficient",
+                "message": "Upgrade your plan to keep using Fix My Resume.",
+                "remaining_credits": remaining,
+            })
+        inserted = await db.execute(text("""
+            INSERT INTO candidate_resume_fix_credit_claims (candidate_id, usage_date)
+            VALUES (:cid, :usage_date) RETURNING id
+        """), {"cid": candidate_id, "usage_date": usage_date})
+        claim_id = inserted.scalar()
+        await db.commit()
+    return {
+        "claim_id": str(claim_id),
+        "remaining_credits": remaining - RESUME_FIX_CREDIT_COST,
+        "is_subscribed": False,
+    }
+
+
+async def _get_resume_fix_credit_balance(candidate_id: str, candidate: dict, usage_date=None) -> dict:
+    """Return the free-plan balance from the same daily claim records used to charge it."""
+    if _has_active_subscription(candidate):
+        return {"remaining_credits": None, "is_subscribed": True}
+
+    usage_date = usage_date or _product_current_date()
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
+            WHERE candidate_id = :cid AND usage_date = :usage_date
+        """), {"cid": candidate_id, "usage_date": usage_date})
+        used_credits = (result.scalar() or 0) * RESUME_FIX_CREDIT_COST
+    return {
+        "remaining_credits": max(0, FREE_DAILY_RESUME_FIX_CREDITS - used_credits),
+        "is_subscribed": False,
+    }
+
+
+async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, claim_id: Optional[str]) -> None:
+    """Ensure free-plan saves came from a charged Fix My Resume click."""
+    if _has_active_subscription(candidate):
+        return
+    if not claim_id:
+        raise HTTPException(status_code=403, detail={
+            "code": "resume_fix_credits_insufficient",
+            "message": "Upgrade your plan to keep using Fix My Resume.",
+        })
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            UPDATE candidate_resume_fix_credit_claims SET consumed_at = now()
+            WHERE id = :claim_id AND candidate_id = :cid AND consumed_at IS NULL
+            RETURNING id
+        """), {"claim_id": claim_id, "cid": candidate_id})
+        if result.scalar() is None:
+            raise HTTPException(status_code=403, detail={
+                "code": "resume_fix_credits_insufficient",
+                "message": "Upgrade your plan to keep using Fix My Resume.",
+            })
+        await db.commit()
+
+
+@api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/resume-fix-credit-claim")
+async def claim_resume_fix_credits(candidate_id: str, rec_id: str):
+    """Charge a free candidate before opening a job-scoped resume editor."""
+    candidate = await _get_candidate_row(candidate_id)
+    await _get_job_match_improvement_row(candidate_id, rec_id)  # ownership check
+    return await _claim_resume_fix_credits(candidate_id, candidate)
+
+
+@api_router.get("/candidate/{candidate_id}/resume-fix-credits")
+async def get_resume_fix_credit_balance(candidate_id: str):
+    """Expose the backend-authoritative daily Fix My Resume balance."""
+    candidate = await _get_candidate_row(candidate_id)
+    return await _get_resume_fix_credit_balance(candidate_id, candidate)
+
+
 async def _claim_daily_job_access(
     candidate_id: str, candidate: dict, request_more: bool = False, access_date=None
 ) -> bool:
@@ -8073,6 +8193,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
+    await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id)
     # Save the complete, candidate-edited uploaded-resume representation into
     # both its parsed snapshot and the canonical candidate profile.
     profile_updates = request.profile_updates

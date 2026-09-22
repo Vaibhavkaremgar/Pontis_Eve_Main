@@ -7,6 +7,7 @@ import { JobsTab } from "../LivingProfile";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock("../SwipeJobCard", () => ({
+  ImproveMatchModal: () => null,
   JobDetailModal: () => null,
   NotInterestedReasonModal: () => null,
 }));

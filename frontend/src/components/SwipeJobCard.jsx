@@ -639,13 +639,33 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
     try { const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${job.id}/match-improvement`); setImprovementData(response.data); }
     catch { toast.error("Couldn't load match details. Please try again."); }
   }, [detailJob, applying, candidateId]);
-  const openResumeEditor = React.useCallback(() => {
+  const openResumeEditor = React.useCallback(async () => {
     if (!improvementJob) return;
+    let credit;
+    try {
+      ({ data: credit } = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/resume-fix-credit-claim`));
+    } catch (error) {
+      const remainingCredits = error?.response?.data?.detail?.remaining_credits;
+      if (remainingCredits != null) {
+        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits } }));
+      }
+      if (error?.response?.status === 403 && error.response.data?.detail?.code === "resume_fix_credits_insufficient") {
+        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-insufficient"));
+        return;
+      }
+      toast.error("Couldn't start Fix My Resume. Please try again.");
+      return;
+    }
+    if (credit.remaining_credits != null) {
+      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits } }));
+    }
     const params = new URLSearchParams({
       candidate_id: candidateId,
       recommendation_id: improvementJob.id,
       previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? ""),
     });
+    if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
+    if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
     if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
     window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
     setImprovementJob(null);

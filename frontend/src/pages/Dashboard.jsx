@@ -158,6 +158,7 @@ function Dashboard() {
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
   const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
+  const [resumeFixCredits, setResumeFixCredits] = React.useState(null);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
   // When true, the auto-routing effect must not override their choice.
@@ -174,6 +175,16 @@ function Dashboard() {
   }, [centerView, setActiveTabPersisted]);
 
   const displayedRightPanelTab = centerView === "swipe" ? rightPanelTab : "profile";
+
+  const refreshResumeFixCredits = React.useCallback(() => {
+    if (!candidateId) {
+      setResumeFixCredits(null);
+      return;
+    }
+    axios.get(`${API}/candidate/${candidateId}/resume-fix-credits`)
+      .then(({ data }) => setResumeFixCredits(data?.is_subscribed ? null : data?.remaining_credits ?? null))
+      .catch(() => setResumeFixCredits(null));
+  }, [candidateId]);
 
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
@@ -464,6 +475,10 @@ function Dashboard() {
   React.useEffect(() => {
     const onProfileUpdated = (event) => {
       if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "eve:resume-fix-credits-insufficient") {
+        setShowSubscriptionPopup(true);
+        return;
+      }
       if (event.data?.type !== "eve:candidate-profile-updated" || event.data.candidateId !== candidateId) return;
       // Resume Editor persists and re-scores the selected recommendation.
       // Reload both resources so the card and Apply Now gauge use that final
@@ -474,6 +489,30 @@ function Dashboard() {
     window.addEventListener("message", onProfileUpdated);
     return () => window.removeEventListener("message", onProfileUpdated);
   }, [candidateId, fetchJobs, refreshProfile]);
+
+  React.useEffect(() => {
+    const showResumeFixSubscription = () => setShowSubscriptionPopup(true);
+    window.addEventListener("eve:resume-fix-credits-insufficient", showResumeFixSubscription);
+    return () => window.removeEventListener("eve:resume-fix-credits-insufficient", showResumeFixSubscription);
+  }, []);
+
+  React.useEffect(() => {
+    refreshResumeFixCredits();
+    const interval = setInterval(refreshResumeFixCredits, 60000);
+    return () => clearInterval(interval);
+  }, [refreshResumeFixCredits]);
+
+  React.useEffect(() => {
+    const updateResumeFixCredits = (event) => {
+      if (event.detail?.remainingCredits != null) {
+        setResumeFixCredits(event.detail.remainingCredits);
+      } else {
+        refreshResumeFixCredits();
+      }
+    };
+    window.addEventListener("eve:resume-fix-credits-updated", updateResumeFixCredits);
+    return () => window.removeEventListener("eve:resume-fix-credits-updated", updateResumeFixCredits);
+  }, [refreshResumeFixCredits]);
 
   React.useEffect(() => {
     fetchJobs();
@@ -663,7 +702,12 @@ function Dashboard() {
       )}
 
       {/* Dashboard top header with Bell */}
-      <div className="shrink-0 flex items-center justify-end px-5 py-2 border-b border-black/[0.05]">
+      <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:px-5 border-b border-black/[0.05]">
+        {resumeFixCredits != null && (
+          <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
+            {resumeFixCredits} Credits
+          </span>
+        )}
         <button
           data-testid="header-bell-btn"
           onClick={() => handleSidebarTabChange("opportunities")}
