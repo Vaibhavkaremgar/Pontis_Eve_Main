@@ -275,6 +275,67 @@ def test_missing_skills_uses_normalized_canonical_profile_skills():
     assert gaps["missing_skills"] == ["Docker"]
 
 
+def test_missing_skills_uses_selected_ats_job_skills_required_and_resume_evidence():
+    """ATS jobs populate skills_required, not the legacy jd.skills column."""
+    candidate = {
+        "skills": ["Python"],
+        "parsed_resume_json": json.dumps({"skills": ["React.js"]}),
+        "raw_data": json.dumps({"skills": ["PostgreSQL"]}),
+    }
+
+    gaps = server._job_missing_requirements(
+        [], "", candidate,
+        skills_required="Python, React JS, PostgreSQL, Docker",
+    )
+
+    assert gaps["missing_skills"] == ["Docker"]
+
+
+def test_missing_skills_uses_jd_requirement_list_when_selected_job_has_no_skills_column():
+    gaps = server._job_missing_requirements(
+        [], "Requirements: Python, FastAPI, Kubernetes", {"skills": ["Python"]}
+    )
+
+    assert gaps["missing_skills"] == ["FastAPI", "Kubernetes"]
+
+
+def test_missing_skills_reads_nested_structured_required_skills_and_voice_evidence():
+    candidate = {
+        "skills": ["python"],
+        "raw_data": json.dumps({"voice_intake": {"extracted": {"technical_skills": ["React JS"]}}}),
+    }
+    gaps = server._job_missing_requirements(
+        [], "", candidate,
+        structured_data={"job": {"qualification": {"required_skills": [{"name": "Python"}, {"name": "React.js"}, {"name": "Terraform"}]}}},
+    )
+    assert gaps["missing_skills"] == ["Terraform"]
+
+
+def test_missing_skills_jd_fallback_ignores_non_skill_requirements():
+    gaps = server._job_missing_requirements(
+        [],
+        "Responsibilities:\\nBuild reporting.\\nRequirements:\\n- SQL, Tableau, Airflow\\n- Remote in Canada; travel 20%; bachelor's degree required",
+        {"parsed_resume_json": json.dumps({"technical_skills": ["sql"]})},
+    )
+    assert gaps["missing_skills"] == ["Tableau", "Airflow"]
+
+
+def test_missing_skills_returns_empty_only_when_candidate_has_every_required_skill():
+    gaps = server._job_missing_requirements(
+        ["Go", "Docker", "Kubernetes"], "",
+        {"skills": ["GO", "docker", "Kubernetes"]},
+    )
+    assert gaps["missing_skills"] == []
+
+
+def test_missing_skills_handles_malformed_job_skill_data_without_non_skill_gaps():
+    gaps = server._job_missing_requirements(
+        "{not-json", "Requirements: location: London; salary: competitive; clearance required",
+        {"skills": []}, structured_data={"metadata": {"country": "UK"}},
+    )
+    assert gaps["missing_skills"] == []
+
+
 def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate_recommendation(monkeypatch):
     """Saving an edited resume must return its canonical profile and update only its selected match."""
     state = {

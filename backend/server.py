@@ -7696,6 +7696,7 @@ def _job_required_skills(
     description: Any = None,
     requirements: Any = None,
     structured_data: Any = None,
+    job_fields: Any = None,
 ) -> list[str]:
     """Read the selected job's declared skills, with its JD as a fallback.
 
@@ -7705,7 +7706,16 @@ def _job_required_skills(
     """
     declared: list[Any] = []
 
-    def add(value: Any) -> None:
+    # These are attributes, rather than a vocabulary of technologies: ATSes use
+    # them at arbitrary nesting levels for their normalized skill payloads.
+    skill_field_names = {
+        "skills", "skill", "skills_required", "required_skills", "requiredskills",
+        "technical_skills", "technicalskills", "key_skills", "keyskills",
+        "technologies", "technology", "frameworks", "languages", "tools",
+        "qualifications_skills", "normalized_skills",
+    }
+
+    def add(value: Any, *, allowed: bool = True) -> None:
         if value is None:
             return
         if isinstance(value, str):
@@ -7714,32 +7724,40 @@ def _job_required_skills(
             except (TypeError, ValueError):
                 decoded = value
             if decoded is not value:
-                add(decoded)
+                add(decoded, allowed=allowed)
             else:
-                declared.extend(_normalize_skills(value))
+                # Corrupt serialized ATS payloads are not a skill label.
+                if allowed and not value.lstrip().startswith(("{", "[")):
+                    declared.extend(_normalize_skills(value))
         elif isinstance(value, dict):
-            for key in ("skills", "skills_required", "required_skills", "requiredSkills", "technologies"):
-                if key in value:
-                    add(value[key])
+            for key, child in value.items():
+                # Traverse nested normalized/ATS payloads, but only admit
+                # values that live beneath an explicitly skill-shaped field.
+                child_allowed = allowed and str(key).replace("-", "_").casefold() in skill_field_names
+                if child_allowed or isinstance(child, (dict, list, tuple, set)):
+                    add(child, allowed=child_allowed)
         elif isinstance(value, (list, tuple, set)):
             for item in value:
                 if isinstance(item, dict):
-                    add(item.get("name") or item.get("skill") or item.get("title"))
+                    if allowed:
+                        add(item.get("name") or item.get("skill") or item.get("title"))
+                    else:
+                        add(item, allowed=False)
                 else:
-                    add(item)
+                    add(item, allowed=allowed)
 
     # Prefer structured/declared ATS fields over inference from prose.
     add(job_skills)
     add(skills_required)
     add(structured_data)
+    add(job_fields)
 
     # Older records may have no populated skills field. Reuse the existing
     # job-text requirement extractor only in that case, so we never invent a
     # global skill list or change matching behaviour.
     if not declared:
         try:
-            from candidate_job_matching_service import _extract_job_required_skills
-            declared = _extract_job_required_skills(
+            declared = _extract_required_skills_from_jd(
                 "\n".join(part for part in (str(requirements or ""), str(description or "")) if part)
             )
         except Exception:
@@ -7749,16 +7767,69 @@ def _job_required_skills(
 
 
 def _candidate_profile_skills(candidate: dict) -> list[str]:
-    """Collect skills evidenced in the canonical profile and uploaded resume."""
+    """Collect all persisted candidate skill evidence, without mining prose."""
     parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
     raw = _parse_raw_data(candidate.get("raw_data"))
-    return _normalize_skills(
-        [candidate.get("skills") or [], parsed.get("skills") or [], raw.get("skills") or []]
-    )
+    skill_keys = {"skills", "skill", "technical_skills", "key_skills", "competencies",
+                  "technologies", "technology", "tools", "frameworks", "languages"}
+    evidence: list[Any] = [candidate.get("skills") or []]
+
+    def collect(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                normalized_key = str(child_key).replace("-", "_").casefold()
+                if normalized_key in skill_keys:
+                    evidence.append(child)
+                # Voice/intake data frequently nests its explicit skill fields.
+                if isinstance(child, (dict, list, tuple, set)):
+                    collect(child, normalized_key)
+
+    collect(parsed)
+    collect(raw)
+    return _normalize_skills(evidence)
+
+
+_NON_SKILL_REQUIREMENT = re.compile(
+    r"\b(?:location|remote|hybrid|onsite|salary|compensation|travel|clearance|"
+    r"citizenship|eligible|eligibility|authorization|visa|degree|education|bachelor|"
+    r"master|phd|years? of experience|equal opportunity)\b", re.I)
+
+
+def _extract_required_skills_from_jd(job_text: str) -> list[str]:
+    """Extract items from explicit required/qualification portions of a JD.
+
+    This intentionally does not scan arbitrary company/product prose.  It is a
+    fallback only when the job does not supply structured skill fields.
+    """
+    lines = [line.strip(" \t-•*") for line in str(job_text or "").splitlines()]
+    collecting = False
+    extracted: list[str] = []
+    markers = re.compile(r"\b(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring))\b", re.I)
+    stop = re.compile(r"\b(?:preferred|nice to have|benefits|about (?:us|the role)|responsibilities)\b", re.I)
+    for line in lines:
+        if not line:
+            continue
+        if markers.search(line):
+            collecting = True
+            line = re.sub(r"^.*?(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring))\s*:? ?", "", line, flags=re.I)
+        elif collecting and stop.search(line):
+            break
+        if not collecting:
+            continue
+        for item in re.split(r"[,;•]|\band\b", line, flags=re.I):
+            item = re.sub(r"^(?:experience|proficiency|knowledge|expertise)\s+(?:with|in)\s+", "", item.strip(" .:-"), flags=re.I)
+            item = re.sub(r"^\d+\+?\s+years?\s+(?:of\s+)?(?:experience\s+)?(?:with|in)\s+", "", item, flags=re.I)
+            if 1 < len(item) <= 60 and not _NON_SKILL_REQUIREMENT.search(item):
+                # A bullet can contain a short skill list; preserve technical
+                # multi-word names while rejecting sentence-like prose.
+                if len(item.split()) <= 5:
+                    extracted.append(item)
+    return _normalize_skills(extracted)
 
 
 def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None,
-                              *, skills_required: Any = None, description: Any = None, structured_data: Any = None) -> dict:
+                              *, skills_required: Any = None, description: Any = None, structured_data: Any = None,
+                              job_fields: Any = None) -> dict:
     """Explain selected-job gaps without altering matcher scores."""
     def clean(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -7783,7 +7854,7 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
     missing_skills = []
     seen_job_skills = set()
     required_skills = _job_required_skills(
-        job_skills, skills_required, description, requirements, structured_data
+        job_skills, skills_required, description, requirements, structured_data, job_fields
     )
     for raw_skill in required_skills:
         skill = skill_name(raw_skill)
@@ -7809,8 +7880,7 @@ async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict
     """Load the selected recommendation's job context after verifying ownership."""
     async with SessionLocal() as db:
         result = await db.execute(text(f"""
-            SELECT cjr.match_score, jd.skills, jd.skills_required, jd.description,
-                   jd.requirements, jd.structured_data, jd.experience_required, jd.job_url
+            SELECT cjr.match_score, jd.*
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -7932,7 +8002,7 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
         **_job_missing_requirements(
             row["skills"], row["requirements"], candidate, row["experience_required"],
             skills_required=row.get("skills_required"), description=row.get("description"),
-            structured_data=row.get("structured_data"),
+            structured_data=row.get("structured_data"), job_fields=row,
         ),
     }
 
@@ -7976,7 +8046,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         job_context["experience_required"],
         skills_required=job_context.get("skills_required"),
         description=job_context.get("description"),
-        structured_data=job_context.get("structured_data"),
+        structured_data=job_context.get("structured_data"), job_fields=job_context,
     )
     return {
         "updated": bool(update_result.get("updated")),
