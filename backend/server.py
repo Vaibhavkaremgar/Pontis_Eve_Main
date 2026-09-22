@@ -7733,7 +7733,11 @@ def _job_required_skills(
             for key, child in value.items():
                 # Traverse nested normalized/ATS payloads, but only admit
                 # values that live beneath an explicitly skill-shaped field.
-                child_allowed = allowed and str(key).replace("-", "_").casefold() in skill_field_names
+                # A skill-shaped key may occur below arbitrary ATS wrapper
+                # objects (for example job.qualification.required_skills).
+                # Reaching that key authorizes its values even when its
+                # parents were only containers rather than skill fields.
+                child_allowed = allowed or str(key).replace("-", "_").casefold() in skill_field_names
                 if child_allowed or isinstance(child, (dict, list, tuple, set)):
                     add(child, allowed=child_allowed)
         elif isinstance(value, (list, tuple, set)):
@@ -7749,19 +7753,20 @@ def _job_required_skills(
     # Prefer structured/declared ATS fields over inference from prose.
     add(job_skills)
     add(skills_required)
-    add(structured_data)
-    add(job_fields)
+    add(structured_data, allowed=False)
+    add(job_fields, allowed=False)
 
-    # Older records may have no populated skills field. Reuse the existing
-    # job-text requirement extractor only in that case, so we never invent a
-    # global skill list or change matching behaviour.
-    if not declared:
-        try:
-            declared = _extract_required_skills_from_jd(
-                "\n".join(part for part in (str(requirements or ""), str(description or "")) if part)
-            )
-        except Exception:
-            declared = []
+    # ATS/voice structured fields are often partial (for example they may
+    # contain one primary language while the JD lists its framework and data
+    # stores).  Add explicitly-required JD skills to those declared fields;
+    # do not let a non-empty partial payload suppress the JD.  This is
+    # guidance only and intentionally leaves match scoring unchanged.
+    try:
+        declared.extend(_extract_required_skills_from_jd(
+            "\n".join(part for part in (str(requirements or ""), str(description or "")) if part)
+        ))
+    except Exception:
+        pass
 
     return _normalize_skills(declared)
 
@@ -7801,11 +7806,23 @@ def _extract_required_skills_from_jd(job_text: str) -> list[str]:
     This intentionally does not scan arbitrary company/product prose.  It is a
     fallback only when the job does not supply structured skill fields.
     """
-    lines = [line.strip(" \t-•*") for line in str(job_text or "").splitlines()]
+    # ATS feeds commonly store an entire rich-text JD in one database string.
+    # Turn the structural HTML/Markdown delimiters into lines before looking
+    # for a qualifications section; otherwise a valid section and every one
+    # of its bullets are invisible to the line-based parser below.
+    text_value = html.unescape(str(job_text or ""))
+    # Some imports retain JSON-style line separators as literal characters.
+    # Treat those exactly like physical line breaks before parsing sections.
+    text_value = text_value.replace("\\n", "\n").replace("\\r", "\r")
+    text_value = re.sub(r"</?(?:p|li|ul|ol|h[1-6]|br)\b[^>]*>", "\n", text_value, flags=re.I)
+    text_value = re.sub(r"<[^>]+>", "", text_value)
+    text_value = re.sub(r"\*\*([^*]+)\*\*", r"\n\1\n", text_value)
+    text_value = re.sub(r"(?<!^)[ \t]+[*•][ \t]+", "\n", text_value)
+    lines = [line.strip(" \t-•*") for line in text_value.splitlines()]
     collecting = False
     extracted: list[str] = []
     markers = re.compile(r"\b(?:requirements?|required qualifications?|must[- ]have|minimum qualifications?|what you (?:need|bring))\b", re.I)
-    stop = re.compile(r"\b(?:preferred|nice to have|benefits|about (?:us|the role)|responsibilities)\b", re.I)
+    stop = re.compile(r"\b(?:preferred|nice to have|benefits|why join|what we offer|about (?:us|the role)|responsibilities)\b", re.I)
     for line in lines:
         if not line:
             continue
@@ -7817,8 +7834,10 @@ def _extract_required_skills_from_jd(job_text: str) -> list[str]:
         if not collecting:
             continue
         for item in re.split(r"[,;•]|\band\b", line, flags=re.I):
-            item = re.sub(r"^(?:experience|proficiency|knowledge|expertise)\s+(?:with|in)\s+", "", item.strip(" .:-"), flags=re.I)
+            item = re.sub(r"^(?:hands[- ]on\s+)?(?:experience|proficiency|knowledge|expertise|familiarity)\s+(?:with|in|of)\s+", "", item.strip(" .:-()"), flags=re.I)
             item = re.sub(r"^\d+\+?\s+years?\s+(?:of\s+)?(?:experience\s+)?(?:with|in)\s+", "", item, flags=re.I)
+            item = re.sub(r"^(?:the|a|an)\s+", "", item, flags=re.I)
+            item = re.sub(r"\s+(?:framework|technology|platform|tool)s?$", "", item, flags=re.I)
             if 1 < len(item) <= 60 and not _NON_SKILL_REQUIREMENT.search(item):
                 # A bullet can contain a short skill list; preserve technical
                 # multi-word names while rejecting sentence-like prose.

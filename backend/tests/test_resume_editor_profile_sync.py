@@ -291,6 +291,25 @@ def test_missing_skills_uses_selected_ats_job_skills_required_and_resume_evidenc
     assert gaps["missing_skills"] == ["Docker"]
 
 
+def test_missing_skills_unions_partial_structured_skills_with_rich_text_jd_requirements():
+    """A real ATS-style row can declare only its primary language in JSON.
+
+    The remaining explicitly required skills live in one Markdown JD string;
+    they must not disappear merely because ``skills_required`` is non-empty.
+    """
+    description = """**Job Title: Java Developer**
+**Required Qualifications:** * 2+ years of professional experience in Java development.
+* Hands-on experience with the Spring Boot framework.
+* Strong working knowledge of relational databases (e.g., MySQL, PostgreSQL).
+**Why Join Us?** Build great products."""
+    gaps = server._job_missing_requirements(
+        None, None, {"skills": ["Java", "MySQL", "PostgreSQL"]},
+        skills_required=["Java"], description=description,
+        structured_data={"skills": ["Java"]},
+    )
+    assert "Spring Boot" in gaps["missing_skills"]
+
+
 def test_missing_skills_uses_jd_requirement_list_when_selected_job_has_no_skills_column():
     gaps = server._job_missing_requirements(
         [], "Requirements: Python, FastAPI, Kubernetes", {"skills": ["Python"]}
