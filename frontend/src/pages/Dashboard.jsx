@@ -520,10 +520,10 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, [fetchJobs]);
 
-  React.useEffect(() => {
-    if (!candidateId) return;
+  const refreshDocuments = React.useCallback(() => {
+    if (!candidateId) return Promise.resolve();
     setDocsLoading(true);
-    axios
+    return axios
       .get(`${API}/candidate/${candidateId}/documents`, {
         headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
       })
@@ -531,6 +531,10 @@ function Dashboard() {
       .catch(() => {})
       .finally(() => setDocsLoading(false));
   }, [candidateId, candidateToken]);
+
+  React.useEffect(() => {
+    refreshDocuments();
+  }, [refreshDocuments]);
 
   const sessionIdRef = React.useRef(
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -614,7 +618,8 @@ function Dashboard() {
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {
     setDocuments((prev) => ({ ...prev, resume: { filename } }));
     refreshProfile();
-  }, [refreshProfile]);
+    refreshDocuments();
+  }, [refreshProfile, refreshDocuments]);
 
   const handleCertUploaded = React.useCallback((cert) => {
     setDocuments((prev) => ({ ...prev, certificates: [...prev.certificates, cert] }));
@@ -691,13 +696,13 @@ function Dashboard() {
               <span className="text-lg font-semibold">{matchingJobsTotal}</span>
             </div>
             <div className="mt-4 text-center">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Daily free limit reached</p>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Daily free limit of 3 jobs reached</p>
               <h2 id="job-limit-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">You’ve reached your 3 free job-match views for today</h2>
-              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">You have {matchingJobsTotal} jobs matching your profile. Upgrade your plan to unlock and view all of your matching jobs.</p>
+              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">Employers are actively hiring for these roles. Upgrade now to unlock all{matchingJobsTotal} matches and apply before someone else does.</p>
             </div>
             <div className="mt-6 grid gap-2.5">
-              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">View Plans</button>
-              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Maybe Later</button>
+              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Upgrade Now</button>
+              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Remind Me Tomorrow</button>
             </div>
           </div>
         </div>
