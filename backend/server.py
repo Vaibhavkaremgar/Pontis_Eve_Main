@@ -7690,8 +7690,76 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
     return [serialize_job(r) for r in results]
 
 
-def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None) -> dict:
-    """Explain gaps from canonical profile skills without altering matcher scores."""
+def _job_required_skills(
+    job_skills: Any,
+    skills_required: Any = None,
+    description: Any = None,
+    requirements: Any = None,
+    structured_data: Any = None,
+) -> list[str]:
+    """Read the selected job's declared skills, with its JD as a fallback.
+
+    ``skills`` is a legacy column.  ATS ingestion writes ``skills_required``
+    instead, so gap guidance must consider both fields.  This helper is
+    intentionally display-only; the matcher continues to own score logic.
+    """
+    declared: list[Any] = []
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except (TypeError, ValueError):
+                decoded = value
+            if decoded is not value:
+                add(decoded)
+            else:
+                declared.extend(_normalize_skills(value))
+        elif isinstance(value, dict):
+            for key in ("skills", "skills_required", "required_skills", "requiredSkills", "technologies"):
+                if key in value:
+                    add(value[key])
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                if isinstance(item, dict):
+                    add(item.get("name") or item.get("skill") or item.get("title"))
+                else:
+                    add(item)
+
+    # Prefer structured/declared ATS fields over inference from prose.
+    add(job_skills)
+    add(skills_required)
+    add(structured_data)
+
+    # Older records may have no populated skills field. Reuse the existing
+    # job-text requirement extractor only in that case, so we never invent a
+    # global skill list or change matching behaviour.
+    if not declared:
+        try:
+            from candidate_job_matching_service import _extract_job_required_skills
+            declared = _extract_job_required_skills(
+                "\n".join(part for part in (str(requirements or ""), str(description or "")) if part)
+            )
+        except Exception:
+            declared = []
+
+    return _normalize_skills(declared)
+
+
+def _candidate_profile_skills(candidate: dict) -> list[str]:
+    """Collect skills evidenced in the canonical profile and uploaded resume."""
+    parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    return _normalize_skills(
+        [candidate.get("skills") or [], parsed.get("skills") or [], raw.get("skills") or []]
+    )
+
+
+def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dict, experience_required: Any = None,
+                              *, skills_required: Any = None, description: Any = None, structured_data: Any = None) -> dict:
+    """Explain selected-job gaps without altering matcher scores."""
     def clean(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -7708,13 +7776,16 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
     def skill_name(skill: Any) -> str:
         return clean(skill.get("name") if isinstance(skill, dict) else skill)
 
-    # candidates.skills is the canonical profile column and is updated by the
-    # Resume Editor before this calculation is re-run.
-    current_skills = _normalize_skills(candidate.get("skills") or [])
+    # Include canonical profile skills plus the uploaded-resume/voice snapshots
+    # that are actual candidate evidence but may not yet have been merged.
+    current_skills = _candidate_profile_skills(candidate)
     known = {skill_key(skill_name(skill)) for skill in current_skills if skill_key(skill_name(skill))}
     missing_skills = []
     seen_job_skills = set()
-    for raw_skill in (job_skills or []):
+    required_skills = _job_required_skills(
+        job_skills, skills_required, description, requirements, structured_data
+    )
+    for raw_skill in required_skills:
         skill = skill_name(raw_skill)
         key = skill_key(skill)
         if skill and key and key not in known and key not in seen_job_skills:
@@ -7738,7 +7809,8 @@ async def _get_job_match_improvement_row(candidate_id: str, rec_id: str) -> dict
     """Load the selected recommendation's job context after verifying ownership."""
     async with SessionLocal() as db:
         result = await db.execute(text(f"""
-            SELECT cjr.match_score, jd.skills, jd.requirements, jd.experience_required, jd.job_url
+            SELECT cjr.match_score, jd.skills, jd.skills_required, jd.description,
+                   jd.requirements, jd.structured_data, jd.experience_required, jd.job_url
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -7857,7 +7929,11 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
         "resume": _resume_editor_payload(candidate),
         "job_url": row.get("job_url") or None,
-        **_job_missing_requirements(row["skills"], row["requirements"], candidate, row["experience_required"]),
+        **_job_missing_requirements(
+            row["skills"], row["requirements"], candidate, row["experience_required"],
+            skills_required=row.get("skills_required"), description=row.get("description"),
+            structured_data=row.get("structured_data"),
+        ),
     }
 
 
@@ -7898,6 +7974,9 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         job_context["requirements"],
         candidate,
         job_context["experience_required"],
+        skills_required=job_context.get("skills_required"),
+        description=job_context.get("description"),
+        structured_data=job_context.get("structured_data"),
     )
     return {
         "updated": bool(update_result.get("updated")),
