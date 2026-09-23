@@ -5926,6 +5926,7 @@ ON candidate_daily_job_access (candidate_id, access_date)
 """
 
 FREE_DAILY_RESUME_FIX_CREDITS = 10
+INITIAL_RESUME_FIX_CREDITS = 100
 RESUME_FIX_CREDIT_COST = 3
 
 CREATE_RESUME_FIX_CREDITS_TABLE = """
@@ -5933,14 +5934,29 @@ CREATE TABLE IF NOT EXISTS candidate_resume_fix_credit_claims (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
     usage_date DATE NOT NULL,
+    credit_source TEXT NOT NULL DEFAULT 'daily',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     consumed_at TIMESTAMPTZ
+)
+"""
+
+CREATE_RESUME_FIX_CREDIT_BALANCES_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_resume_fix_credit_balances (
+    candidate_id UUID PRIMARY KEY REFERENCES candidates(id) ON DELETE CASCADE,
+    starter_credits_remaining INTEGER NOT NULL DEFAULT 100,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (starter_credits_remaining >= 0)
 )
 """
 
 ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT = """
 ALTER TABLE candidate_resume_fix_credit_claims
 ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ
+"""
+
+ALTER_RESUME_FIX_CREDITS_ADD_SOURCE = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS credit_source TEXT NOT NULL DEFAULT 'daily'
 """
 
 CREATE_RESUME_FIX_CREDITS_INDEX = """
@@ -5964,7 +5980,9 @@ async def _ensure_schema():
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_TABLE))
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_INDEX))
         await db.execute(text(CREATE_RESUME_FIX_CREDITS_TABLE))
+        await db.execute(text(CREATE_RESUME_FIX_CREDIT_BALANCES_TABLE))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT))
+        await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_SOURCE))
         await db.execute(text(CREATE_RESUME_FIX_CREDITS_INDEX))
         await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
         await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
@@ -7583,20 +7601,80 @@ def _daily_job_limit_reached(used: int, request_more: bool) -> bool:
 
 
 async def _claim_resume_fix_credits(candidate_id: str, candidate: dict, usage_date=None) -> dict:
-    """Atomically reserve the three free-plan credits for one resume-fix click."""
+    """Atomically reserve three credits for one free-plan resume-fix click."""
     if _has_active_subscription(candidate):
         return {"claim_id": None, "remaining_credits": None, "is_subscribed": True}
 
     usage_date = usage_date or _product_current_date()
     async with SessionLocal() as db:
-        # A candidate can have several browser tabs open, so count and insert
-        # under one advisory lock rather than trusting a displayed balance.
+        # A candidate can have several browser tabs open, so all balance reads
+        # and deductions happen under one lock rather than trusting the UI.
         await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
             "lock_key": f"resume-fix-credits:{candidate_id}"
         })
+        # The row is created lazily so candidates created before this feature
+        # receive the same starter grant exactly once.
+        await db.execute(text("""
+            INSERT INTO candidate_resume_fix_credit_balances (candidate_id, starter_credits_remaining)
+            VALUES (:cid, :starter_credits)
+            ON CONFLICT (candidate_id) DO NOTHING
+        """), {"cid": candidate_id, "starter_credits": INITIAL_RESUME_FIX_CREDITS})
+        starter_result = await db.execute(text("""
+            SELECT starter_credits_remaining
+            FROM candidate_resume_fix_credit_balances
+            WHERE candidate_id = :cid
+        """), {"cid": candidate_id})
+        starter_remaining = starter_result.scalar() or 0
+
+        if starter_remaining >= RESUME_FIX_CREDIT_COST:
+            updated = await db.execute(text("""
+                UPDATE candidate_resume_fix_credit_balances
+                SET starter_credits_remaining = starter_credits_remaining - :cost
+                WHERE candidate_id = :cid
+                  AND starter_credits_remaining >= :cost
+                RETURNING starter_credits_remaining
+            """), {"cid": candidate_id, "cost": RESUME_FIX_CREDIT_COST})
+            remaining = updated.scalar()
+            if remaining is None:
+                # Defensive recheck for a non-standard database isolation mode.
+                raise HTTPException(status_code=403, detail={
+                    "code": "resume_fix_credits_insufficient",
+                    "message": "Upgrade your plan to keep using Fix My Resume.",
+                    "remaining_credits": 0,
+                })
+            inserted = await db.execute(text("""
+                INSERT INTO candidate_resume_fix_credit_claims (candidate_id, usage_date, credit_source)
+                VALUES (:cid, :usage_date, 'starter') RETURNING id
+            """), {"cid": candidate_id, "usage_date": usage_date})
+            claim_id = str(inserted.scalar())
+            # Surface the newly active daily balance immediately after the
+            # last usable starter action, rather than showing an unusable 1–2.
+            if remaining < RESUME_FIX_CREDIT_COST:
+                daily_result = await db.execute(text("""
+                    SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
+                    WHERE candidate_id = :cid AND usage_date = :usage_date AND credit_source = 'daily'
+                """), {"cid": candidate_id, "usage_date": usage_date})
+                daily_used = (daily_result.scalar() or 0) * RESUME_FIX_CREDIT_COST
+                await db.commit()
+                return {
+                    "claim_id": claim_id,
+                    "remaining_credits": max(0, FREE_DAILY_RESUME_FIX_CREDITS - daily_used),
+                    "credit_phase": "daily",
+                    "is_subscribed": False,
+                }
+            await db.commit()
+            return {
+                "claim_id": claim_id,
+                "remaining_credits": remaining,
+                "credit_phase": "starter",
+                "is_subscribed": False,
+            }
+
+        # A leftover one or two starter credits cannot fund a 3-credit action.
+        # At that point the non-carrying daily allowance becomes the usable pool.
         result = await db.execute(text("""
             SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
-            WHERE candidate_id = :cid AND usage_date = :usage_date
+            WHERE candidate_id = :cid AND usage_date = :usage_date AND credit_source = 'daily'
         """), {"cid": candidate_id, "usage_date": usage_date})
         used_credits = (result.scalar() or 0) * RESUME_FIX_CREDIT_COST
         remaining = max(0, FREE_DAILY_RESUME_FIX_CREDITS - used_credits)
@@ -7607,32 +7685,53 @@ async def _claim_resume_fix_credits(candidate_id: str, candidate: dict, usage_da
                 "remaining_credits": remaining,
             })
         inserted = await db.execute(text("""
-            INSERT INTO candidate_resume_fix_credit_claims (candidate_id, usage_date)
-            VALUES (:cid, :usage_date) RETURNING id
+            INSERT INTO candidate_resume_fix_credit_claims (candidate_id, usage_date, credit_source)
+            VALUES (:cid, :usage_date, 'daily') RETURNING id
         """), {"cid": candidate_id, "usage_date": usage_date})
         claim_id = inserted.scalar()
         await db.commit()
     return {
         "claim_id": str(claim_id),
         "remaining_credits": remaining - RESUME_FIX_CREDIT_COST,
+        "credit_phase": "daily",
         "is_subscribed": False,
     }
 
 
 async def _get_resume_fix_credit_balance(candidate_id: str, candidate: dict, usage_date=None) -> dict:
-    """Return the free-plan balance from the same daily claim records used to charge it."""
+    """Return the backend-authoritative starter or current daily balance."""
     if _has_active_subscription(candidate):
         return {"remaining_credits": None, "is_subscribed": True}
 
     usage_date = usage_date or _product_current_date()
     async with SessionLocal() as db:
+        await db.execute(text("""
+            INSERT INTO candidate_resume_fix_credit_balances (candidate_id, starter_credits_remaining)
+            VALUES (:cid, :starter_credits)
+            ON CONFLICT (candidate_id) DO NOTHING
+        """), {"cid": candidate_id, "starter_credits": INITIAL_RESUME_FIX_CREDITS})
+        starter_result = await db.execute(text("""
+            SELECT starter_credits_remaining
+            FROM candidate_resume_fix_credit_balances
+            WHERE candidate_id = :cid
+        """), {"cid": candidate_id})
+        starter_remaining = starter_result.scalar() or 0
+        if starter_remaining >= RESUME_FIX_CREDIT_COST:
+            await db.commit()
+            return {
+                "remaining_credits": starter_remaining,
+                "credit_phase": "starter",
+                "is_subscribed": False,
+            }
         result = await db.execute(text("""
             SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
-            WHERE candidate_id = :cid AND usage_date = :usage_date
+            WHERE candidate_id = :cid AND usage_date = :usage_date AND credit_source = 'daily'
         """), {"cid": candidate_id, "usage_date": usage_date})
         used_credits = (result.scalar() or 0) * RESUME_FIX_CREDIT_COST
+        await db.commit()
     return {
         "remaining_credits": max(0, FREE_DAILY_RESUME_FIX_CREDITS - used_credits),
+        "credit_phase": "daily",
         "is_subscribed": False,
     }
 

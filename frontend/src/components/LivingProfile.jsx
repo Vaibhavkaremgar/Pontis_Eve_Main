@@ -579,11 +579,12 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
       return;
     }
     if (credit.remaining_credits != null) {
-      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits } }));
+      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits, creditPhase: credit.credit_phase } }));
     }
     const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
     if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
     if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
+    if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
     if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
     window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
     setImprovementJob(null);
@@ -838,11 +839,12 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId }) {
       return;
     }
     if (credit.remaining_credits != null) {
-      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits } }));
+      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits, creditPhase: credit.credit_phase } }));
     }
     const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
     if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
     if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
+    if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
     if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
     window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
     setImprovementJob(null);

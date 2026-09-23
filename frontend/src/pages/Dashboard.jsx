@@ -159,7 +159,7 @@ function Dashboard() {
   const [jobsError, setJobsError] = React.useState(false);
   const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
   const [showSubscriptionPlanPopup, setShowSubscriptionPlanPopup] = React.useState(false);
-  const [resumeFixCredits, setResumeFixCredits] = React.useState(null);
+  const [resumeFixCreditBalance, setResumeFixCreditBalance] = React.useState(null);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
   // When true, the auto-routing effect must not override their choice.
@@ -179,12 +179,15 @@ function Dashboard() {
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
-      setResumeFixCredits(null);
+      setResumeFixCreditBalance(null);
       return;
     }
     axios.get(`${API}/candidate/${candidateId}/resume-fix-credits`)
-      .then(({ data }) => setResumeFixCredits(data?.is_subscribed ? null : data?.remaining_credits ?? null))
-      .catch(() => setResumeFixCredits(null));
+      .then(({ data }) => setResumeFixCreditBalance(data?.is_subscribed || data?.remaining_credits == null ? null : {
+        remaining: data.remaining_credits,
+        phase: data.credit_phase || "daily",
+      }))
+      .catch(() => setResumeFixCreditBalance(null));
   }, [candidateId]);
 
   // Load real profile from PostgreSQL on mount
@@ -506,7 +509,10 @@ function Dashboard() {
   React.useEffect(() => {
     const updateResumeFixCredits = (event) => {
       if (event.detail?.remainingCredits != null) {
-        setResumeFixCredits(event.detail.remainingCredits);
+        setResumeFixCreditBalance((current) => ({
+          remaining: event.detail.remainingCredits,
+          phase: event.detail.creditPhase || current?.phase || "daily",
+        }));
       } else {
         refreshResumeFixCredits();
       }
@@ -736,9 +742,9 @@ function Dashboard() {
 
       {/* Dashboard top header with Bell */}
       <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:px-5 border-b border-black/[0.05]">
-        {resumeFixCredits != null && (
+        {resumeFixCreditBalance != null && (
           <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
-            {resumeFixCredits} Credits
+            {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits
           </span>
         )}
         <button

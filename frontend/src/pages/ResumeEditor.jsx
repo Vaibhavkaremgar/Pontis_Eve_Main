@@ -36,6 +36,7 @@ export default function ResumeEditor() {
   const recommendationId = params.get("recommendation_id");
   const fixCreditClaimId = params.get("fix_credit_claim_id");
   const initialRemainingCredits = params.get("remaining_credits");
+  const initialCreditPhase = params.get("credit_phase") || "daily";
   const [resume, setResume] = React.useState(null);
   const [guidance, setGuidance] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
@@ -97,7 +98,7 @@ export default function ResumeEditor() {
       {typeof item !== "string" && <Editable value={text.detail} onChange={(v) => updateItem(key, index, detailField, v)} className="mt-1 whitespace-pre-wrap text-slate-700" multiline testId={`${key}-${index}-detail`} />}</div>;
   });
   return <main className="min-h-screen bg-slate-100 p-4 text-slate-900 md:p-8" data-testid="resume-editor-page">
-    <header className="mx-auto mb-5 flex max-w-[1180px] items-center justify-between"><div><p className="text-sm font-semibold">Fix My Resume</p><p className="text-xs text-slate-500">Edit the document directly, then save to update your Eve profile.</p>{remainingCredits != null && <p data-testid="resume-fix-credit-balance" className="mt-1 text-xs font-medium text-slate-700">{remainingCredits} daily credits remaining</p>}</div><button onClick={save} disabled={saving} className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button></header>
+    <header className="mx-auto mb-5 flex max-w-[1180px] items-center justify-between"><div><p className="text-sm font-semibold">Fix My Resume</p><p className="text-xs text-slate-500">Edit the document directly, then save to update your Eve profile.</p>{remainingCredits != null && <p data-testid="resume-fix-credit-balance" className="mt-1 text-xs font-medium text-slate-700">{remainingCredits} {initialCreditPhase === "starter" ? "starter" : "daily"} credits remaining</p>}</div><button onClick={save} disabled={saving} className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button></header>
     <div className="mx-auto grid max-w-[1180px] gap-6 lg:grid-cols-[minmax(0,820px)_280px]">
       <article className="min-h-[1056px] bg-white px-8 py-12 shadow-lg md:px-16" data-testid="resume-document">
         <header className="border-b-2 border-slate-800 pb-5 text-center"><Editable value={resume.name} onChange={(v) => update("name", v)} className="text-3xl font-bold tracking-wide" testId="resume-name" /><Editable value={resume.headline} onChange={(v) => update("headline", v)} className="mt-1 text-lg text-slate-600" testId="resume-headline" /><Editable value={[resume.location, resume.email, resume.phone].filter(Boolean).join(" | ")} onChange={(v) => { const [location, email, phone] = v.split("|").map((x) => x.trim()); setResume((old) => ({ ...old, location, email, phone })); }} className="mt-2 text-sm text-slate-600" testId="resume-contact" /></header>
