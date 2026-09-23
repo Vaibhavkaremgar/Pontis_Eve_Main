@@ -20,6 +20,8 @@ describe("JobsTab Apply Now", () => {
   let openSpy;
 
   beforeEach(() => {
+    sessionStorage.clear();
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = ReactDOM.createRoot(container);
@@ -45,5 +47,32 @@ describe("JobsTab Apply Now", () => {
     expect(openSpy).not.toHaveBeenCalled();
     act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Apply with Current Resume")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(openSpy).toHaveBeenCalledWith(job.job_url, "_blank", "noopener,noreferrer");
+  });
+
+  it("asks about the application only after Eve becomes active again", async () => {
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.88 } });
+    await act(async () => {
+      container.querySelector('[data-testid="job-apply-job-free-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Apply with Current Resume")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(openSpy).toHaveBeenCalledWith(job.job_url, "_blank", "noopener,noreferrer");
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
+
+    act(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeTruthy();
+    expect(container.textContent).toContain("Have you applied for this job?");
+    expect(container.textContent).toContain("Yes, I Applied");
+    expect(container.textContent).toContain("Not Applied Yet");
+
+    act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Not Applied Yet")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
+    expect(sessionStorage.getItem("eve:application-follow-up:cand-1")).toBeNull();
   });
 });
