@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request as StarletteRequest
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
 from jose import JWTError, jwt
@@ -10,6 +11,7 @@ import os
 import json
 import logging
 import hashlib
+import hmac
 import base64
 import shutil
 import re
@@ -18,7 +20,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any, Dict
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import httpx
 from zoneinfo import ZoneInfo
 from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
 from groq_client import GroqClientPool, AllKeysRateLimitedError
@@ -114,6 +117,12 @@ class JobMatchImprovementRequest(BaseModel):
     """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
     fix_credit_claim_id: Optional[str] = None
+
+
+class RazorpayVerificationRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
 
 
 # ---------- Helpers ----------
@@ -2952,7 +2961,23 @@ async def _get_candidate_row(candidate_id: str) -> dict:
         result = row.mappings().fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Candidate not found.")
-    return dict(result)
+    candidate = dict(result)
+    # Subscription state is loaded from the payment ledger, never from a
+    # client-controlled profile payload.
+    try:
+        async with SessionLocal() as db:
+            active = await db.execute(text("""
+                SELECT expires_at FROM candidate_subscriptions
+                WHERE candidate_id = :cid AND status = 'active' AND expires_at > now()
+                ORDER BY expires_at DESC LIMIT 1
+            """), {"cid": candidate_id})
+            expires_at = active.scalar()
+        candidate["subscription_active"] = bool(expires_at)
+        candidate["subscription_status"] = "active" if expires_at else "free"
+    except Exception:
+        # The billing migration may not have run in older installations yet.
+        candidate["subscription_active"] = False
+    return candidate
 
 
 def _merge_resume_into_existing_profile(existing: dict, parsed: dict) -> dict:
@@ -7696,6 +7721,156 @@ async def _claim_resume_fix_credits(candidate_id: str, candidate: dict, usage_da
         "credit_phase": "daily",
         "is_subscribed": False,
     }
+
+
+RAZORPAY_PLAN_AMOUNT_PAISE = 300000
+RAZORPAY_PLAN_NAME = "Eve Candidate — 3 months"
+
+
+async def _ensure_candidate_billing_tables() -> None:
+    """Keep the candidate payment ledger separate from recruiter subscriptions."""
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS candidate_subscriptions (
+              id uuid PRIMARY KEY, candidate_id uuid NOT NULL, plan_name text NOT NULL,
+              amount_paise integer NOT NULL, status text NOT NULL, starts_at timestamptz,
+              expires_at timestamptz, razorpay_order_id text UNIQUE, razorpay_payment_id text UNIQUE,
+              created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS candidate_payment_attempts (
+              id uuid PRIMARY KEY, candidate_id uuid NOT NULL, subscription_id uuid NOT NULL,
+              amount_paise integer NOT NULL, currency text NOT NULL DEFAULT 'INR', status text NOT NULL,
+              razorpay_order_id text UNIQUE NOT NULL, razorpay_payment_id text UNIQUE,
+              razorpay_signature text, receipt text, provider_payload jsonb,
+              created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+            )
+        """))
+        await db.commit()
+
+
+def _razorpay_credentials() -> tuple[str, str]:
+    key_id, key_secret = os.getenv("RAZORPAY_KEY_ID"), os.getenv("RAZORPAY_KEY_SECRET")
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Payments are not configured.")
+    return key_id, key_secret
+
+
+async def _activate_candidate_subscription(candidate_id: str, order_id: str, payment_id: str, signature: str, payload: dict) -> dict:
+    """Idempotently activate only after a server-side signature check."""
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=90)
+    async with SessionLocal() as db:
+        attempt = await db.execute(text("""
+            UPDATE candidate_payment_attempts SET status = 'paid', razorpay_payment_id = :payment_id,
+              razorpay_signature = :signature, provider_payload = CAST(:payload AS jsonb), updated_at = now()
+            WHERE candidate_id = :cid AND razorpay_order_id = :order_id
+            RETURNING subscription_id
+        """), {"cid": candidate_id, "order_id": order_id, "payment_id": payment_id,
+               "signature": signature, "payload": json.dumps(payload, default=str)})
+        subscription_id = attempt.scalar()
+        if not subscription_id:
+            raise HTTPException(status_code=400, detail="Unknown payment order.")
+        await db.execute(text("""
+            UPDATE candidate_subscriptions SET status = 'active', starts_at = COALESCE(starts_at, :starts_at),
+              expires_at = GREATEST(COALESCE(expires_at, :starts_at), :expires_at),
+              razorpay_payment_id = :payment_id, updated_at = now()
+            WHERE id = :subscription_id
+        """), {"subscription_id": subscription_id, "starts_at": now, "expires_at": expires, "payment_id": payment_id})
+        await db.commit()
+    return {"status": "active", "starts_at": now.isoformat(), "expires_at": expires.isoformat()}
+
+
+@api_router.post("/candidate/{candidate_id}/billing/orders")
+async def create_candidate_billing_order(candidate_id: str):
+    candidate = await _get_candidate_row(candidate_id)
+    if _has_active_subscription(candidate):
+        raise HTTPException(status_code=409, detail="An active subscription already exists.")
+    await _ensure_candidate_billing_tables()
+    key_id, key_secret = _razorpay_credentials()
+    receipt = f"eve_{candidate_id.replace('-', '')[:18]}_{uuid.uuid4().hex[:10]}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post("https://api.razorpay.com/v1/orders", auth=(key_id, key_secret), json={
+            "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "currency": "INR", "receipt": receipt,
+            "notes": {"candidate_id": candidate_id, "plan": "candidate_3_month"},
+        })
+    if response.is_error:
+        logger.error("Razorpay order creation failed: %s", response.text)
+        raise HTTPException(status_code=502, detail="Unable to start payment. Please try again.")
+    order = response.json()
+    subscription_id = str(uuid.uuid4())
+    async with SessionLocal() as db:
+        await db.execute(text("""INSERT INTO candidate_subscriptions
+            (id, candidate_id, plan_name, amount_paise, status, razorpay_order_id)
+            VALUES (:id, :cid, :plan, :amount, 'pending', :order_id)"""),
+            {"id": subscription_id, "cid": candidate_id, "plan": RAZORPAY_PLAN_NAME, "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "order_id": order["id"]})
+        await db.execute(text("""INSERT INTO candidate_payment_attempts
+            (id, candidate_id, subscription_id, amount_paise, status, razorpay_order_id, receipt, provider_payload)
+            VALUES (:id, :cid, :subscription_id, :amount, 'created', :order_id, :receipt, CAST(:payload AS jsonb))"""),
+            {"id": str(uuid.uuid4()), "cid": candidate_id, "subscription_id": subscription_id,
+             "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "order_id": order["id"], "receipt": receipt, "payload": json.dumps(order)})
+        await db.commit()
+    return {"key_id": key_id, "order_id": order["id"], "amount": RAZORPAY_PLAN_AMOUNT_PAISE,
+            "currency": "INR", "name": "Eve", "description": "₹3,000 / 3 months", "prefill": {"name": candidate.get("name") or "", "email": candidate.get("email") or ""}}
+
+
+@api_router.post("/candidate/{candidate_id}/billing/verify")
+async def verify_candidate_billing_payment(candidate_id: str, body: RazorpayVerificationRequest):
+    await _ensure_candidate_billing_tables()
+    key_id, secret = _razorpay_credentials()
+    expected = hmac.new(secret.encode(), f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, body.razorpay_signature):
+        raise HTTPException(status_code=400, detail="Invalid payment signature.")
+    async with httpx.AsyncClient(timeout=15) as client:
+        payment_response = await client.get(f"https://api.razorpay.com/v1/payments/{body.razorpay_payment_id}", auth=(key_id, secret))
+    if payment_response.is_error:
+        raise HTTPException(status_code=502, detail="Unable to confirm payment status.")
+    payment = payment_response.json()
+    if payment.get("order_id") != body.razorpay_order_id or payment.get("status") != "captured" or payment.get("amount") != RAZORPAY_PLAN_AMOUNT_PAISE or payment.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail="Payment is not captured for this subscription.")
+    return await _activate_candidate_subscription(candidate_id, body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature, payment)
+
+
+@api_router.post("/webhooks/razorpay")
+async def razorpay_webhook(request: StarletteRequest):
+    raw_body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+    if not webhook_secret or not hmac.compare_digest(hmac.new(webhook_secret.encode(), raw_body, hashlib.sha256).hexdigest(), signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+    event = json.loads(raw_body)
+    payment = event.get("payload", {}).get("payment", {}).get("entity", {})
+    await _ensure_candidate_billing_tables()
+    if event.get("event") == "payment.failed" and payment.get("order_id"):
+        async with SessionLocal() as db:
+            await db.execute(text("UPDATE candidate_payment_attempts SET status = 'failed', provider_payload = CAST(:payload AS jsonb), updated_at = now() WHERE razorpay_order_id = :order_id"), {"order_id": payment["order_id"], "payload": json.dumps(event)})
+            await db.commit()
+    elif event.get("event") == "payment.captured" and payment.get("order_id") and payment.get("id"):
+        async with SessionLocal() as db:
+            owner = await db.execute(text("SELECT candidate_id FROM candidate_payment_attempts WHERE razorpay_order_id = :order_id"), {"order_id": payment["order_id"]})
+            candidate_id = owner.scalar()
+        if candidate_id:
+            await _activate_candidate_subscription(str(candidate_id), payment["order_id"], payment["id"], "webhook", event)
+    return {"ok": True}
+
+
+@api_router.get("/candidate/{candidate_id}/billing")
+async def get_candidate_billing(candidate_id: str):
+    await _get_candidate_row(candidate_id)
+    await _ensure_candidate_billing_tables()
+    async with SessionLocal() as db:
+        sub = (await db.execute(text("""SELECT plan_name, status, starts_at, expires_at, razorpay_payment_id
+            FROM candidate_subscriptions WHERE candidate_id = :cid ORDER BY created_at DESC LIMIT 1"""), {"cid": candidate_id})).mappings().fetchone()
+        history = (await db.execute(text("""SELECT status, amount_paise, razorpay_order_id, razorpay_payment_id, receipt, created_at
+            FROM candidate_payment_attempts WHERE candidate_id = :cid ORDER BY created_at DESC"""), {"cid": candidate_id})).mappings().fetchall()
+    active = bool(sub and sub["status"] == "active" and sub["expires_at"] and sub["expires_at"] > datetime.now(timezone.utc))
+    return {"status": "Active" if active else "Free", "plan": "₹3,000 / 3 months" if active else "Free",
+            "subscription_start": sub["starts_at"].isoformat() if active and sub["starts_at"] else None,
+            "subscription_expiry": sub["expires_at"].isoformat() if active and sub["expires_at"] else None,
+            "payment_status": "paid" if active else (sub["status"] if sub else "not_started"),
+            "payment_id": sub["razorpay_payment_id"] if sub else None,
+            "history": [dict(row) for row in history]}
 
 
 async def _get_resume_fix_credit_balance(candidate_id: str, candidate: dict, usage_date=None) -> dict:

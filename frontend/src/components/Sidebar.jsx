@@ -10,6 +10,7 @@ import {
   Star,
   LogOut,
   Bell,
+  CreditCard,
   Settings,
 } from "lucide-react";
 
@@ -43,6 +44,7 @@ export default function Sidebar({
     { id: "profile", label: "Profile", icon: User },
     { id: "documents", label: "Documents", icon: FileText },
     { id: "opportunities", label: "Notifications", icon: Bell, badge: opportunitiesCount || 0 },
+    { id: "billing", label: "Billing", icon: CreditCard },
   ];
 
   return (

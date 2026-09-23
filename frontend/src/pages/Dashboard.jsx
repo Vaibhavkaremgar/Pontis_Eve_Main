@@ -21,6 +21,7 @@ import { hydrateProfileStrength } from "../lib/profileStrength";
 import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
+import BillingPage from "../components/BillingPage";
 import { getVoiceIntakeCenterView } from "../lib/voiceIntakeRouting";
 
 export { getVoiceIntakeCenterView };
@@ -108,7 +109,7 @@ function Dashboard() {
       saveOnboardingState({ ...stored, newlyOnboarded: false });
       return "profile";
     }
-    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities"];
+    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities", "billing"];
     const persisted = stored.activeTab;
     // Chat/Voice center views always show Profile in the right panel
     const rightPanelTab = (persisted && VALID_TABS.includes(persisted)) ? persisted : "profile";
@@ -118,7 +119,7 @@ function Dashboard() {
   // panel selection explicit so changing one cannot leave content from the
   // other visible in the right panel.
   const [rightPanelTab, setRightPanelTab] = React.useState(() => {
-    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities"];
+    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities", "billing"];
     return VALID_TABS.includes(stored.activeTab) ? stored.activeTab : "profile";
   });
 
@@ -159,7 +160,9 @@ function Dashboard() {
   const [jobsError, setJobsError] = React.useState(false);
   const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
   const [showSubscriptionPlanPopup, setShowSubscriptionPlanPopup] = React.useState(false);
+  const [paymentStarting, setPaymentStarting] = React.useState(false);
   const [resumeFixCreditBalance, setResumeFixCreditBalance] = React.useState(null);
+
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
   // When true, the auto-routing effect must not override their choice.
@@ -690,6 +693,24 @@ function Dashboard() {
     }
   };
 
+  const startRazorpayPayment = async () => {
+    if (!candidateId || paymentStarting) return;
+    setPaymentStarting(true);
+    try {
+      const { data: order } = await axios.post(`${API}/candidate/${candidateId}/billing/orders`);
+      if (!window.Razorpay) await new Promise((resolve, reject) => {
+        const script = document.createElement("script"); script.src = "https://checkout.razorpay.com/v1/checkout.js";
+        script.onload = resolve; script.onerror = reject; document.body.appendChild(script);
+      });
+      const checkout = new window.Razorpay({ key: order.key_id, amount: order.amount, currency: order.currency, name: order.name, description: order.description, order_id: order.order_id, prefill: order.prefill,
+        handler: async (payment) => { try { await axios.post(`${API}/candidate/${candidateId}/billing/verify`, payment); setShowSubscriptionPlanPopup(false); toast.success("Subscription activated"); refreshProfile(); fetchJobs(); } catch { toast.error("We could not verify the payment. It will be updated shortly if captured."); } finally { setPaymentStarting(false); } },
+        modal: { ondismiss: () => setPaymentStarting(false) },
+      });
+      checkout.on("payment.failed", () => { setPaymentStarting(false); toast.error("Payment was not completed. No subscription was activated."); });
+      checkout.open();
+    } catch (error) { setPaymentStarting(false); toast.error(error?.response?.data?.detail || "Unable to start payment."); }
+  };
+
   return (
     <div
       className="h-screen w-full bg-[#FBFBF9] text-[#1F1F1F] overflow-hidden flex flex-col"
@@ -733,7 +754,7 @@ function Dashboard() {
               </ul>
             </div>
             <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
-              <button type="button" onClick={() => setShowSubscriptionPlanPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Pay Now</button>
+              <button type="button" data-testid="subscription-pay-now" disabled={paymentStarting} onClick={startRazorpayPayment} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">{paymentStarting ? "Opening secure checkout…" : "Pay Now"}</button>
               <button type="button" onClick={() => setShowSubscriptionPlanPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Cancel</button>
             </div>
           </div>
@@ -956,7 +977,7 @@ function Dashboard() {
         <ResizeHandle testId="resize-handle-right" subtle />
 
         <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full">
-          <LivingProfile
+          {displayedRightPanelTab === "billing" ? <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} /> : <LivingProfile
             activeTab={displayedRightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}
@@ -984,6 +1005,7 @@ function Dashboard() {
             }
             onLockedJobClick={() => setShowSubscriptionPopup(true)}
           />
+          }
         </Panel>
       </PanelGroup>
       <CandidateSettingsModal
