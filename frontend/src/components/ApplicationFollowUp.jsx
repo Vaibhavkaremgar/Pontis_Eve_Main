@@ -19,9 +19,16 @@ function clearPending(candidateId) {
 
 function markEveLeft(candidateId) {
   const pending = readPending(candidateId);
-  if (!pending?.id) return;
+  // A pending job is only eligible after its external application link was
+  // opened. Modal changes, React remounts, and in-app navigation never set
+  // this flag, so they cannot trigger the follow-up question.
+  if (!pending?.id || !pending.externalNavigationStartedAt) return;
   try {
-    sessionStorage.setItem(storageKey(candidateId), JSON.stringify({ ...pending, leftEve: true }));
+    sessionStorage.setItem(storageKey(candidateId), JSON.stringify({
+      ...pending,
+      leftEve: true,
+      leftEveAt: Date.now(),
+    }));
   } catch { /* storage is optional */ }
 }
 
@@ -32,7 +39,6 @@ function markEveLeft(candidateId) {
 export function useApplicationFollowUp(candidateId, onApplied) {
   const [pendingJob, setPendingJob] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
-  const eveWasInactive = React.useRef(false);
 
   const revealPending = React.useCallback(() => {
     const pending = readPending(candidateId);
@@ -42,23 +48,16 @@ export function useApplicationFollowUp(candidateId, onApplied) {
   React.useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        eveWasInactive.current = true;
         markEveLeft(candidateId);
-      } else if (eveWasInactive.current) {
+      } else if (document.visibilityState === "visible") {
+        // Do not reveal on focus, mounting, modal close, or an internal tab
+        // change. The browser's hidden -> visible lifecycle is the signal
+        // that the candidate has returned to this Eve tab.
         revealPending();
       }
     };
-    const handleFocus = () => {
-      // A focus event can occur while the external tab is opening. Only show
-      // the question after Eve has first been inactive.
-      if (eveWasInactive.current && document.visibilityState === "visible") {
-        revealPending();
-      }
-    };
-    window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [candidateId, revealPending]);
@@ -69,11 +68,22 @@ export function useApplicationFollowUp(candidateId, onApplied) {
       return;
     }
     try {
+      // Keep this call synchronous with the user's click so browsers do not
+      // treat it as a popup. Persist only after it has been invoked.
+      window.open(job.job_url, "_blank", "noopener,noreferrer");
+    } catch {
+      toast.error("Couldn't open the application link. Please try again.");
+      return;
+    }
+    try {
       sessionStorage.setItem(storageKey(candidateId), JSON.stringify({
-        id: job.id, title: job.title, company: job.company, leftEve: false,
+        id: job.id,
+        title: job.title,
+        company: job.company,
+        externalNavigationStartedAt: Date.now(),
+        leftEve: false,
       }));
     } catch { /* The application page should still open if storage is unavailable. */ }
-    window.open(job.job_url, "_blank", "noopener,noreferrer");
   }, [candidateId]);
 
   const answer = React.useCallback(async (applied) => {

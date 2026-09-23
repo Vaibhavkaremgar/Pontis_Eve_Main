@@ -21,6 +21,8 @@ describe("JobsTab Apply Now", () => {
 
   beforeEach(() => {
     sessionStorage.clear();
+    axios.get.mockReset();
+    axios.post.mockReset();
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -47,6 +49,13 @@ describe("JobsTab Apply Now", () => {
     expect(openSpy).not.toHaveBeenCalled();
     act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Apply with Current Resume")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(openSpy).toHaveBeenCalledWith(job.job_url, "_blank", "noopener,noreferrer");
+    expect(JSON.parse(sessionStorage.getItem("eve:application-follow-up:cand-1"))).toMatchObject({
+      id: job.id,
+      title: job.title,
+      company: job.company,
+      leftEve: false,
+    });
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
   });
 
   it("asks about the application only after Eve becomes active again", async () => {
@@ -72,6 +81,42 @@ describe("JobsTab Apply Now", () => {
     expect(container.textContent).toContain("Not Applied Yet");
 
     act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Not Applied Yet")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
+    expect(sessionStorage.getItem("eve:application-follow-up:cand-1")).toBeNull();
+  });
+
+  it("uses the Job Details Apply Now job for the return follow-up and moves it to Tracked Jobs when applied", async () => {
+    const onApplied = jest.fn().mockResolvedValue(undefined);
+    act(() => root.render(<JobsTab jobs={[job]} matchingJobsTotal={1} onTrack={jest.fn()} onDismiss={jest.fn()} selectedJob={null} setSelectedJob={jest.fn()} candidateId="cand-1" onJobViewed={jest.fn()} onLockedJobClick={jest.fn()} onApplied={onApplied} />));
+
+    act(() => container.querySelector('[data-testid="job-card-job-free-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    axios.get.mockResolvedValueOnce({ data: { match_score: 0.88, missing_skills: ["React"] } });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Apply Now")).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
+    act(() => Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Apply with Current Resume")).dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(JSON.parse(sessionStorage.getItem("eve:application-follow-up:cand-1"))).toMatchObject({ id: job.id, leftEve: false });
+
+    act(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeTruthy();
+    expect(container.textContent).toContain(job.title);
+
+    axios.post.mockResolvedValueOnce({ data: {} });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent.includes("Yes, I Applied")).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(axios.post).toHaveBeenCalledWith(expect.stringContaining(`/candidate/cand-1/jobs/${job.id}/apply`));
+    expect(onApplied).toHaveBeenCalledWith(job.id);
     expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
     expect(sessionStorage.getItem("eve:application-follow-up:cand-1")).toBeNull();
   });
