@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole } from "lucide-react";
+import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole, BriefcaseBusiness, CircleDollarSign, Clock3, Monitor, Sparkles, UsersRound } from "lucide-react";
 import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
@@ -552,12 +552,12 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
     }
   }, [candidateId, onJobViewed]);
 
-  const handleApply = React.useCallback(async () => {
-    if (!detailJob?.job_url) return;
-    setImprovementJob(detailJob);
+  const handleApply = React.useCallback(async (jobToApply = detailJob) => {
+    if (!jobToApply?.job_url) return;
+    setImprovementJob(jobToApply);
     setImprovementData(null);
     try {
-      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/match-improvement`);
+      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${jobToApply.id}/match-improvement`);
       setImprovementData(response.data);
     } catch {
       // Keep the modal open with the recommendation's current score.
@@ -678,9 +678,15 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
               );
             }
             const isSelected = selectedJob?.id === job.id;
-            const matchPct = job.match_score != null
-              ? `${Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))}%`
+            const matchValue = job.match_score != null
+              ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
               : null;
+            const jobType = job.employment_type || job.job_type || job.type;
+            const workMode = job.work_mode || job.workplace_type || job.workplace || (/remote/i.test(job.location || "") ? "Remote" : "");
+            const experience = job.experience_required || job.experience_level || job.seniority || job.experience;
+            const applicants = job.applicants_count ?? job.applicant_count ?? job.applicants;
+            const context = [job.context, job.company_context, job.company_type, job.early_applicant ? "Early applicant" : "", job.public_company ? "Public company" : ""].filter(Boolean);
+            const matchLabel = matchValue == null ? null : matchValue >= 80 ? "Strong match" : matchValue >= 60 ? "Fair match" : "Potential match";
             return (
               <div
                 key={job.id}
@@ -695,49 +701,49 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   }
                 }}
                 data-testid={`job-card-${job.id}`}
-                className={`min-h-[176px] w-full overflow-hidden text-left rounded-xl border border-black/[0.06] bg-white px-4 py-4 shadow-sm transition-colors eve-hover-row ${
+                className={`w-full overflow-hidden rounded-2xl border border-black/[0.06] bg-white p-4 text-left shadow-sm transition-colors eve-hover-row sm:p-5 ${
                   isSelected ? "bg-black/[0.04]" : ""
                 }`}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start gap-3">
                     {job.logo ? (
                       <img
                         src={job.logo}
                         alt={job.company}
-                        className="w-10 h-10 rounded-lg object-cover shrink-0"
+                        className="h-12 w-12 shrink-0 rounded-xl border border-black/[0.06] object-cover"
                       />
                     ) : (
-                      <div className="w-10 h-10 rounded-lg bg-[#E7E3F0] flex items-center justify-center shrink-0">
-                        <span className="text-[13px] font-medium text-[#7B6FB8]">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#E7E3F0]">
+                        <span className="text-[15px] font-semibold text-[#7B6FB8]">
                           {(job.company || "?")[0].toUpperCase()}
                         </span>
                       </div>
                     )}
                     <div className="flex-1 min-w-0">
-                      <h4 className="text-[13.5px] font-medium text-[#1F1F1F] truncate">
+                      <h4 className="truncate text-[16px] font-semibold leading-tight text-[#1F1F1F]">
                         {job.title}
                       </h4>
                       <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
                         {job.company} · {job.location}
                       </p>
-                      {job.salary && (
-                        <p className="text-[12px] text-[#1F1F1F] mt-1.5 font-medium">
-                          {job.salary}
-                        </p>
-                      )}
+                    </div>
+                    </div>
+                    {context.length > 0 && <div className="ml-15 mt-2 flex flex-wrap gap-1.5">{context.map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-[#F2F0F8] px-2 py-1 text-[10.5px] font-medium text-[#62578F]">{item}</span>)}</div>}
+                    <p className="mt-3 line-clamp-2 text-[12.5px] leading-relaxed text-[#5D5D5A]">{stripHtml(job.description)}</p>
+                    <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-2 text-[12px] text-[#4A4A48] min-[440px]:grid-cols-2">
+                      {job.location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{job.location}</span></span>}
+                      {jobType && <span className="flex min-w-0 items-center gap-1.5"><BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{jobType}</span></span>}
+                      {workMode && <span className="flex min-w-0 items-center gap-1.5"><Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{workMode}</span></span>}
+                      {experience && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{experience}</span></span>}
+                      {job.salary && <span className="flex min-w-0 items-center gap-1.5 font-medium text-[#1F1F1F]"><CircleDollarSign className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{job.salary}</span></span>}
+                      {applicants != null && <span className="flex min-w-0 items-center gap-1.5"><UsersRound className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{typeof applicants === "number" ? `${applicants}+ applicants` : applicants}</span></span>}
                     </div>
                   </div>
-                  {matchPct && (
-                    <span className="text-[11px] font-medium text-[#2E7538] bg-[#E7F2E4] rounded-full px-2 py-1 shrink-0">
-                      {matchPct}
-                    </span>
-                  )}
+                  {matchValue != null && <div className="flex shrink-0 items-center gap-3 rounded-xl bg-[#1F2621] px-4 py-3 text-white sm:w-[126px] sm:flex-col sm:justify-center sm:gap-1"><div className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-[#67C77B] text-[15px] font-semibold">{matchValue}%</div><span className="text-[10.5px] font-semibold uppercase tracking-wide text-[#BBDCC0]">{matchLabel}</span></div>}
                 </div>
-                <p className="text-[12.5px] text-[#4A4A48] mt-3 line-clamp-2 leading-relaxed font-normal">
-                  {stripHtml(job.description)}
-                </p>
-                <div className="flex items-center gap-2 mt-3">
+                <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-black/[0.06] pt-4">
                 <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -745,14 +751,14 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       setPendingDismissJob(job);
                     }}
                     data-testid={`job-dismiss-${job.id}`}
-                    className="flex-1 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full py-1.5 transition-colors"
+                    className="rounded-full bg-black/[0.03] px-3.5 py-2 text-[12px] font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.06]"
                   >
                     Not for me
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
                     data-testid={`job-track-${job.id}`}
-                    className={`flex-1 text-[12px] font-medium rounded-full py-1.5 transition-colors flex items-center justify-center gap-1.5 ${
+                    className={`flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-[12px] font-medium transition-colors ${
                       job.tracked
                         ? "bg-[#2E7538] text-white"
                         : "bg-[#1F1F1F] text-white hover:bg-black"
@@ -764,6 +770,11 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       <><Bookmark className="w-3.5 h-3.5" strokeWidth={2} />Track</>
                     )}
                   </button>
+                  {job.job_url && <button
+                    onClick={(e) => { e.stopPropagation(); handleApply(job); }}
+                    data-testid={`job-apply-${job.id}`}
+                    className="ml-auto inline-flex items-center justify-center gap-1.5 rounded-full bg-[#62C878] px-4 py-2 text-[12px] font-semibold text-[#14351C] transition-colors hover:bg-[#55B96A]"
+                  ><Sparkles className="h-3.5 w-3.5" />{job.easy_apply ? "Easy Apply" : "Apply"}</button>}
                 </div>
               </div>
             );
