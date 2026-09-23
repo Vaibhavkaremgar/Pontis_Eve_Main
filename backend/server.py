@@ -3685,9 +3685,15 @@ async def get_candidate_documents(candidate_id: str, authorization: Optional[str
             {"cid": candidate_id},
         )
         certs = certs_rows.fetchall()
+        application_rows = await db.execute(
+            text("SELECT id, file_name, company_name, recommendation_id FROM candidate_application_resumes WHERE candidate_id = :cid ORDER BY created_at DESC"),
+            {"cid": candidate_id},
+        )
+        application_resumes = application_rows.fetchall()
     return {
         "resume": {"filename": resume[0], "fingerprint": resume[1]} if resume else None,
         "certificates": [{"id": str(r[0]), "filename": r[1]} for r in certs],
+        "application_resumes": [{"id": str(r[0]), "filename": r[1], "company": r[2], "recommendation_id": str(r[3])} for r in application_resumes],
     }
 
 
@@ -3716,6 +3722,25 @@ async def view_resume(candidate_id: str, download: bool = False, authorization: 
         str(file_path), media_type=_document_media_type(file_path), filename=filename,
         headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
+
+
+@api_router.get("/candidate/{candidate_id}/application-resumes/{resume_id}/view")
+@api_router.post("/candidate/{candidate_id}/application-resumes/{resume_id}/view")
+async def view_application_resume(candidate_id: str, resume_id: str, download: bool = False, authorization: Optional[str] = Header(default=None), candidate_token: Optional[str] = Form(default=None)):
+    _verify_document_view_session(candidate_id, authorization, candidate_token)
+    await _get_candidate_row(candidate_id)
+    async with SessionLocal() as db:
+        row = await db.execute(text("SELECT file_name, file_path, recommendation_id FROM candidate_application_resumes WHERE id = :id AND candidate_id = :cid LIMIT 1"), {"id": resume_id, "cid": candidate_id})
+        result = row.fetchone()
+    if not result:
+        raise HTTPException(status_code=404, detail="Application resume not found.")
+    filename, storage_key, recommendation_id = result[0], result[1], str(result[2])
+    path = _application_resume_path(candidate_id, recommendation_id)
+    if path.name != Path(str(storage_key)).name or not path.exists():
+        raise HTTPException(status_code=404, detail="Application resume file is not available.")
+    disposition = "attachment" if download else "inline"
+    return FileResponse(str(path), media_type="application/pdf", filename=filename,
+                        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'})
 
 
 @api_router.delete("/candidate/{candidate_id}/resume")
@@ -5989,6 +6014,25 @@ CREATE INDEX IF NOT EXISTS idx_crfcc_candidate_date
 ON candidate_resume_fix_credit_claims (candidate_id, usage_date)
 """
 
+CREATE_APPLICATION_RESUMES_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_application_resumes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    recommendation_id UUID NOT NULL REFERENCES candidate_job_recommendations(id) ON DELETE CASCADE,
+    job_id UUID REFERENCES job_descriptions(id) ON DELETE SET NULL,
+    company_name TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, recommendation_id)
+)
+"""
+
+CREATE_APPLICATION_RESUMES_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_car_candidate ON candidate_application_resumes (candidate_id, created_at DESC)
+"""
+
 
 async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
@@ -6009,6 +6053,8 @@ async def _ensure_schema():
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_SOURCE))
         await db.execute(text(CREATE_RESUME_FIX_CREDITS_INDEX))
+        await db.execute(text(CREATE_APPLICATION_RESUMES_TABLE))
+        await db.execute(text(CREATE_APPLICATION_RESUMES_INDEX))
         await db.execute(text(CREATE_CHAT_SESSIONS_TABLE))
         await db.execute(text(CREATE_CHAT_SESSIONS_IDX))
         await db.commit()
@@ -7240,6 +7286,20 @@ def _updated_resume_pdf_path(candidate_id: str) -> Path:
     return (_candidate_storage_dir(candidate_id) / "updated_resume.pdf").resolve()
 
 
+def _application_resume_filename(company_name: str, candidate_name: str) -> str:
+    """Human-readable, filesystem-safe name for a company-specific resume."""
+    def part(value: str) -> str:
+        value = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+        return value or "unknown"
+    return f"{part(company_name)}_{part(candidate_name)}.pdf"
+
+
+def _application_resume_path(candidate_id: str, recommendation_id: str) -> Path:
+    # Keep the storage key independent of the display name: two roles at the
+    # same company must not overwrite each other on disk.
+    return (_candidate_storage_dir(candidate_id) / "application_resumes" / f"{recommendation_id}.pdf").resolve()
+
+
 def _resume_editor_pdf_profile(values: dict, raw_data: dict) -> dict:
     """Build the PDF input directly from the canonical Resume Editor save values."""
     return {
@@ -7273,6 +7333,40 @@ async def download_updated_resume(candidate_id: str):
         str(file_path), media_type=_document_media_type(file_path), filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/resume/download")
+async def download_application_resume(candidate_id: str, rec_id: str):
+    """Persist and download the edited PDF for the selected application."""
+    candidate = await _get_candidate_row(candidate_id)
+    # Ownership and job/company lookup are server-authoritative; never trust a
+    # company name supplied by the browser for a persisted document.
+    job = await _get_job_match_improvement_row(candidate_id, rec_id)
+    raw_data = _parse_raw_data(candidate.get("raw_data"))
+    source = raw_data.get("updated_resume_file_path")
+    source_path = Path(source).resolve() if isinstance(source, str) and source else None
+    if source_path != _updated_resume_pdf_path(candidate_id) or not source_path.exists():
+        raise HTTPException(status_code=404, detail="Updated resume PDF not found.")
+    company_name = str(job.get("company") or "Company").strip() or "Company"
+    filename = _application_resume_filename(company_name, str(candidate.get("name") or "Candidate"))
+    destination = _application_resume_path(candidate_id, rec_id)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # A repeat click is idempotent for this exact candidate/job, while the
+    # recommendation-specific directory preserves every other application.
+    shutil.copyfile(source_path, destination)
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            INSERT INTO candidate_application_resumes
+                (candidate_id, recommendation_id, job_id, company_name, file_name, file_path)
+            VALUES (:cid, :rid, :jid, :company, :filename, :path)
+            ON CONFLICT (candidate_id, recommendation_id) DO UPDATE SET
+                company_name=EXCLUDED.company_name, file_name=EXCLUDED.file_name,
+                file_path=EXCLUDED.file_path, updated_at=now()
+        """), {"cid": candidate_id, "rid": rec_id, "jid": str(job.get("job_id") or "") or None,
+               "company": company_name, "filename": filename, "path": destination.name})
+        await db.commit()
+    return FileResponse(str(destination), media_type="application/pdf", filename=filename,
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     merged_raw = _append_demonstrated_skill_evidence(
         merged_raw, candidate.get("skills") or [], voice_usage_text, "eve_voice"
     )
@@ -8574,7 +8668,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "profile": profile,
         # API is already included by the frontend client base URL.  Returning
         # an API-prefixed path here produced /api/api/... and a 404.
-        "resume_download_url": f"/candidate/{candidate_id}/resume/updated/download",
+        "resume_download_url": f"/candidate/{candidate_id}/jobs/{rec_id}/resume/download",
     }
 
 

@@ -117,6 +117,7 @@ def test_document_listing_metadata_is_unchanged(monkeypatch):
     monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
         "SELECT source_filename, resume_fingerprint": FakeResult([("resume.pdf", "resume-sha")]),
         "SELECT id, file_name FROM candidate_certificates": FakeResult([("cert-1", "certificate.pdf")]),
+        "SELECT id, file_name, company_name, recommendation_id FROM candidate_application_resumes": FakeResult([("app-1", "pontis_sai_vignesh.pdf", "Pontis", "rec-1")]),
     }))
 
     documents = asyncio.run(server.get_candidate_documents("candidate-1", authorization=_auth()))
@@ -124,7 +125,24 @@ def test_document_listing_metadata_is_unchanged(monkeypatch):
     assert documents == {
         "resume": {"filename": "resume.pdf", "fingerprint": "resume-sha"},
         "certificates": [{"id": "cert-1", "filename": "certificate.pdf"}],
+        "application_resumes": [{"id": "app-1", "filename": "pontis_sai_vignesh.pdf", "company": "Pontis", "recommendation_id": "rec-1"}],
     }
+
+
+def test_application_resume_view_uses_the_authenticated_document_mechanism(tmp_path, monkeypatch):
+    stored = tmp_path / "candidate-1" / "application_resumes" / "rec-1.pdf"
+    stored.parent.mkdir(parents=True)
+    stored.write_bytes(b"%PDF application resume")
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    _stub_candidate(monkeypatch)
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
+        "SELECT file_name, file_path, recommendation_id FROM candidate_application_resumes": FakeResult([("pontis_sai_vignesh.pdf", "rec-1.pdf", "rec-1")]),
+    }))
+
+    response = asyncio.run(server.view_application_resume("candidate-1", "app-1", authorization=_auth()))
+
+    assert response.path == str(stored)
+    assert response.headers["content-disposition"] == 'inline; filename="pontis_sai_vignesh.pdf"'
 
 
 def test_registered_resume_uses_current_persistent_volume_when_old_absolute_path_is_stale(tmp_path, monkeypatch):
@@ -140,6 +158,51 @@ def test_registered_resume_uses_current_persistent_volume_when_old_absolute_path
     }))
 
     response = asyncio.run(server.view_resume("candidate-1", authorization=_auth()))
+    assert response.path == str(saved)
+
+
+def test_legacy_windows_resume_path_recovers_by_storage_key_on_linux_or_windows(tmp_path, monkeypatch):
+    """A path saved by a former Windows worker must work on a Linux deploy."""
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    saved = tmp_path / "candidate-1" / "resume" / "upload-id.pdf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"%PDF registered resume")
+    legacy_path = r"C:\former-container\documents\candidate-1\resume\upload-id.pdf"
+    _stub_candidate(monkeypatch, legacy_path)
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
+        "SELECT source_filename, source_path FROM internal_candidate_resumes": FakeResult([("my-resume.pdf", legacy_path)]),
+    }))
+
+    response = asyncio.run(server.view_resume("candidate-1", authorization=_auth()))
+    assert response.path == str(saved)
+
+
+def test_legacy_windows_certificate_path_recovers_by_storage_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    saved = tmp_path / "candidate-1" / "certificates" / "credential-id.pdf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"%PDF certificate")
+    _stub_candidate(monkeypatch)
+    legacy_path = r"C:\former-container\documents\candidate-1\certificates\credential-id.pdf"
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
+        "SELECT file_name, file_path FROM candidate_certificates": FakeResult([("credential.pdf", legacy_path)]),
+    }))
+
+    response = asyncio.run(server.view_certificate("candidate-1", "cert-1", authorization=_auth()))
+    assert response.path == str(saved)
+
+
+def test_document_view_post_accepts_session_in_body_not_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    saved = tmp_path / "candidate-1" / "resume" / "stored.pdf"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"%PDF stored")
+    _stub_candidate(monkeypatch, "stored.pdf")
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
+        "SELECT source_filename, source_path FROM internal_candidate_resumes": FakeResult([("resume.pdf", "stored.pdf")]),
+    }))
+
+    response = asyncio.run(server.view_resume("candidate-1", authorization=None, candidate_token=_auth()[7:]))
     assert response.path == str(saved)
 
 

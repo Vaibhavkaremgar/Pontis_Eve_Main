@@ -152,7 +152,7 @@ function Dashboard() {
   const [inputValue, setInputValue] = React.useState("");
   const [availableJobs, setAvailableJobs] = React.useState([]);
   const [matchingJobsTotal, setMatchingJobsTotal] = React.useState(0);
-  const [documents, setDocuments] = React.useState({ resume: null, certificates: [] });
+  const [documents, setDocuments] = React.useState({ resume: null, certificates: [], application_resumes: [] });
   const [docsLoading, setDocsLoading] = React.useState(false);
   const [selectedJob, setSelectedJob] = React.useState(null);
   const [sending, setSending] = React.useState(false);
