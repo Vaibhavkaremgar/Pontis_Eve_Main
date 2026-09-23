@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server  # noqa: E402
@@ -81,15 +82,21 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
     }
     assert any("ON CONFLICT (candidate_id, recommendation_id) DO UPDATE" in sql for sql in state["sql"])
 
-    # Documents' authenticated View endpoint resolves that very stored file,
-    # opening it inline in a new tab through the existing secure flow.
+    # Documents' authenticated View endpoint resolves the DB's persisted
+    # storage key under the same document volume and streams the exact PDF.
     monkeypatch.setattr(
         server, "SessionLocal",
         lambda: _Session({}, ("pontis_sai_vignesh.pdf", f"{recommendation_id}.pdf", recommendation_id)),
     )
     token = server._issue_candidate_session_token(candidate_id)
-    view = asyncio.run(server.view_application_resume(candidate_id, "application-1", authorization=f"Bearer {token}"))
-    assert view.path == str(persisted)
+    client = TestClient(server.app)
+    view = client.get(
+        f"/api/candidate/{candidate_id}/application-resumes/application-1/view",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert view.status_code == 200
+    assert view.content == generated_pdf
+    assert view.headers["content-type"] == "application/pdf"
     assert view.headers["content-disposition"] == 'inline; filename="pontis_sai_vignesh.pdf"'
 
 

@@ -1278,7 +1278,7 @@ def _resolve_candidate_document_path(candidate_id: str, document_type: str, stor
     keeps those rows portable across mount-path changes without ever consulting
     the upload machine's filesystem.
     """
-    if document_type not in {"resume", "certificates"} or not isinstance(stored_reference, str):
+    if document_type not in {"resume", "certificates", "application_resumes"} or not isinstance(stored_reference, str):
         return None
     reference = stored_reference.strip()
     if not reference:
@@ -3734,9 +3734,12 @@ async def view_application_resume(candidate_id: str, resume_id: str, download: b
         result = row.fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Application resume not found.")
-    filename, storage_key, recommendation_id = result[0], result[1], str(result[2])
-    path = _application_resume_path(candidate_id, recommendation_id)
-    if path.name != Path(str(storage_key)).name or not path.exists():
+    filename, storage_key = result[0], result[1]
+    # ``file_path`` is the persisted storage reference. Resolve it beneath
+    # this candidate's current persistent document volume, never from a
+    # browser/download-machine path or reconstructed recommendation metadata.
+    path = _resolve_candidate_document_path(candidate_id, "application_resumes", storage_key)
+    if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Application resume file is not available.")
     disposition = "attachment" if download else "inline"
     return FileResponse(str(path), media_type="application/pdf", filename=filename,
@@ -7295,9 +7298,19 @@ def _application_resume_filename(company_name: str, candidate_name: str) -> str:
 
 
 def _application_resume_path(candidate_id: str, recommendation_id: str) -> Path:
+    """Return the canonical persisted location for an application PDF.
+
+    Save and View both pass through ``_resolve_candidate_document_path`` so
+    their interpretation of a database storage key cannot drift.
+    """
     # Keep the storage key independent of the display name: two roles at the
     # same company must not overwrite each other on disk.
-    return (_candidate_storage_dir(candidate_id) / "application_resumes" / f"{recommendation_id}.pdf").resolve()
+    path = _resolve_candidate_document_path(
+        candidate_id, "application_resumes", f"{recommendation_id}.pdf"
+    )
+    if not path:  # recommendation IDs are server-issued, but keep traversal safe.
+        raise ValueError("Invalid application resume storage key")
+    return path
 
 
 def _resume_editor_pdf_profile(values: dict, raw_data: dict) -> dict:
