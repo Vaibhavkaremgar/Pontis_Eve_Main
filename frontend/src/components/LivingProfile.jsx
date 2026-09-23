@@ -3,6 +3,7 @@ import axios from "axios";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole, BriefcaseBusiness, CircleDollarSign, Clock3, Monitor, Sparkles, UsersRound } from "lucide-react";
 import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
+import { useApplicationFollowUp } from "./ApplicationFollowUp";
 import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
 
@@ -527,16 +528,19 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
   );
 }
 
-export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed, onLockedJobClick }) {
+export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed, onLockedJobClick, onApplied }) {
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
+  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(candidateId, onApplied);
   // Keep backend ranking intact within each access group, while presenting the
   // jobs a candidate can open before the subscription-locked placeholders.
-  const accessibleJobs = jobs.filter((job) => !job.locked);
+  // Confirmed applications belong in Tracked Jobs. Regularly tracked jobs
+  // remain visible here so the existing Track workflow is unchanged.
+  const accessibleJobs = jobs.filter((job) => !job.locked && !job.applied);
   const lockedJobs = jobs.filter((job) => job.locked);
   const orderedJobs = [...accessibleJobs, ...lockedJobs];
 
@@ -619,7 +623,8 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
-      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { if (improvementJob?.job_url) window.open(improvementJob.job_url, "_blank", "noopener,noreferrer"); setImprovementJob(null); }} onFixResume={openResumeEditor} />
+      {applicationFollowUpModal}
+      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openApplication(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {detailJob && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
@@ -642,7 +647,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
           {matchingJobsTotal} matches ranked by fit
         </p>
 
-        {jobs.length === 0 && (
+        {orderedJobs.length === 0 && (
           <div className="py-10 text-center">
             <p className="text-[13px] text-[#9A9A98] font-normal">
               No job recommendations yet. Check back soon.
@@ -804,13 +809,14 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
   );
 }
 
-function TrackedTab({ jobs, onTrack, onDismissJob, candidateId }) {
+function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
   const tracked = jobs.filter((j) => j.tracked);
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
+  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(candidateId, onApplied);
 
   const handleApply = React.useCallback(async () => {
     if (!detailJob?.job_url) return;
@@ -878,7 +884,8 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId }) {
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
-      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { if (improvementJob?.job_url) window.open(improvementJob.job_url, "_blank", "noopener,noreferrer"); setImprovementJob(null); }} onFixResume={openResumeEditor} />
+      {applicationFollowUpModal}
+      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openApplication(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {detailJob && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
@@ -1711,10 +1718,11 @@ export default function LivingProfile({
               candidateToken={candidateToken}
               onJobViewed={onJobViewed}
               onLockedJobClick={onLockedJobClick}
+              onApplied={onInterested}
             />
           )}
           {activeTab === "tracked" && (
-            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} candidateId={candidateId} />
+            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} candidateId={candidateId} onApplied={onInterested} />
           )}
           {activeTab === "documents" && (
             <DocumentsTab

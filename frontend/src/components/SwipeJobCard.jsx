@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react";
 import { toast } from "sonner";
+import { useApplicationFollowUp } from "./ApplicationFollowUp";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -584,6 +585,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   // actioned: ids removed from deck this session (dismissed or tracked)
   const [actioned, setActioned] = React.useState(new Set());
   const exhaustionRequestedRef = React.useRef(false);
+  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(candidateId, onJobsChange);
 
   // Only show jobs that haven't been actioned this session AND aren't already tracked
   // Locked recommendation placeholders belong in the horizontal Jobs list;
@@ -628,10 +630,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   }, [current, candidateId, onJobsChange]);
 
   // APPLY → open the company's careers page directly in a new tab
-  const openJobUrl = React.useCallback((job) => {
-    if (!job?.job_url) { toast.error("Application link is not available for this job."); return; }
-    window.open(job.job_url, "_blank", "noopener,noreferrer");
-  }, []);
+  const openJobUrl = openApplication;
   const handleApply = React.useCallback(async (job = detailJob) => {
     if (!job || applying) return;
     if (!job.job_url) { toast.error("Application link is not available for this job."); return; }
@@ -728,6 +727,7 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
         onClose={() => setPendingDismissJob(null)}
         onConfirm={handleConfirmDismiss}
       />
+      {applicationFollowUpModal}
       <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openJobUrl(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
       {/* Detail modal overlay */}
       {detailJob && (

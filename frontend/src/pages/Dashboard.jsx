@@ -950,6 +950,7 @@ function Dashboard() {
                       )
                     }
                     onLockedJobClick={() => setShowSubscriptionPopup(true)}
+                    onApplied={fetchJobs}
                   />
                 </div>
               )
