@@ -11,9 +11,10 @@ import server  # noqa: E402
 
 
 class _Session:
-    def __init__(self, state, view_row=None):
+    def __init__(self, state, view_row=None, documents=False):
         self.state = state
         self.view_row = view_row
+        self.documents = documents
 
     async def __aenter__(self):
         return self
@@ -27,6 +28,13 @@ class _Session:
         self.state.setdefault("params", []).append(params or {})
         if self.view_row is not None and "SELECT file_name, file_path, recommendation_id" in sql:
             return _Result([self.view_row])
+        if self.documents:
+            if "SELECT source_filename, resume_fingerprint" in sql:
+                return _Result()
+            if "SELECT id, file_name FROM candidate_certificates" in sql:
+                return _Result()
+            if "SELECT id, file_name, company_name, recommendation_id" in sql:
+                return _Result([("application-1", "pontis_sai_vignesh.pdf", "Pontis", "rec-pontis")])
         return _Result()
 
     async def commit(self):
@@ -39,6 +47,9 @@ class _Result:
 
     def fetchone(self):
         return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return self.rows
 
 
 def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewable(tmp_path, monkeypatch):
@@ -69,7 +80,7 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
 
     response = asyncio.run(server.download_application_resume(candidate_id, recommendation_id))
 
-    persisted = tmp_path / candidate_id / "application_resumes" / f"{recommendation_id}.pdf"
+    persisted = tmp_path / candidate_id / "application_resumes" / recommendation_id / "pontis_sai_vignesh.pdf"
     assert response.path == str(persisted)
     assert persisted.read_bytes() == generated_pdf
     assert response.headers["content-disposition"] == 'attachment; filename="pontis_sai_vignesh.pdf"'
@@ -78,18 +89,27 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
     assert upsert_params == {
         "cid": candidate_id, "rid": recommendation_id, "jid": "job-pontis",
         "company": "Pontis", "filename": "pontis_sai_vignesh.pdf",
-        "path": f"{recommendation_id}.pdf",
+        "path": f"{recommendation_id}/pontis_sai_vignesh.pdf",
     }
     assert any("ON CONFLICT (candidate_id, recommendation_id) DO UPDATE" in sql for sql in state["sql"])
 
-    # Documents' authenticated View endpoint resolves the DB's persisted
-    # storage key under the same document volume and streams the exact PDF.
+    # Reproduce production: persisted download -> Documents -> authenticated
+    # application-resume View. The View response is the exact persisted bytes.
     monkeypatch.setattr(
         server, "SessionLocal",
-        lambda: _Session({}, ("pontis_sai_vignesh.pdf", f"{recommendation_id}.pdf", recommendation_id)),
+        lambda: _Session({}, ("pontis_sai_vignesh.pdf", f"{recommendation_id}/pontis_sai_vignesh.pdf", recommendation_id), documents=True),
     )
     token = server._issue_candidate_session_token(candidate_id)
     client = TestClient(server.app)
+    documents = client.get(
+        f"/api/candidate/{candidate_id}/documents",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert documents.status_code == 200
+    assert documents.json()["application_resumes"] == [{
+        "id": "application-1", "filename": "pontis_sai_vignesh.pdf",
+        "company": "Pontis", "recommendation_id": recommendation_id,
+    }]
     view = client.get(
         f"/api/candidate/{candidate_id}/application-resumes/application-1/view",
         headers={"Authorization": f"Bearer {token}"},
@@ -102,9 +122,29 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
 
 def test_application_resume_storage_key_isolated_per_recommendation(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
-    first = server._application_resume_path("candidate-1", "rec-pontis")
-    second = server._application_resume_path("candidate-1", "rec-other-pontis-role")
+    first = server._application_resume_path("candidate-1", "rec-pontis", "pontis_sai_vignesh.pdf")
+    second = server._application_resume_path("candidate-1", "rec-other-pontis-role", "pontis_sai_vignesh.pdf")
 
     assert first != second
-    assert first.name == "rec-pontis.pdf"
-    assert second.name == "rec-other-pontis-role.pdf"
+    assert first.as_posix().endswith("rec-pontis/pontis_sai_vignesh.pdf")
+    assert second.as_posix().endswith("rec-other-pontis-role/pontis_sai_vignesh.pdf")
+
+
+def test_application_resume_view_recovers_legacy_stale_db_path_by_recommendation(tmp_path, monkeypatch):
+    candidate_id, recommendation_id = "candidate-1", "rec-pontis"
+    legacy_pdf = tmp_path / candidate_id / "application_resumes" / f"{recommendation_id}.pdf"
+    legacy_pdf.parent.mkdir(parents=True)
+    legacy_pdf.write_bytes(b"%PDF legacy application")
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+
+    async def candidate(_candidate_id):
+        return {"id": candidate_id}
+
+    monkeypatch.setattr(server, "_get_candidate_row", candidate)
+    monkeypatch.setattr(server, "SessionLocal", lambda: _Session(
+        {}, ("pontis_sai_vignesh.pdf", r"C:\old\downloads\pontis_sai_vignesh.pdf", recommendation_id),
+    ))
+    response = asyncio.run(server.view_application_resume(
+        candidate_id, "application-1", authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
+    ))
+    assert response.path == str(legacy_pdf)

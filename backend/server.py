@@ -3734,11 +3734,14 @@ async def view_application_resume(candidate_id: str, resume_id: str, download: b
         result = row.fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Application resume not found.")
-    filename, storage_key = result[0], result[1]
-    # ``file_path`` is the persisted storage reference. Resolve it beneath
-    # this candidate's current persistent document volume, never from a
-    # browser/download-machine path or reconstructed recommendation metadata.
-    path = _resolve_candidate_document_path(candidate_id, "application_resumes", storage_key)
+    filename, storage_key, recommendation_id = result[0], result[1], str(result[2])
+    # Always resolve the DB's canonical relative key beneath the candidate's
+    # persistent application-resume volume.  The recovery branch only supports
+    # deterministic legacy names; it never follows an old host/browser path.
+    path = _resolve_application_resume_path(
+        candidate_id, storage_key, recommendation_id=recommendation_id,
+        resume_id=resume_id, filename=filename, recover_legacy=True,
+    )
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Application resume file is not available.")
     disposition = "attachment" if download else "inline"
@@ -7297,18 +7300,85 @@ def _application_resume_filename(company_name: str, candidate_name: str) -> str:
     return f"{part(company_name)}_{part(candidate_name)}.pdf"
 
 
-def _application_resume_path(candidate_id: str, recommendation_id: str) -> Path:
-    """Return the canonical persisted location for an application PDF.
+def _application_resume_storage_key(recommendation_id: str, filename: str) -> str:
+    """Return the DB value for an application PDF, relative to its volume."""
+    return f"{recommendation_id}/{filename}"
 
-    Save and View both pass through ``_resolve_candidate_document_path`` so
-    their interpretation of a database storage key cannot drift.
+
+def _resolve_application_resume_storage_key(candidate_id: str, storage_key: Any) -> Optional[Path]:
+    """Resolve a canonical, slash-delimited relative application-resume key."""
+    if not isinstance(storage_key, str) or not storage_key.strip():
+        return None
+    if storage_key.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\\\/]", storage_key):
+        return None
+    # Path() treats a Windows separator as a normal character on Linux, so
+    # normalize both styles before applying the candidate-volume boundary.
+    parts = [part for part in re.split(r"[\\\\/]+", storage_key.strip()) if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        return None
+    root = (_candidate_storage_dir(candidate_id) / "application_resumes").resolve()
+    path = (root.joinpath(*parts)).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
+def _resolve_application_resume_path(
+    candidate_id: str, storage_key: Any, *, recommendation_id: Optional[str] = None,
+    resume_id: Optional[str] = None, filename: Optional[str] = None,
+    recover_legacy: bool = False,
+) -> Optional[Path]:
+    """Resolve the one candidate/job-specific application-resume location.
+
+    New rows use ``<recommendation id>/<display filename>``.  That makes the
+    DB reference portable and prevents two applications with equal display
+    filenames from sharing a file.  Legacy deployments used ``<rec>.pdf`` or
+    stale absolute paths, so View can recover only those candidate-owned,
+    deterministic alternatives.
     """
-    # Keep the storage key independent of the display name: two roles at the
-    # same company must not overwrite each other on disk.
-    path = _resolve_candidate_document_path(
-        candidate_id, "application_resumes", f"{recommendation_id}.pdf"
+    path = _resolve_application_resume_storage_key(candidate_id, storage_key)
+    # Old rows may contain a mounted-volume absolute path. Their basename is
+    # still a useful legacy key, but never an authority outside DOCS_DIR.
+    if not path:
+        path = _resolve_candidate_document_path(candidate_id, "application_resumes", storage_key)
+    if path and path.exists():
+        return path
+    if not recover_legacy:
+        return path
+
+    root = (_candidate_storage_dir(candidate_id) / "application_resumes").resolve()
+    keys = []
+    if recommendation_id and filename:
+        keys.append(_application_resume_storage_key(recommendation_id, filename))
+    if recommendation_id:
+        keys.append(f"{recommendation_id}.pdf")  # pre-canonical storage
+    if resume_id and filename:
+        keys.append(_application_resume_storage_key(resume_id, filename))
+    if resume_id:
+        keys.append(f"{resume_id}.pdf")
+    for key in keys:
+        recovered = _resolve_application_resume_storage_key(candidate_id, key)
+        if recovered and recovered.exists() and recovered.is_file():
+            return recovered
+
+    # Some older rows stored only a stale browser/download path. A filename
+    # search is safe only when exactly one file with that name exists in this
+    # candidate's application-resume root; ambiguity must not cross apps.
+    if filename and Path(filename).name == filename:
+        matches = [p for p in root.rglob(filename) if p.is_file()] if root.exists() else []
+        if len(matches) == 1:
+            return matches[0].resolve()
+    return path
+
+
+def _application_resume_path(candidate_id: str, recommendation_id: str, filename: str) -> Path:
+    """Canonical resolver used by both application-resume save and View."""
+    path = _resolve_application_resume_path(
+        candidate_id, _application_resume_storage_key(recommendation_id, filename)
     )
-    if not path:  # recommendation IDs are server-issued, but keep traversal safe.
+    if not path:
         raise ValueError("Invalid application resume storage key")
     return path
 
@@ -7367,11 +7437,19 @@ async def download_application_resume(candidate_id: str, rec_id: str):
     # be saved as the generic ``company_<candidate>.pdf``.
     company_name = str(job.get("company_name") or job.get("company") or "Company").strip() or "Company"
     filename = _application_resume_filename(company_name, str(candidate.get("name") or "Candidate"))
-    destination = _application_resume_path(candidate_id, rec_id)
+    storage_key = _application_resume_storage_key(rec_id, filename)
+    destination = _application_resume_path(candidate_id, rec_id, filename)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # A repeat click is idempotent for this exact candidate/job, while the
-    # recommendation-specific directory preserves every other application.
-    shutil.copyfile(source_path, destination)
+    # Persist the exact generated artifact before returning its download.  A
+    # same-volume replace prevents View from ever observing a partial PDF.
+    generated_pdf = source_path.read_bytes()
+    temporary_destination = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary_destination.write_bytes(generated_pdf)
+        os.replace(temporary_destination, destination)
+    finally:
+        if temporary_destination.exists():
+            temporary_destination.unlink()
     async with SessionLocal() as db:
         await db.execute(text("""
             INSERT INTO candidate_application_resumes
@@ -7381,7 +7459,7 @@ async def download_application_resume(candidate_id: str, rec_id: str):
                 company_name=EXCLUDED.company_name, file_name=EXCLUDED.file_name,
                 file_path=EXCLUDED.file_path, updated_at=now()
         """), {"cid": candidate_id, "rid": rec_id, "jid": str(job.get("job_id") or "") or None,
-               "company": company_name, "filename": filename, "path": destination.name})
+               "company": company_name, "filename": filename, "path": storage_key})
         await db.commit()
     return FileResponse(str(destination), media_type="application/pdf", filename=filename,
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
