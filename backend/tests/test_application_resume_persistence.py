@@ -26,7 +26,7 @@ class _Session:
         sql = str(statement)
         self.state.setdefault("sql", []).append(sql)
         self.state.setdefault("params", []).append(params or {})
-        if self.view_row is not None and "SELECT file_name, file_path, recommendation_id" in sql:
+        if self.view_row is not None and "SELECT file_name, file_path, recommendation_id, company_name" in sql:
             return _Result([self.view_row])
         if self.documents:
             if "SELECT source_filename, resume_fingerprint" in sql:
@@ -148,3 +148,26 @@ def test_application_resume_view_recovers_legacy_stale_db_path_by_recommendation
         candidate_id, "application-1", authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
     ))
     assert response.path == str(legacy_pdf)
+
+
+def test_application_resume_view_recovers_stale_db_path_to_current_canonical_volume(tmp_path, monkeypatch):
+    """A DB path from a former container must resolve under today's DOCS_DIR."""
+    candidate_id, recommendation_id = "candidate-1", "rec-pontis"
+    filename = "pontis_sai_vignesh.pdf"
+    canonical_pdf = tmp_path / candidate_id / "application_resumes" / recommendation_id / filename
+    canonical_pdf.parent.mkdir(parents=True)
+    canonical_pdf.write_bytes(b"%PDF canonical application")
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+
+    async def candidate(_candidate_id):
+        return {"id": candidate_id}
+
+    monkeypatch.setattr(server, "_get_candidate_row", candidate)
+    monkeypatch.setattr(server, "SessionLocal", lambda: _Session(
+        {}, (filename, "/former-railway-volume/downloads/pontis.pdf", recommendation_id, "Pontis"),
+    ))
+    response = asyncio.run(server.view_application_resume(
+        candidate_id, "application-1", authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
+    ))
+
+    assert response.path == str(canonical_pdf)

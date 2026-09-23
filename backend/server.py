@@ -3730,19 +3730,32 @@ async def view_application_resume(candidate_id: str, resume_id: str, download: b
     _verify_document_view_session(candidate_id, authorization, candidate_token)
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
-        row = await db.execute(text("SELECT file_name, file_path, recommendation_id FROM candidate_application_resumes WHERE id = :id AND candidate_id = :cid LIMIT 1"), {"id": resume_id, "cid": candidate_id})
+        row = await db.execute(text("SELECT file_name, file_path, recommendation_id, company_name FROM candidate_application_resumes WHERE id = :id AND candidate_id = :cid LIMIT 1"), {"id": resume_id, "cid": candidate_id})
         result = row.fetchone()
     if not result:
+        logger.info("[application-resume-view] candidate_id=%s application_resume_id=%s db_record_exists=false", candidate_id, resume_id)
         raise HTTPException(status_code=404, detail="Application resume not found.")
     filename, storage_key, recommendation_id = result[0], result[1], str(result[2])
+    company_name = str(result[3] or "") if len(result) > 3 else ""
+    diagnostics: dict[str, Any] = {}
     # Always resolve the DB's canonical relative key beneath the candidate's
     # persistent application-resume volume.  The recovery branch only supports
     # deterministic legacy names; it never follows an old host/browser path.
     path = _resolve_application_resume_path(
         candidate_id, storage_key, recommendation_id=recommendation_id,
-        resume_id=resume_id, filename=filename, recover_legacy=True,
+        resume_id=resume_id, filename=filename, recover_legacy=True, diagnostics=diagnostics,
     )
-    if not path or not path.exists():
+    exists = bool(path and path.exists())
+    size = path.stat().st_size if exists and path.is_file() else None
+    logger.info(
+        "[application-resume-view] candidate_id=%s application_resume_id=%s db_record_exists=true "
+        "db_file_path=%r db_filename=%r recommendation_id=%s company_name=%r "
+        "canonical_relative_path=%r persistent_root=%s final_absolute_path=%s exists=%s bytes=%s legacy_fallbacks=%s selected_path=%s",
+        candidate_id, resume_id, storage_key, filename, recommendation_id, company_name,
+        diagnostics.get("canonical_relative_path"), diagnostics.get("persistent_root"), path,
+        exists, size, diagnostics.get("legacy_fallbacks", []), diagnostics.get("selected_path"),
+    )
+    if not exists:
         raise HTTPException(status_code=404, detail="Application resume file is not available.")
     disposition = "attachment" if download else "inline"
     return FileResponse(str(path), media_type="application/pdf", filename=filename,
@@ -7328,7 +7341,7 @@ def _resolve_application_resume_storage_key(candidate_id: str, storage_key: Any)
 def _resolve_application_resume_path(
     candidate_id: str, storage_key: Any, *, recommendation_id: Optional[str] = None,
     resume_id: Optional[str] = None, filename: Optional[str] = None,
-    recover_legacy: bool = False,
+    recover_legacy: bool = False, diagnostics: Optional[dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Resolve the one candidate/job-specific application-resume location.
 
@@ -7338,17 +7351,26 @@ def _resolve_application_resume_path(
     stale absolute paths, so View can recover only those candidate-owned,
     deterministic alternatives.
     """
+    root = (_candidate_storage_dir(candidate_id) / "application_resumes").resolve()
+    canonical_relative_path = _application_resume_storage_key(recommendation_id, filename) if recommendation_id and filename else None
+    if diagnostics is not None:
+        diagnostics.update({
+            "persistent_root": str(root),
+            "canonical_relative_path": canonical_relative_path,
+            "legacy_fallbacks": [],
+        })
     path = _resolve_application_resume_storage_key(candidate_id, storage_key)
     # Old rows may contain a mounted-volume absolute path. Their basename is
     # still a useful legacy key, but never an authority outside DOCS_DIR.
     if not path:
         path = _resolve_candidate_document_path(candidate_id, "application_resumes", storage_key)
     if path and path.exists():
+        if diagnostics is not None:
+            diagnostics["selected_path"] = str(path)
         return path
     if not recover_legacy:
         return path
 
-    root = (_candidate_storage_dir(candidate_id) / "application_resumes").resolve()
     keys = []
     if recommendation_id and filename:
         keys.append(_application_resume_storage_key(recommendation_id, filename))
@@ -7360,16 +7382,26 @@ def _resolve_application_resume_path(
         keys.append(f"{resume_id}.pdf")
     for key in keys:
         recovered = _resolve_application_resume_storage_key(candidate_id, key)
+        if diagnostics is not None:
+            diagnostics["legacy_fallbacks"].append(str(recovered) if recovered else f"invalid:{key}")
         if recovered and recovered.exists() and recovered.is_file():
+            if diagnostics is not None:
+                diagnostics["selected_path"] = str(recovered)
             return recovered
 
     # Some older rows stored only a stale browser/download path. A filename
     # search is safe only when exactly one file with that name exists in this
     # candidate's application-resume root; ambiguity must not cross apps.
     if filename and Path(filename).name == filename:
+        if diagnostics is not None:
+            diagnostics["legacy_fallbacks"].append(f"unique-filename-search:{filename}")
         matches = [p for p in root.rglob(filename) if p.is_file()] if root.exists() else []
         if len(matches) == 1:
+            if diagnostics is not None:
+                diagnostics["selected_path"] = str(matches[0].resolve())
             return matches[0].resolve()
+    if diagnostics is not None:
+        diagnostics["selected_path"] = str(path) if path else None
     return path
 
 
@@ -7450,6 +7482,14 @@ async def download_application_resume(candidate_id: str, rec_id: str):
     finally:
         if temporary_destination.exists():
             temporary_destination.unlink()
+    logger.info(
+        "[application-resume-save] candidate_id=%s recommendation_id=%s company_name=%r "
+        "generated_pdf_written_to=%s canonical_relative_path=%r persistent_root=%s "
+        "final_absolute_path=%s exists_after_write=%s bytes=%s",
+        candidate_id, rec_id, company_name, destination, storage_key,
+        (_candidate_storage_dir(candidate_id) / "application_resumes").resolve(), destination,
+        destination.exists(), destination.stat().st_size if destination.exists() else None,
+    )
     async with SessionLocal() as db:
         await db.execute(text("""
             INSERT INTO candidate_application_resumes
