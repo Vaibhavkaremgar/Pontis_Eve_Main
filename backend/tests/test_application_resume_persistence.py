@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -89,7 +91,7 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
     assert upsert_params == {
         "cid": candidate_id, "rid": recommendation_id, "jid": "job-pontis",
         "company": "Pontis", "filename": "pontis_sai_vignesh.pdf",
-        "path": f"{recommendation_id}/pontis_sai_vignesh.pdf",
+        "path": f"application_resumes/{recommendation_id}/pontis_sai_vignesh.pdf",
     }
     assert any("ON CONFLICT (candidate_id, recommendation_id) DO UPDATE" in sql for sql in state["sql"])
 
@@ -128,6 +130,52 @@ def test_application_resume_storage_key_isolated_per_recommendation(tmp_path, mo
     assert first != second
     assert first.as_posix().endswith("rec-pontis/pontis_sai_vignesh.pdf")
     assert second.as_posix().endswith("rec-other-pontis-role/pontis_sai_vignesh.pdf")
+
+
+def test_application_resume_uses_generic_company_only_when_authoritative_company_is_blank(tmp_path, monkeypatch):
+    candidate_id, recommendation_id = "candidate-1", "rec-blank-company"
+    source = tmp_path / candidate_id / "updated_resume.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF generated")
+    state = {}
+
+    async def candidate(_candidate_id):
+        return {"id": candidate_id, "name": "Sai Vignesh", "raw_data": {"updated_resume_file_path": str(source)}}
+
+    async def selected_job(_candidate_id, _recommendation_id):
+        return {"job_id": "job-blank-company", "company_name": ""}
+
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+    monkeypatch.setattr(server, "_updated_resume_pdf_path", lambda _cid: source)
+    monkeypatch.setattr(server, "_get_candidate_row", candidate)
+    monkeypatch.setattr(server, "_get_job_match_improvement_row", selected_job)
+    monkeypatch.setattr(server, "SessionLocal", lambda: _Session(state))
+
+    asyncio.run(server.download_application_resume(candidate_id, recommendation_id))
+
+    assert state["params"][-1]["company"] == "Company"
+    assert state["params"][-1]["filename"] == "company_sai_vignesh.pdf"
+
+
+def test_application_resume_view_does_not_select_another_recommendations_file(tmp_path, monkeypatch):
+    candidate_id = "candidate-1"
+    other = tmp_path / candidate_id / "application_resumes" / "other-rec" / "company_sai_vignesh.pdf"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"%PDF wrong recommendation")
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
+
+    async def candidate(_candidate_id):
+        return {"id": candidate_id}
+
+    monkeypatch.setattr(server, "_get_candidate_row", candidate)
+    monkeypatch.setattr(server, "SessionLocal", lambda: _Session(
+        {}, ("company_sai_vignesh.pdf", "missing.pdf", "wanted-rec", "Company"),
+    ))
+    with pytest.raises(HTTPException, match="Application resume file is not available") as error:
+        asyncio.run(server.view_application_resume(
+            candidate_id, "application-1", authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
+        ))
+    assert error.value.status_code == 404
 
 
 def test_application_resume_view_recovers_legacy_stale_db_path_by_recommendation(tmp_path, monkeypatch):

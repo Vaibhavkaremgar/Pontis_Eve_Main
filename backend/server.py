@@ -7314,8 +7314,8 @@ def _application_resume_filename(company_name: str, candidate_name: str) -> str:
 
 
 def _application_resume_storage_key(recommendation_id: str, filename: str) -> str:
-    """Return the DB value for an application PDF, relative to its volume."""
-    return f"{recommendation_id}/{filename}"
+    """Return the DB value, relative to the candidate document root."""
+    return f"application_resumes/{recommendation_id}/{filename}"
 
 
 def _resolve_application_resume_storage_key(candidate_id: str, storage_key: Any) -> Optional[Path]:
@@ -7328,6 +7328,13 @@ def _resolve_application_resume_storage_key(candidate_id: str, storage_key: Any)
     # normalize both styles before applying the candidate-volume boundary.
     parts = [part for part in re.split(r"[\\\\/]+", storage_key.strip()) if part]
     if not parts or any(part in {".", ".."} for part in parts):
+        return None
+    # New rows store a candidate-relative canonical key.  Old rows were
+    # relative directly to the application-resume volume; retain that read
+    # compatibility without permitting a path outside the candidate volume.
+    if parts[0] == "application_resumes":
+        parts = parts[1:]
+    if not parts:
         return None
     root = (_candidate_storage_dir(candidate_id) / "application_resumes").resolve()
     path = (root.joinpath(*parts)).resolve()
@@ -7389,17 +7396,10 @@ def _resolve_application_resume_path(
                 diagnostics["selected_path"] = str(recovered)
             return recovered
 
-    # Some older rows stored only a stale browser/download path. A filename
-    # search is safe only when exactly one file with that name exists in this
-    # candidate's application-resume root; ambiguity must not cross apps.
-    if filename and Path(filename).name == filename:
-        if diagnostics is not None:
-            diagnostics["legacy_fallbacks"].append(f"unique-filename-search:{filename}")
-        matches = [p for p in root.rglob(filename) if p.is_file()] if root.exists() else []
-        if len(matches) == 1:
-            if diagnostics is not None:
-                diagnostics["selected_path"] = str(matches[0].resolve())
-            return matches[0].resolve()
+    # Do not search by filename.  Even a unique current match could belong to
+    # a different recommendation after data cleanup or a prior generic-name
+    # bug.  Recovery must remain constrained to explicit recommendation or
+    # application-resume IDs above.
     if diagnostics is not None:
         diagnostics["selected_path"] = str(path) if path else None
     return path
@@ -7462,12 +7462,10 @@ async def download_application_resume(candidate_id: str, rec_id: str):
     source_path = Path(source).resolve() if isinstance(source, str) and source else None
     if source_path != _updated_resume_pdf_path(candidate_id) or not source_path.exists():
         raise HTTPException(status_code=404, detail="Updated resume PDF not found.")
-    # ``_get_job_match_improvement_row`` returns the authoritative
-    # job_descriptions columns, where the company is named ``company_name``.
-    # Do not use a browser-provided label (or silently prefer the old
-    # presentation-only ``company`` alias), otherwise application resumes can
-    # be saved as the generic ``company_<candidate>.pdf``.
-    company_name = str(job.get("company_name") or job.get("company") or "Company").strip() or "Company"
+    # The ownership-checked JOIN returns job_descriptions.company_name.  Do
+    # not read a presentation alias: it was the route by which valid jobs were
+    # previously persisted as generic ``company_<candidate>.pdf`` artifacts.
+    company_name = str(job.get("company_name") or "").strip() or "Company"
     filename = _application_resume_filename(company_name, str(candidate.get("name") or "Candidate"))
     storage_key = _application_resume_storage_key(rec_id, filename)
     destination = _application_resume_path(candidate_id, rec_id, filename)
