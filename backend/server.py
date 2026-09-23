@@ -7347,7 +7347,12 @@ async def download_application_resume(candidate_id: str, rec_id: str):
     source_path = Path(source).resolve() if isinstance(source, str) and source else None
     if source_path != _updated_resume_pdf_path(candidate_id) or not source_path.exists():
         raise HTTPException(status_code=404, detail="Updated resume PDF not found.")
-    company_name = str(job.get("company") or "Company").strip() or "Company"
+    # ``_get_job_match_improvement_row`` returns the authoritative
+    # job_descriptions columns, where the company is named ``company_name``.
+    # Do not use a browser-provided label (or silently prefer the old
+    # presentation-only ``company`` alias), otherwise application resumes can
+    # be saved as the generic ``company_<candidate>.pdf``.
+    company_name = str(job.get("company_name") or job.get("company") or "Company").strip() or "Company"
     filename = _application_resume_filename(company_name, str(candidate.get("name") or "Candidate"))
     destination = _application_resume_path(candidate_id, rec_id)
     destination.parent.mkdir(parents=True, exist_ok=True)
