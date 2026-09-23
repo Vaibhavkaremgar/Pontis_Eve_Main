@@ -652,6 +652,10 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         <div className="flex flex-col gap-3" data-testid="jobs-vertical-list">
           {orderedJobs.map((job) => {
             if (job.locked) {
+              const lockedMatchValue = job.match_score != null
+                ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
+                : null;
+              const lockedRingValue = Math.min(Math.max(lockedMatchValue ?? 0, 0), 100);
               return (
                 <button
                   key={job.id}
@@ -659,20 +663,34 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   data-testid={`locked-job-card-${job.id}`}
                   aria-label="Locked job match. View plans to unlock."
                   onClick={onLockedJobClick}
-                  className="relative min-h-[176px] w-full overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
+                  className="relative min-h-[128px] w-full overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
                 >
-                  <div className="pointer-events-none select-none p-4 blur-[7px]" aria-hidden="true">
-                    <div className="h-10 w-10 rounded-lg bg-[#E7E3F0]" />
-                    <div className="mt-3 h-3 w-36 rounded bg-black/[0.12]" />
+                  <div className="pointer-events-none select-none p-3 blur-[7px]" aria-hidden="true">
+                    <div className="h-8 w-8 rounded-lg bg-[#E7E3F0]" />
+                    <div className="mt-2 h-3 w-36 rounded bg-black/[0.12]" />
                     <div className="mt-2 h-3 w-24 rounded bg-black/[0.08]" />
-                    <div className="mt-7 h-3 w-full rounded bg-black/[0.07]" />
+                    <div className="mt-5 h-3 w-full rounded bg-black/[0.07]" />
                     <div className="mt-2 h-3 w-5/6 rounded bg-black/[0.07]" />
-                    <div className="mt-6 flex gap-2"><span className="h-8 w-24 rounded-full bg-black/[0.08]" /><span className="h-8 w-24 rounded-full bg-black/[0.08]" /></div>
+                    <div className="mt-4 flex gap-2"><span className="h-7 w-20 rounded-full bg-black/[0.08]" /><span className="h-7 w-20 rounded-full bg-black/[0.08]" /></div>
                   </div>
-                  <span className="absolute inset-0 flex flex-col items-center justify-center bg-white/25 text-center">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/95 text-[#62578F] shadow-sm"><LockKeyhole className="h-4 w-4" /></span>
-                    <span className="mt-2 text-[12px] font-semibold text-[#3E394E]">Unlock this match</span>
-                    <span className="mt-1 text-[11px] text-[#62578F]">View plans</span>
+                  <span className="absolute inset-0 flex items-center justify-between gap-3 bg-white/25 p-3 text-left">
+                    <span className="flex min-w-0 flex-1 flex-col justify-center">
+                      <span className="truncate text-[13px] font-semibold text-[#3E394E]">{job.title}</span>
+                      <span className="mt-2 flex items-center gap-2">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/95 text-[#62578F] shadow-sm"><LockKeyhole className="h-3.5 w-3.5" /></span>
+                        <span className="flex flex-col">
+                          <span className="text-[12px] font-semibold text-[#3E394E]">Unlock this match</span>
+                          <span className="text-[11px] text-[#62578F]">View plans</span>
+                        </span>
+                      </span>
+                    </span>
+                    {lockedMatchValue != null && <span className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#1F2621] shadow-sm" aria-label={`${lockedMatchValue}% match`}>
+                      <svg className="absolute inset-1.5 h-[calc(100%-0.75rem)] w-[calc(100%-0.75rem)] -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
+                        <circle className="text-white/20" cx="18" cy="18" r="15.5" fill="none" stroke="currentColor" strokeWidth="3" />
+                        <circle className="text-[#67C77B]" cx="18" cy="18" r="15.5" fill="none" pathLength="100" stroke="currentColor" strokeWidth="3" strokeDasharray={`${lockedRingValue} 100`} strokeLinecap="round" />
+                      </svg>
+                      <span className="relative text-[13px] font-semibold text-white">{lockedMatchValue}%</span>
+                    </span>}
                   </span>
                 </button>
               );
@@ -701,11 +719,11 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   }
                 }}
                 data-testid={`job-card-${job.id}`}
-                className={`w-full overflow-hidden rounded-2xl border border-black/[0.06] bg-white p-4 text-left shadow-sm transition-colors eve-hover-row sm:p-5 ${
+                className={`w-full overflow-hidden rounded-2xl border border-black/[0.06] bg-white p-3 text-left shadow-sm transition-colors eve-hover-row sm:p-4 ${
                   isSelected ? "bg-black/[0.04]" : ""
                 }`}
               >
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start gap-3">
                     {job.logo ? (
@@ -730,9 +748,9 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       </p>
                     </div>
                     </div>
-                    {context.length > 0 && <div className="ml-15 mt-2 flex flex-wrap gap-1.5">{context.map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-[#F2F0F8] px-2 py-1 text-[10.5px] font-medium text-[#62578F]">{item}</span>)}</div>}
-                    <p className="mt-3 line-clamp-2 text-[12.5px] leading-relaxed text-[#5D5D5A]">{stripHtml(job.description)}</p>
-                    <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-2 text-[12px] text-[#4A4A48] min-[440px]:grid-cols-2">
+                    {context.length > 0 && <div className="ml-15 mt-1.5 flex flex-wrap gap-1">{context.map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-[#F2F0F8] px-2 py-0.5 text-[10.5px] font-medium text-[#62578F]">{item}</span>)}</div>}
+                    <p className="mt-2 line-clamp-2 text-[12.5px] leading-snug text-[#5D5D5A]">{stripHtml(job.description)}</p>
+                    <div className="mt-3 grid grid-cols-1 gap-x-5 gap-y-1.5 text-[12px] text-[#4A4A48] min-[440px]:grid-cols-2">
                       {job.location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{job.location}</span></span>}
                       {jobType && <span className="flex min-w-0 items-center gap-1.5"><BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{jobType}</span></span>}
                       {workMode && <span className="flex min-w-0 items-center gap-1.5"><Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{workMode}</span></span>}
@@ -741,9 +759,9 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       {applicants != null && <span className="flex min-w-0 items-center gap-1.5"><UsersRound className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{typeof applicants === "number" ? `${applicants}+ applicants` : applicants}</span></span>}
                     </div>
                   </div>
-                  {matchValue != null && <div className="flex shrink-0 items-center gap-3 rounded-xl bg-[#1F2621] px-4 py-3 text-white sm:w-[126px] sm:flex-col sm:justify-center sm:gap-1"><div className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-[#67C77B] text-[15px] font-semibold">{matchValue}%</div><span className="text-[10.5px] font-semibold uppercase tracking-wide text-[#BBDCC0]">{matchLabel}</span></div>}
+                  {matchValue != null && <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-3 py-2.5 text-white sm:w-[116px] sm:flex-col sm:justify-center sm:gap-1"><div className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-[#67C77B] text-[14px] font-semibold">{matchValue}%</div><span className="text-[10.5px] font-semibold uppercase tracking-wide text-[#BBDCC0]">{matchLabel}</span></div>}
                 </div>
-                <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-black/[0.06] pt-4">
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-black/[0.06] pt-3">
                 <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -751,14 +769,14 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       setPendingDismissJob(job);
                     }}
                     data-testid={`job-dismiss-${job.id}`}
-                    className="rounded-full bg-black/[0.03] px-3.5 py-2 text-[12px] font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.06]"
+                    className="rounded-full bg-black/[0.03] px-3 py-1.5 text-[12px] font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.06]"
                   >
                     Not for me
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
                     data-testid={`job-track-${job.id}`}
-                    className={`flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-[12px] font-medium transition-colors ${
+                    className={`flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${
                       job.tracked
                         ? "bg-[#2E7538] text-white"
                         : "bg-[#1F1F1F] text-white hover:bg-black"
@@ -773,7 +791,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   {job.job_url && <button
                     onClick={(e) => { e.stopPropagation(); handleApply(job); }}
                     data-testid={`job-apply-${job.id}`}
-                    className="ml-auto inline-flex items-center justify-center gap-1.5 rounded-full bg-[#62C878] px-4 py-2 text-[12px] font-semibold text-[#14351C] transition-colors hover:bg-[#55B96A]"
+                    className="ml-auto inline-flex items-center justify-center gap-1.5 rounded-full bg-[#62C878] px-3.5 py-1.5 text-[12px] font-semibold text-[#14351C] transition-colors hover:bg-[#55B96A]"
                   ><Sparkles className="h-3.5 w-3.5" />{job.easy_apply ? "Easy Apply" : "Apply"}</button>}
                 </div>
               </div>
