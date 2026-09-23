@@ -36,9 +36,10 @@ describe("JobsTab locked recommendations", () => {
   it("stacks every ranked match vertically, keeping the first three accessible and later matches redacted", () => {
     const view = renderJobs(Array.from({ length: 6 }, (_, index) => ({
       id: `job-${index + 1}`,
-      title: index < 3 ? `Engineer ${index + 1}` : "Hidden title",
+      title: index < 3 ? `Engineer ${index + 1}` : "Locked Engineer",
       company: "Acme",
       description: "Build products",
+      match_score: index < 3 ? 0.9 : 0.86,
       locked: index >= 3,
     })));
 
@@ -58,8 +59,11 @@ describe("JobsTab locked recommendations", () => {
     expect(view.container.querySelectorAll('[data-testid^="locked-job-card-"]')).toHaveLength(3);
     const locked = view.container.querySelector('[data-testid="locked-job-card-job-4"]');
     expect(locked).toBeTruthy();
+    expect(locked.textContent).toContain("Locked Engineer");
+    expect(locked.textContent).toContain("86%");
     expect(locked.textContent).toContain("Unlock this match");
-    expect(locked.textContent).not.toContain("Hidden title");
+    expect(locked.textContent).not.toContain("Acme");
+    expect(locked.textContent).not.toContain("Build products");
     expect(locked.querySelector(".blur-\\[7px\\]")).toBeTruthy();
     expect(locked.className).toContain("w-full");
     view.unmount();

@@ -158,6 +158,7 @@ function Dashboard() {
   const [jobsLoading, setJobsLoading] = React.useState(true);
   const [jobsError, setJobsError] = React.useState(false);
   const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
+  const [showSubscriptionPlanPopup, setShowSubscriptionPlanPopup] = React.useState(false);
   const [resumeFixCredits, setResumeFixCredits] = React.useState(null);
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
   // Tracks whether the user has explicitly chosen a center view (popup, toggle, mic).
@@ -691,26 +692,43 @@ function Dashboard() {
       <Toaster position="top-right" richColors closeButton />
       {showSubscriptionPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="job-limit-modal-title">
-          <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-5 shadow-2xl sm:p-7">
+          <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-7 shadow-2xl">
             <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[#EEEAF8] text-[#62578F]" aria-hidden="true">
               <span className="text-lg font-semibold">{matchingJobsTotal}</span>
             </div>
             <div className="mt-4 text-center">
               <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Daily free limit of 3 jobs reached</p>
               <h2 id="job-limit-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">You’ve reached your 3 free job-match views for today</h2>
-              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">Employers are actively hiring for these roles. Upgrade now to unlock all {matchingJobsTotal} matches and apply before someone else does.</p>
+              <p className="mt-3 text-sm leading-6 text-[#5D5D5A]">You have {matchingJobsTotal} jobs matching your profile. Employers are actively hiring for these roles. Upgrade now to unlock all {matchingJobsTotal} matches and apply before someone else does.</p>
+            </div>
+            <div className="mt-6 grid gap-2.5">
+              <button type="button" onClick={() => { setShowSubscriptionPopup(false); setShowSubscriptionPlanPopup(true); }} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Upgrade Now</button>
+              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Remind Me Tomorrow</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showSubscriptionPlanPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="subscription-plan-modal-title">
+          <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-5 shadow-2xl sm:p-7">
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[#EEEAF8] text-[#62578F]" aria-hidden="true">
+              <span className="text-lg font-semibold">E</span>
+            </div>
+            <div className="mt-4 text-center">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">Eve subscription</p>
+              <h2 id="subscription-plan-modal-title" className="mt-2 text-xl font-semibold tracking-tight text-[#1F1F1F]">Unlock more opportunities</h2>
             </div>
             <div className="mt-5 rounded-xl border border-[#E7E3F0] bg-[#FAF9FD] p-4">
               <p className="text-center text-xl font-semibold tracking-tight text-[#3E394E]">₹3,000 <span className="text-sm font-medium text-[#62578F]">/ 3 months</span></p>
-              <ul className="mt-4 space-y-2 pl-5 text-sm leading-5 text-[#4A4A48] marker:text-[#62578F] list-disc">
+              <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-5 text-[#4A4A48] marker:text-[#62578F]">
                 <li>Get at least 50 newly posted jobs every day.</li>
                 <li>Get a Priority Tag to make your profile more visible to employers.</li>
                 <li>Get free mock interviews whenever a company shortlists you.</li>
               </ul>
             </div>
-            <div className="mt-6 grid gap-2.5">
-              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Upgrade Now</button>
-              <button type="button" onClick={() => setShowSubscriptionPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Remind Me Tomorrow</button>
+            <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
+              <button type="button" onClick={() => setShowSubscriptionPlanPopup(false)} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Pay Now</button>
+              <button type="button" onClick={() => setShowSubscriptionPlanPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Cancel</button>
             </div>
           </div>
         </div>
