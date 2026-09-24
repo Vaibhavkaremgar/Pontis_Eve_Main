@@ -18,11 +18,14 @@ logger = logging.getLogger(__name__)
 QDRANT_TOP_K = 150
 MAX_RECOMMENDATIONS = 50
 
-# Scoring weights (must sum to 1.0)
-W_TARGET_ROLE = 0.35
-W_SKILLS = 0.30
-W_EXPERIENCE = 0.15
-W_SEMANTIC = 0.20
+# Candidate-first ranking weights (must sum to 1.0).  Qdrant is deliberately
+# one signal here, rather than the decision-maker.
+W_TARGET_ROLE = 0.24
+W_SKILLS = 0.20
+W_EXPERIENCE_FIT = 0.22
+W_RELEVANT_HISTORY = 0.12
+W_PREFERENCES = 0.12
+W_SEMANTIC = 0.10
 
 # Evidence level weights for skill scoring (Phase 7/8)
 _EVIDENCE_WEIGHT = {
@@ -398,7 +401,12 @@ def _candidate_total_experience_years(candidate: Dict[str, Any]) -> float:
         intervals.append((start, effective_end))
 
     if not intervals:
-        return 0.0
+        # Parsed resumes do not always retain individual date ranges.  The
+        # candidate-row total is still a real, explicit experience signal.
+        try:
+            return max(0.0, float(candidate.get("experience_years") or candidate.get("total_experience_years") or 0))
+        except (TypeError, ValueError):
+            return 0.0
 
     intervals.sort(key=lambda item: item[0])
     merged_days = 0.0
@@ -452,7 +460,10 @@ def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
         years = float(match.group("years"))
         min_years = years if min_years is None else max(min_years, years)
 
-    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", normalized):
+    # Do not re-interpret the upper end of an already parsed ``1-3 years``
+    # range as a separate minimum requirement.
+    range_free = re.sub(r"\d+(?:\.\d+)?\s*(?:[-\u2013\u2014]|to)\s*\d+(?:\.\d+)?\s*(?:years?|yrs?)", "", normalized)
+    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", range_free):
         years = float(match.group("years"))
         min_years = years if min_years is None else max(min_years, years)
         max_years = years if max_years is None else max_years
@@ -492,6 +503,114 @@ def _job_passes_skills_or_role(signals: Dict[str, Any], job_title: str, job_text
     return skill_hits > 0 or role_score > 0.0
 
 
+def _as_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _norm_set(values: Any) -> set:
+    return {_normalize(v) for v in _as_list(values) if _normalize(v)}
+
+
+def _preference_text_match(preferences: Any, value: Any) -> bool:
+    """Whole-value preference match; never treats an absent job field as bad."""
+    wanted, actual = _norm_set(preferences), _normalize_text(value).lower()
+    return bool(wanted and actual and any(p == actual or p in actual or actual in p for p in wanted))
+
+
+def _remote_only(value: Any) -> bool:
+    text = _normalize_text(value).lower()
+    return "remote" in text and any(word in text for word in ("only", "exclusive", "strict"))
+
+
+def _job_work_mode(job: Dict[str, Any]) -> str:
+    policy = _normalize_text(job.get("remote_policy")).lower()
+    if job.get("remote") is True or "remote" in policy:
+        return "remote"
+    if "hybrid" in policy:
+        return "hybrid"
+    if any(word in policy for word in ("onsite", "on-site", "on site")):
+        return "onsite"
+    return ""
+
+
+def _salary_number(value: Any) -> float | None:
+    text = _normalize_text(value).lower().replace(",", "")
+    if not text:
+        return None
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    if not numbers:
+        return None
+    amount = max(float(n) for n in numbers)
+    if "lpa" in text or "lakh" in text:
+        amount *= 100000
+    elif re.search(r"\b(?:k|thousand)\b", text):
+        amount *= 1000
+    return amount
+
+
+def _preference_eligibility(signals: Dict[str, Any], job: Dict[str, Any], candidate_years: float) -> Tuple[bool, List[str]]:
+    """Apply only explicit constraints. Unknown job metadata remains eligible."""
+    reasons: List[str] = []
+    mode = _job_work_mode(job)
+    if _remote_only(signals.get("remote_preference")) and mode in ("onsite", "hybrid"):
+        reasons.append("remote_only_job_not_remote")
+    locations = signals.get("preferred_locations") or []
+    # Explicit locations are a restriction, except a remote job satisfies an
+    # explicit remote-or-location preference.
+    job_location = " ".join(str(job.get(k) or "") for k in ("location", "city", "state", "country"))
+    if locations and mode != "remote" and job_location and not _preference_text_match(locations, job_location):
+        reasons.append("job_outside_explicit_locations")
+    types = signals.get("employment_types") or []
+    if types and job.get("employment_type") and not _preference_text_match(types, job.get("employment_type")):
+        reasons.append("employment_type_mismatch")
+    # The established experience boundary remains an eligibility gate.
+    job_text = _job_text(job.get("title", ""), job.get("description", ""), job.get("requirements", ""), job.get("skills"))
+    if not _job_passes_experience(candidate_years, job_text):
+        reasons.append("experience_outside_required_range")
+    return not reasons, reasons
+
+
+def _experience_fit_score(candidate_years: float, job_text: str) -> float:
+    low, high = _job_experience_bounds(job_text)
+    if low is None and high is None:
+        return 0.5  # absent ATS metadata is neutral, never a penalty
+    if low is not None and candidate_years < low:
+        return max(0.0, 1.0 - ((low - candidate_years) / 3.0))
+    if high is not None and candidate_years > high:
+        return max(0.0, 1.0 - ((candidate_years - high) / 3.0))
+    return 1.0
+
+
+def _preference_score(signals: Dict[str, Any], job: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+    """Average only preferences for which the job supplies comparable metadata."""
+    scored: Dict[str, float] = {}
+    mode = _job_work_mode(job)
+    if signals.get("remote_preference") and mode:
+        desired = _normalize_text(signals["remote_preference"]).lower()
+        scored["work_mode"] = 1.0 if mode in desired else 0.0
+    location = " ".join(str(job.get(k) or "") for k in ("location", "city", "state", "country"))
+    if signals.get("preferred_locations") and location:
+        scored["location"] = 1.0 if _preference_text_match(signals["preferred_locations"], location) else 0.0
+    if signals.get("employment_types") and job.get("employment_type"):
+        scored["employment_type"] = 1.0 if _preference_text_match(signals["employment_types"], job["employment_type"]) else 0.0
+    if signals.get("preferred_industries") and job.get("industry"):
+        scored["industry"] = 1.0 if _preference_text_match(signals["preferred_industries"], job["industry"]) else 0.0
+    company_type = " ".join(str(job.get(k) or "") for k in ("company_type", "structured_data", "description"))
+    if signals.get("preferred_companies") and company_type:
+        scored["company_type"] = 1.0 if _preference_text_match(signals["preferred_companies"], company_type) else 0.0
+    expected, offered = _salary_number(signals.get("expected_salary")), _salary_number(job.get("salary_range"))
+    if expected and offered:
+        scored["salary"] = 1.0 if offered >= expected else max(0.0, offered / expected)
+    return (sum(scored.values()) / len(scored) if scored else 0.5), scored
+
+
 def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Extract matching signals from the candidate profile."""
     import json
@@ -506,13 +625,14 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
     # preferred_roles is the candidate's stated job direction.  A current role
     # describes experience; it must not redirect a candidate who is explicitly
     # seeking a different role or technology.
+    preferences: Dict[str, Any] = {}
     try:
         from profile_strength_service import get_canonical_preferences
-        preferred_roles = get_canonical_preferences(
-            candidate, candidate.get("_prefs_row")
-        ).get("preferred_roles") or []
+        preferences = get_canonical_preferences(candidate, candidate.get("_prefs_row"))
+        preferred_roles = preferences.get("preferred_roles") or []
     except Exception:
         preferred_roles = raw_data.get("preferred_roles") or raw_data.get("target_roles") or []
+        preferences = raw_data
     if isinstance(preferred_roles, str):
         preferred_roles = [preferred_roles]
     current_role = (candidate.get("current_role") or "").strip()
@@ -577,6 +697,17 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "has_explicit_target_roles": bool(explicit_target_roles),
         "skills": skills,
         "past_roles": past_roles,
+        # get_canonical_preferences prioritizes candidate_preferences, then
+        # persisted profile/resume/chat input.  This preserves provenance and
+        # avoids creating a second preference source of truth.
+        "preferred_locations": _as_list(preferences.get("preferred_locations")),
+        "preferred_industries": _as_list(preferences.get("preferred_industries")),
+        "preferred_companies": _as_list(preferences.get("preferred_companies") or preferences.get("company_types") or raw_data.get("company_types") or raw_data.get("company_type_preference")),
+        "employment_types": _as_list(preferences.get("employment_types")),
+        "remote_preference": preferences.get("remote_preference") or "",
+        "expected_salary": preferences.get("expected_salary") or "",
+        "willing_to_relocate": preferences.get("willing_to_relocate"),
+        "total_experience_years": _candidate_total_experience_years(candidate),
     }
 
 
@@ -799,6 +930,8 @@ def _hybrid_score(
     job_skills: Any,
     semantic_score: float,
     intelligence: Optional[Dict[str, Any]] = None,
+    job_metadata: Optional[Dict[str, Any]] = None,
+    candidate_years: Optional[float] = None,
 ) -> Tuple[float, Dict[str, Any]]:
     """
     Compute a weighted hybrid score for one job.
@@ -809,14 +942,16 @@ def _hybrid_score(
 
     tr_score = _target_role_score(signals["target_roles"], job_title, job_text)
     sk_score = _evidence_weighted_skills_score(signals["skills"], job_text, intelligence)
-    ex_score = _experience_score(signals["past_roles"], job_title, job_text)
+    history_score = _experience_score(signals["past_roles"], job_title, job_text)
+    years = candidate_years if candidate_years is not None else float(signals.get("total_experience_years") or 0)
+    experience_fit = _experience_fit_score(years, job_text)
+    preference_score, preference_components = _preference_score(signals, job_metadata or {})
     sem_score = max(0.0, min(1.0, float(semantic_score)))
 
     final = (
-        W_TARGET_ROLE * tr_score
-        + W_SKILLS * sk_score
-        + W_EXPERIENCE * ex_score
-        + W_SEMANTIC * sem_score
+        W_TARGET_ROLE * tr_score + W_SKILLS * sk_score
+        + W_EXPERIENCE_FIT * experience_fit + W_RELEVANT_HISTORY * history_score
+        + W_PREFERENCES * preference_score + W_SEMANTIC * sem_score
     )
 
     constraint_profile = (intelligence or {}).get("constraint_profile") or {}
@@ -826,7 +961,10 @@ def _hybrid_score(
     components: Dict[str, Any] = {
         "target_role_score": round(tr_score, 4),
         "skills_score": round(sk_score, 4),
-        "experience_score": round(ex_score, 4),
+        "experience_score": round(history_score, 4),
+        "experience_fit_score": round(experience_fit, 4),
+        "preference_score": round(preference_score, 4),
+        "preference_components": {key: round(value, 4) for key, value in preference_components.items()},
         "semantic_score": round(sem_score, 4),
         "constraint_penalty": round(constraint_penalty, 4),
         "final_score": round(final, 4),
@@ -899,7 +1037,10 @@ async def refresh_candidate_job_matches(
         params = {f"jid_{i}": jid for i, jid in enumerate(candidate_job_ids)}
         rows = await db.execute(
             text(f"""
-                SELECT id, title, description, requirements, skills
+                SELECT id, title, description, requirements, skills, company_name,
+                       department, location, employment_type, experience_required,
+                       salary_range, city, state, country, remote, industry,
+                       skills_required, structured_data, remote_policy
                 FROM job_descriptions
                 WHERE id::text IN ({placeholders})
                   AND {candidate_visible_where('job_descriptions')}
@@ -909,8 +1050,20 @@ async def refresh_candidate_job_matches(
         job_details = {str(r[0]): {
             "title": r[1] or "",
             "description": r[2] or "",
-            "requirements": r[3] or "",
-            "skills": r[4] or [],
+            # ATS normalizers may place experience and skills in either the
+            # legacy columns or their normalized counterparts.  Feed both to
+            # the existing text/evidence routines without changing storage.
+            "requirements": " ".join(str(value) for value in (r[3], r[9]) if value),
+            "skills": [*(r[4] or []), *(r[16] or [])] if isinstance(r[4], list) and isinstance(r[16], list) else (r[4] or r[16] or []),
+            "company_name": r[5] or "",
+            "department": r[6] or "",
+            "location": r[7] or "",
+            "employment_type": r[8] or "",
+            "experience_required": r[9] or "",
+            "salary_range": r[10] or "",
+            "city": r[11] or "", "state": r[12] or "", "country": r[13] or "",
+            "remote": r[14], "industry": r[15] or "", "skills_required": r[16] or [],
+            "structured_data": r[17] or {}, "remote_policy": r[18] or "",
         }
                        for r in rows.fetchall()}
 
@@ -932,10 +1085,15 @@ async def refresh_candidate_job_matches(
     scored: List[Tuple[str, float, Dict]] = []
     rejected_experience = 0
     rejected_skills_role = 0
+    rejected_preferences = 0
     for job_id, job_data in job_details.items():
         job_text = _job_text(job_data["title"], job_data["description"], job_data["requirements"], job_data["skills"])
-        if not _job_passes_experience(candidate_years, job_text):
-            rejected_experience += 1
+        preference_eligible, ineligibility = _preference_eligibility(signals, job_data, candidate_years)
+        if not preference_eligible:
+            if "experience_outside_required_range" in ineligibility:
+                rejected_experience += 1
+            else:
+                rejected_preferences += 1
             continue
         if not _job_passes_skills_or_role(signals, job_data["title"], job_text):
             rejected_skills_role += 1
@@ -949,6 +1107,8 @@ async def refresh_candidate_job_matches(
             job_data["skills"],
             sem,
             intelligence=intelligence,
+            job_metadata=job_data,
+            candidate_years=candidate_years,
         )
         scored.append((job_id, final, components))
         logger.info(
@@ -996,8 +1156,8 @@ async def refresh_candidate_job_matches(
     ranked_jobs = scored[:MAX_RECOMMENDATIONS]
     logger.info(
         "[matching] candidate=%s passing_eligibility=%d rejected_experience=%d "
-        "rejected_skills_or_role=%d final_recommendations=%d",
-        candidate_id, len(scored), rejected_experience, rejected_skills_role, len(ranked_jobs),
+        "rejected_skills_or_role=%d rejected_explicit_preferences=%d final_recommendations=%d",
+        candidate_id, len(scored), rejected_experience, rejected_skills_role, rejected_preferences, len(ranked_jobs),
     )
 
     # 5. Load existing recommendations to preserve tracked_at / hidden_at
@@ -1095,6 +1255,7 @@ async def refresh_candidate_job_match(
         signals, selected["title"] or "", selected["description"] or "",
         selected["requirements"] or "", selected["skills"] or [], semantic_score,
         intelligence=_get_candidate_intelligence(candidate),
+        candidate_years=_candidate_total_experience_years(candidate),
     )
     async with SessionLocal() as db:
         await db.execute(text("""

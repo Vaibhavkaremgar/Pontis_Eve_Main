@@ -64,6 +64,12 @@ class FakeSession:
                             job["description"],
                             job.get("requirements", ""),
                             job.get("skills", []),
+                            job.get("company_name", ""), job.get("department", ""),
+                            job.get("location", ""), job.get("employment_type", ""),
+                            job.get("experience_required", ""), job.get("salary_range", ""),
+                            job.get("city", ""), job.get("state", ""), job.get("country", ""),
+                            job.get("remote"), job.get("industry", ""), job.get("skills_required", []),
+                            job.get("structured_data", {}), job.get("remote_policy", ""),
                         )
                     )
             return FakeResult(rows)
@@ -499,3 +505,59 @@ def test_refresh_preserves_active_database_filtering(monkeypatch):
     ))
 
     assert state["inserted"] == ["active"]
+
+
+def _candidate_preferences(**overrides):
+    candidate = {
+        "experience_years": 2, "current_role": "Java Backend Developer",
+        "skills": ["Java", "Spring Boot"],
+        "raw_data": {"preferred_roles": ["Java Backend Developer"]},
+    }
+    candidate["raw_data"].update(overrides)
+    return matcher._build_candidate_signals(candidate)
+
+
+def _job(**overrides):
+    job = {"title": "Java Backend Developer", "description": "Java Spring Boot APIs", "requirements": "",
+           "skills": ["Java", "Spring Boot"]}
+    job.update(overrides)
+    return job
+
+
+def test_candidate_first_experience_fit_prefers_1_to_3_over_8_to_10():
+    signals = _candidate_preferences()
+    near = _job(requirements="1-3 years of experience")
+    senior = _job(requirements="8-10 years of experience")
+    assert matcher._preference_eligibility(signals, near, 2)[0]
+    assert not matcher._preference_eligibility(signals, senior, 2)[0]
+    near_score, near_parts = matcher._hybrid_score(signals, near["title"], near["description"], near["requirements"], near["skills"], .5, job_metadata=near, candidate_years=2)
+    assert near_parts["experience_fit_score"] == 1
+    assert near_score > 0
+
+
+def test_target_role_and_skill_signals_beat_unrelated_role():
+    signals = _candidate_preferences()
+    matching = _job()
+    unrelated = _job(title="Content Writer", description="Write editorial copy", skills=["Writing"])
+    a, _ = matcher._hybrid_score(signals, matching["title"], matching["description"], matching["requirements"], matching["skills"], .4, job_metadata=matching, candidate_years=2)
+    b, _ = matcher._hybrid_score(signals, unrelated["title"], unrelated["description"], unrelated["requirements"], unrelated["skills"], .9, job_metadata=unrelated, candidate_years=2)
+    assert a > b
+
+
+def test_explicit_preferences_company_location_salary_and_missing_metadata_are_neutral():
+    signals = _candidate_preferences(company_type_preference=["startup"], preferred_locations=["Hyderabad"], expected_salary="12 LPA")
+    startup = _job(location="Hyderabad", salary_range="15 LPA", structured_data={"company_type": "startup"}, description="Startup: Java Spring Boot APIs")
+    enterprise = _job(location="Pune", salary_range="8 LPA", structured_data={"company_type": "enterprise"}, description="Enterprise Java Spring Boot APIs")
+    startup_pref, _ = matcher._preference_score(signals, startup)
+    enterprise_pref, _ = matcher._preference_score(signals, enterprise)
+    assert startup_pref > enterprise_pref
+    assert not matcher._preference_eligibility(signals, enterprise, 2)[0]  # explicit location
+    neutral, components = matcher._preference_score(_candidate_preferences(), _job())
+    assert neutral == .5 and components == {}
+
+
+def test_remote_only_and_employment_type_are_explicit_eligibility_constraints():
+    signals = _candidate_preferences(remote_preference="remote only", employment_types=["full-time"])
+    assert not matcher._preference_eligibility(signals, _job(remote_policy="Onsite", employment_type="full-time"), 2)[0]
+    assert not matcher._preference_eligibility(signals, _job(remote=True, remote_policy="Remote", employment_type="contract"), 2)[0]
+    assert matcher._preference_eligibility(signals, _job(remote=True, remote_policy="Remote", employment_type="full-time"), 2)[0]
