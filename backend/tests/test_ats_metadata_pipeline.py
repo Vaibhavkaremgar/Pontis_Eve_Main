@@ -1,11 +1,12 @@
 """Regression coverage for public ATS payload -> normalized job -> API fields."""
 import asyncio
 import os
+from datetime import datetime, timezone
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unused:unused@localhost/unused")
 
 from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable
-from app.job_ingestion.job_ingestion_service import upsert_ats_job
+from app.job_ingestion.job_ingestion_service import _metadata_params, upsert_ats_job
 import server
 
 
@@ -18,6 +19,26 @@ def test_representative_public_ats_payloads_preserve_explicit_metadata():
     assert lever["employment_type"] == "Full-time" and lever["remote_policy"] == "hybrid"
     assert greenhouse["remote_policy"] == "Remote" and greenhouse["salary_range"] == "$90k-$110k"
     assert workable["remote_policy"] == "Remote" and workable["skills_required"] == ["Figma", "CSS"]
+
+
+def test_ats_dates_are_bind_safe_datetimes_and_preserve_offsets():
+    jobs = [
+        normalize_ashby({"id": "a", "title": "A", "publishedAt": "2026-07-16T22:10:27.434Z"}, "Acme"),
+        normalize_lever({"id": "l", "text": "L", "createdAt": 1784248827434}, "Acme"),
+        normalize_greenhouse({"id": "g", "title": "G", "created_at": "2026-07-16T22:10:27.434000+05:30"}, "Acme"),
+        normalize_workable({"id": "w", "title": "W", "published_on": "2026-07-16"}, "Acme"),
+    ]
+    for job in jobs:
+        assert isinstance(job["created_at"], datetime)
+        assert job["created_at"].tzinfo is not None
+        assert isinstance(_metadata_params(job)["created_at"], datetime)
+    assert jobs[2]["created_at"].utcoffset().total_seconds() == 19800
+    assert jobs[3]["created_at"] == datetime(2026, 7, 16, tzinfo=timezone.utc)
+
+
+def test_legacy_normalized_iso_date_is_coerced_before_database_binding():
+    params = _metadata_params({"created_at": "2026-07-16T22:10:27.434000+00:00"})
+    assert params["created_at"] == datetime(2026, 7, 16, 22, 10, 27, 434000, tzinfo=timezone.utc)
 
 
 class _Result:

@@ -121,6 +121,7 @@ async def sync_jobs() -> None:
         inserted = 0
         skipped = 0
         failed = 0
+        logged_failures = 0
 
         async with SessionLocal() as db:
             for job in jobs:
@@ -132,10 +133,21 @@ async def sync_jobs() -> None:
                         logger.info("[job-scheduler] inserted %d new jobs for %s so far", inserted, company_name)
                 except Exception as exc:
                     failed += 1
-                    logger.error(
-                        "[job-scheduler] failed job id=%s title=%r for company=%s: %s",
-                        job_ats_id, job.get("title"), company_name, exc,
-                    )
+                    # A provider-wide schema failure can affect every job on
+                    # a board.  Keep enough examples for diagnosis without
+                    # exhausting Railway's log-rate allowance.
+                    if logged_failures < 10:
+                        logger.error(
+                            "[job-scheduler] failed job id=%s title=%r for company=%s: %s",
+                            job_ats_id, job.get("title"), company_name, exc,
+                        )
+                        logged_failures += 1
+                    elif logged_failures == 10:
+                        logger.error(
+                            "[job-scheduler] additional per-job failures for company=%s are suppressed",
+                            company_name,
+                        )
+                        logged_failures += 1
                     try:
                         await db.rollback()
                     except Exception:

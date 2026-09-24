@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import date, datetime, time, timezone
 from typing import Any
 
 from sqlalchemy import text
@@ -8,6 +9,21 @@ from ats_agency_service import get_or_create_ats_agency
 from app.job_ingestion.normalize import _valid_http_url
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_ats_datetime(value: Any) -> datetime | None:
+    """Convert normalized or legacy ATS date values to bind-safe UTC datetimes."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return None
 
 
 async def upsert_ats_job(
@@ -246,5 +262,7 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
         "skills_required": json.dumps(job["skills_required"]) if job.get("skills_required") is not None else None,
         "skills": json.dumps(job["skills"]) if job.get("skills") is not None else None,
         "structured_data": json.dumps(job.get("structured_data") or {}),
-        "created_at": job.get("created_at"),
+        # Defensive coercion also covers jobs normalized by older deployments
+        # that stored ISO timestamps as strings.
+        "created_at": _coerce_ats_datetime(job.get("created_at")),
     }

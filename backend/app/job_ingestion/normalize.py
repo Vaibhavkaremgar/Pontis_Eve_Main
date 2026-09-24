@@ -1,7 +1,7 @@
 """Conservative normalization for public ATS job-board payloads."""
 import html
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -17,12 +17,23 @@ def _text(value: Any) -> str | None:
 def _first(*values: Any) -> Any:
     return next((v for v in values if v not in (None, "", [], {})), None)
 
-def _date(value: Any) -> str | None:
-    """Accept only explicit ISO/RFC3339 timestamps or epoch milliseconds."""
+def _date(value: Any) -> datetime | None:
+    """Return an UTC-aware datetime from public ATS date representations.
+
+    PostgreSQL's asyncpg driver validates Python bind values before applying
+    SQL casts.  Keep dates as datetime objects here rather than serializing
+    them to ISO strings, so the value is safe to bind to ``timestamptz``.
+    """
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=timezone.utc)
     if isinstance(value, (int, float)) and value > 946684800000:
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
     if isinstance(value, str):
-        try: return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).isoformat()
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except ValueError: pass
     return None
 

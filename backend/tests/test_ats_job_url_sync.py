@@ -1,5 +1,6 @@
 import os
 import sys
+from types import ModuleType
 
 import pytest
 
@@ -7,6 +8,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.job_ingestion import scheduler
 from app.job_ingestion.job_ingestion_service import upsert_ats_job
+
+
+@pytest.fixture(autouse=True)
+def _isolate_embedding_and_qdrant(monkeypatch):
+    """Keep URL-sync unit tests independent of configured external services."""
+    embedding = ModuleType("app.job_ingestion.embedding_service")
+    embedding.generate_job_embedding = lambda job: [0.0] * 384
+    qdrant = ModuleType("app.job_ingestion.qdrant_service")
+    qdrant.ensure_collection = lambda: None
+    qdrant.upsert_job_embedding = lambda *args, **kwargs: True
+    monkeypatch.setitem(sys.modules, "app.job_ingestion.embedding_service", embedding)
+    monkeypatch.setitem(sys.modules, "app.job_ingestion.qdrant_service", qdrant)
 
 
 class FakeResult:
@@ -61,10 +74,8 @@ class FakeSession:
             forbidden_fields = (
                 "title =",
                 "location =",
-                "salary_range =",
                 "company_name =",
                 "department =",
-                "employment_type =",
                 "agency_id =",
                 "company_registry_id =",
                 "ats_job_id =",
@@ -142,7 +153,7 @@ def _base_existing_row(job_url):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "existing_url,incoming_url,should_update",
+    "existing_url,incoming_url,should_fill_url",
     [
         (None, "https://example.com/new", True),
         (None, "not-a-url", False),
@@ -150,7 +161,7 @@ def _base_existing_row(job_url):
         (None, None, False),
     ],
 )
-async def test_upsert_ats_job_only_fills_missing_url(monkeypatch, existing_url, incoming_url, should_update):
+async def test_upsert_ats_job_refreshes_metadata_and_only_fills_missing_url(monkeypatch, existing_url, incoming_url, should_fill_url):
     state = {
         "job_row": _base_existing_row(existing_url),
         "update_statements": [],
@@ -188,21 +199,22 @@ async def test_upsert_ats_job_only_fills_missing_url(monkeypatch, existing_url, 
     assert state["job_row"]["title"] == "Original Title"
     assert state["job_row"]["description"] == "Original description"
     assert state["job_row"]["location"] == "Original location"
-    assert state["job_row"]["salary_range"] == "100000-120000"
+    # Source metadata is deliberately refreshed; identity and core display
+    # fields remain stable for an existing ATS record.
     assert state["job_row"]["company_name"] == "Jumio"
     assert state["job_row"]["department"] == "Engineering"
     assert state["job_row"]["employment_type"] == "Full-time"
 
-    if should_update:
+    # Every observed ATS row is synced so fields introduced in newer
+    # normalizers can backfill historical records; only URL replacement stays
+    # conservative.
+    if should_fill_url:
         assert state["job_row"]["job_url"] == incoming_url
-        assert state["job_row"]["updated_at"] == "updated-now"
-        assert state["job_row"]["last_synced_at"] == "synced-now"
-        assert len(state["update_statements"]) == 1
     else:
         assert state["job_row"]["job_url"] == existing_url
-        assert state["job_row"]["updated_at"] == "original-updated-at"
-        assert state["job_row"]["last_synced_at"] == "original-last-synced"
-        assert state["update_statements"] == []
+    assert state["job_row"]["updated_at"] == "updated-now"
+    assert state["job_row"]["last_synced_at"] == "synced-now"
+    assert len(state["update_statements"]) == 1
 
 
 @pytest.mark.asyncio
