@@ -58,6 +58,31 @@ describe("JobsTab Apply Now", () => {
     expect(container.querySelector('[data-testid="application-follow-up-modal"]')).toBeNull();
   });
 
+  it("renders available job metadata from the job object without inferring a work mode", () => {
+    const metadataJob = {
+      ...job,
+      location: "Bengaluru, India",
+      work_mode: "Hybrid",
+      employment_type: "Full-time",
+      experience_level: "Senior",
+      minimum_salary: "₹2,000,000",
+      posted_ago: "3 days ago",
+    };
+    act(() => root.render(<JobsTab jobs={[metadataJob]} matchingJobsTotal={1} onTrack={jest.fn()} onDismiss={jest.fn()} selectedJob={null} setSelectedJob={jest.fn()} candidateId="cand-1" onJobViewed={jest.fn()} onLockedJobClick={jest.fn()} />));
+
+    const metadata = container.querySelector('[data-testid="job-metadata-job-free-1"]');
+    expect(metadata.textContent).toContain("Bengaluru, India");
+    expect(metadata.textContent).toContain("Hybrid");
+    expect(metadata.textContent).toContain("Full-time");
+    expect(metadata.textContent).toContain("Senior");
+    expect(metadata.textContent).toContain("₹2,000,000");
+    expect(metadata.textContent).toContain("3 days ago");
+    expect(metadata.className).toContain("flex-wrap");
+
+    act(() => root.render(<JobsTab jobs={[{ ...job, location: "Remote" }]} matchingJobsTotal={1} onTrack={jest.fn()} onDismiss={jest.fn()} selectedJob={null} setSelectedJob={jest.fn()} candidateId="cand-1" onJobViewed={jest.fn()} onLockedJobClick={jest.fn()} />));
+    expect(container.querySelector('[data-testid="job-metadata-job-free-1"]').textContent.trim()).toBe("Remote");
+  });
+
   it("asks about the application only after Eve becomes active again", async () => {
     axios.get.mockResolvedValueOnce({ data: { match_score: 0.88 } });
     await act(async () => {
