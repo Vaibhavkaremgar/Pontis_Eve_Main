@@ -3,15 +3,19 @@ import logging
 import sys
 import os
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
 
 PROGRESS_INTERVAL = 25
-SYNC_INTERVAL_HOURS = int(os.environ.get("JOB_SYNC_INTERVAL_HOURS", "6"))
+IST = ZoneInfo("Asia/Kolkata")
+SYNC_HOURS_IST = "0,6,12,18"
 
 _scheduler: AsyncIOScheduler | None = None
 _sync_lock: asyncio.Lock | None = None
@@ -190,12 +194,16 @@ async def _sync_jobs_guarded() -> None:
         logger.info("[job-scheduler] Starting ATS job sync")
         await sync_jobs()
         logger.info("[job-scheduler] Job sync completed")
-        logger.info("[job-scheduler] Next job sync in %d hours", SYNC_INTERVAL_HOURS)
 
 
 def _apscheduler_listener(event) -> None:
     if event.exception:
         logger.error("[job-scheduler] scheduled run raised an exception: %s", event.exception)
+
+
+def _ats_sync_trigger() -> CronTrigger:
+    """Return the deployment-independent ATS sync schedule in IST."""
+    return CronTrigger(hour=SYNC_HOURS_IST, minute=0, second=0, timezone=IST)
 
 
 def start_scheduler() -> None:
@@ -212,17 +220,21 @@ def start_scheduler() -> None:
 
     _sync_lock = asyncio.Lock()
 
-    _scheduler = AsyncIOScheduler()
+    _scheduler = AsyncIOScheduler(timezone=IST)
     _scheduler.add_listener(_apscheduler_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
-    _scheduler.add_job(
+    job = _scheduler.add_job(
         _sync_jobs_guarded,
-        trigger="interval",
-        hours=SYNC_INTERVAL_HOURS,
+        trigger=_ats_sync_trigger(),
         id="job_sync",
         replace_existing=True,
     )
     _scheduler.start()
-    logger.info("[job-scheduler] Next job sync scheduled in %d hours", SYNC_INTERVAL_HOURS)
+    next_run = job.next_run_time
+    if next_run is not None:
+        logger.info(
+            "[job-scheduler] Next ATS job sync scheduled for %s IST",
+            next_run.astimezone(IST).strftime("%Y-%m-%d %I:%M:%S %p"),
+        )
 
 
 def stop_scheduler() -> None:
