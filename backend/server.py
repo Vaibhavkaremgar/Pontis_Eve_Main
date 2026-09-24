@@ -4129,6 +4129,9 @@ BEHAVIOR:
   {{"profile_updates": {{"field": value}}}}
   <<<END_UPDATES>>>
 - Only include profile_updates when the candidate actually provides new information.
+- Do not guess a destination for a bare request such as "Add Python". Ask where it belongs before emitting an update.
+- Before changing or deleting an existing value, use the supplied profile context to identify every matching record. If more than one record/section matches, ask the candidate to choose; never emit an update for an ambiguous target.
+- Never create a partial Education or Work Experience record. Education requires degree, institution, start year, and end year. Work Experience requires title, company, start year, and end year. Ask only for the missing field(s), and use the prior conversation when the candidate supplies them.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
 - Do NOT overwrite fields that already have good data unless the candidate is correcting them.
 - DELETION: When the candidate asks to remove/delete a specific item from their profile (e.g. "remove FastAPI from my skills", "delete my AWS cert", "I no longer want Hyderabad as my preferred location"), include a "profile_deletions" key inside profile_updates with the field and item to remove:
@@ -4932,8 +4935,102 @@ VALID_UPDATE_FIELDS = {
     "projects", "preferred_locations", "preferred_industries", "employment_types",
     "remote_preference", "expected_salary", "willing_to_relocate",
     "open_to_opportunities", "additional_information",
-    "profile_deletions",
+    "profile_deletions", "profile_record_replacements",
 }
+
+
+def _profile_edit_matches(candidate: dict, value: str) -> dict[str, list[dict]]:
+    """Find a candidate supplied value in every editable record collection.
+
+    This intentionally searches persisted columns, raw profile data, and the
+    parsed-resume snapshot.  It is the server-side source of truth used before
+    a conversational replacement or removal is allowed to write.
+    """
+    needle = _normalize_profile_key(value)
+    if not needle:
+        return {}
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
+    sources = {
+        "Education": candidate.get("education") or [],
+        "Work Experience": candidate.get("work_experience") or [],
+        "Projects": raw.get("projects") or parsed.get("projects") or [],
+        "Skills": candidate.get("skills") or [],
+        "Certifications": _candidate_certification_sources(candidate),
+        "Preferences": [raw.get(key) for key in (
+            "preferred_roles", "preferred_locations", "preferred_industries",
+            "employment_types", "remote_preference", "expected_salary",
+            "notice_period", "additional_information",
+        )],
+    }
+    matches: dict[str, list[dict]] = {}
+    for section, records in sources.items():
+        if not isinstance(records, list):
+            records = [records]
+        for index, record in enumerate(records):
+            text_value = json.dumps(record, sort_keys=True) if isinstance(record, dict) else str(record or "")
+            if needle in _normalize_profile_key(text_value):
+                matches.setdefault(section, []).append({"index": index, "record": record})
+    return matches
+
+
+def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
+    """Resolve deterministic profile-edit safety cases before asking the LLM.
+
+    A response from this function is deliberately a no-write clarification or
+    a fully specified update.  This prevents a model instruction from choosing
+    between duplicate records or creating a partial education/employment row.
+    """
+    text_value = message.strip()
+    lower = text_value.lower()
+    # A bare "Add X" has no durable profile destination.  Do not infer Skills.
+    bare_add = re.match(r"^add\s+(.+?)[.!]?$", text_value, re.I)
+    if bare_add and not re.search(r"\b(skill|skills|education|experience|project|certification|preference)\b", lower):
+        return {"reply": f"Where would you like me to add {bare_add.group(1).strip()}?", "updates": None}
+
+    # Complete an immediately preceding education/work timeline question using
+    # the original statement retained in the chat history.
+    years = re.fullmatch(r"\s*(\d{4})\s*(?:-|–|—|to)\s*(\d{4}|present)\s*", text_value, re.I)
+    if years:
+        prior_users = [m.get("content", "") for m in history[:-1] if m.get("role") == "user"]
+        prior = prior_users[-1] if prior_users else ""
+        education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?(.+?(?:master'?s|bachelor'?s|mba|ph\.?d)[^.]*)\s+(?:at|from)\s+([^,.]+)", prior, re.I)
+        work = re.search(r"(?:worked|work)\s+(?:at|for)\s+([^,.]+?)\s+as\s+(?:a\s+)?([^,.]+)", prior, re.I)
+        if education:
+            degree, institution = re.sub(r"^my\s+", "", education.group(1).strip(), flags=re.I), education.group(2).strip()
+            return {"reply": f"Added your {degree} at {institution} from {years.group(1)} - {years.group(2)}.", "updates": {"education": [{"degree": degree, "institution": institution, "start_date": years.group(1), "end_date": years.group(2)}]}}
+        if work:
+            company, title = work.group(1).strip(), work.group(2).strip()
+            return {"reply": f"Added your {title} experience at {company} from {years.group(1)} - {years.group(2)}.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": years.group(1), "end_date": years.group(2)}]}}
+
+    new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
+    if new_education and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
+        return {"reply": f"What was the time period for your {new_education.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
+    new_work = re.search(r"(?:worked|work)\s+(?:at|for)\s+([^,.]+?)\s+as\s+(?:a\s+)?([^,.]+)", text_value, re.I)
+    if new_work and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
+        return {"reply": f"What was your employment period at {new_work.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
+
+    deletion = re.search(r"\b(?:delete|remove)\b\s+(?:my\s+)?(.+?)(?:\s+(?:work\s+)?experience)?[.!]?$", text_value, re.I)
+    if deletion:
+        requested = deletion.group(1).strip()
+        matches = _profile_edit_matches(candidate, requested)
+        total = sum(len(items) for items in matches.values())
+        if total > 1:
+            return {"reply": f"I found {requested} in {' and '.join(matches)}. Which record should I delete?", "updates": None}
+
+    replacement = re.search(r"\b(?:update|change)\b.*?(?:\bfrom\s+)?(.+?)\s+to\s+(.+?)[.!]?$", text_value, re.I)
+    if replacement:
+        old, new = replacement.group(1).strip(), replacement.group(2).strip()
+        matches = _profile_edit_matches(candidate, old)
+        sections = list(matches)
+        total = sum(len(items) for items in matches.values())
+        if total > 1:
+            return {"reply": f"I found {old} in {' and '.join(sections)}. Which one should I update?", "updates": None}
+        if total == 1:
+            section = sections[0]
+            if section in ("Education", "Work Experience"):
+                return {"reply": f"Updated {old} to {new} in {section}.", "updates": {"profile_record_replacements": [{"section": section, "old": old, "new": new}]}}
+    return None
 
 
 def _remove_item_from_list(existing_list: list, item_to_remove: str) -> tuple[list, bool]:
@@ -5191,7 +5288,43 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
     has_preference_payload = False
 
     for field, value in safe.items():
-        if field == "skills":
+        if field == "profile_record_replacements":
+            if not isinstance(value, list):
+                continue
+            for replacement in value:
+                if not isinstance(replacement, dict):
+                    continue
+                section, old, new = replacement.get("section"), replacement.get("old"), replacement.get("new")
+                if not all(isinstance(part, str) and part.strip() for part in (section, old, new)):
+                    continue
+                # Re-query the persisted record at write time.  A stale chat turn
+                # can never replace a value that is no longer uniquely targeted.
+                matches = _profile_edit_matches(existing, old)
+                if len(matches.get(section, [])) != 1 or sum(map(len, matches.values())) != 1:
+                    continue
+                if section == "Education":
+                    records = list(existing.get("education") or [])
+                    index = matches[section][0]["index"]
+                    record = dict(records[index])
+                    for key, record_value in record.items():
+                        if old.lower() in str(record_value).lower():
+                            record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
+                    records[index] = record
+                    set_clauses.append("education = CAST(:education AS json)")
+                    params["education"] = json.dumps(records)
+                    existing["education"] = records
+                elif section == "Work Experience":
+                    records = list(existing.get("work_experience") or [])
+                    index = matches[section][0]["index"]
+                    record = dict(records[index])
+                    for key, record_value in record.items():
+                        if old.lower() in str(record_value).lower():
+                            record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
+                    records[index] = record
+                    set_clauses.append("work_experience = CAST(:work_experience AS json)")
+                    params["work_experience"] = json.dumps(records)
+                    existing["work_experience"] = records
+        elif field == "skills":
             if not isinstance(value, list):
                 continue
             merged = _merge_skills(
@@ -5205,12 +5338,24 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
         elif field == "work_experience":
             if not isinstance(value, list):
                 continue
+            # New records need a usable identity and timeline.  Updates to an
+            # existing record are handled through profile_record_replacements.
+            value = [item for item in value if isinstance(item, dict) and all(
+                str(item.get(key) or "").strip() for key in ("title", "company", "start_date", "end_date")
+            )]
+            if not value:
+                continue
             merged = _merge_work_experience(existing.get("work_experience") or [], value)
             if merged != (existing.get("work_experience") or []):
                 set_clauses.append("work_experience = CAST(:work_experience AS json)")
                 params["work_experience"] = json.dumps(merged)
         elif field == "education":
             if not isinstance(value, list):
+                continue
+            value = [item for item in value if isinstance(item, dict) and all(
+                str(item.get(key) or "").strip() for key in ("degree", "institution", "start_date", "end_date")
+            )]
+            if not value:
                 continue
             merged = _merge_education(existing.get("education") or [], value)
             if merged != (existing.get("education") or []):
@@ -5334,6 +5479,15 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             for item in del_items:
                 if not isinstance(item, str) or not item.strip():
                     continue
+                # Backend safety belt: a conversational request may arrive
+                # without a preflight turn (older clients/retries).  Never let
+                # the fuzzy list removers delete more than one record.
+                if del_field in ("work_experience", "education", "projects"):
+                    section = {"work_experience": "Work Experience", "education": "Education", "projects": "Projects"}[del_field]
+                    record_matches = _profile_edit_matches(existing, item).get(section, [])
+                    if len(record_matches) != 1:
+                        not_found_deletions.setdefault(del_field, []).append(item)
+                        continue
                 if del_field == "skills":
                     current = existing.get("skills") or []
                     new_list, found = _remove_item_from_list(current, item)
@@ -5703,10 +5857,12 @@ async def chat(request: ChatRequest):
     persisted_window: list[dict] = []
     voice_resume: Optional[dict] = None
     frontend_profile: Optional[dict] = None
+    candidate_row_for_edit: Optional[dict] = None
     missing_preference_fields: list[str] = []
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
+            candidate_row_for_edit = row
             raw_data = row.get("raw_data") or {}
             if isinstance(raw_data, str):
                 try:
@@ -5739,6 +5895,32 @@ async def chat(request: ChatRequest):
             persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
             pass
+
+    # Resolve profile mutations before the LLM sees them.  The model is useful
+    # for extraction, but it must never choose an ambiguous database target.
+    incoming = [{"role": m.role, "content": m.content} for m in request.messages]
+    if persisted_window and incoming:
+        incoming_set = {(m["role"], m["content"]) for m in incoming}
+        combined = [m for m in persisted_window if (m["role"], m["content"]) not in incoming_set] + incoming
+    else:
+        combined = incoming
+    if request.candidate_id and candidate_row_for_edit:
+        preflight = _chat_profile_preflight(last_user.content, candidate_row_for_edit, combined)
+        if preflight:
+            updates = preflight.get("updates")
+            if updates:
+                try:
+                    await _apply_profile_updates(request.candidate_id, updates)
+                    asyncio.ensure_future(_trigger_matching(request.candidate_id))
+                except Exception:
+                    logger.exception("Profile preflight update failed")
+                    return ChatResponse(reply="I couldn't update your profile right now, so no changes were made.", session_id=request.session_id)
+            reply = preflight["reply"]
+            try:
+                await _save_chat_window(request.candidate_id, request.session_id, combined + [{"role": "assistant", "content": reply}])
+            except Exception as e:
+                logger.warning("Chat history persistence failed for candidate %s: %s", request.candidate_id, e)
+            return ChatResponse(reply=reply, session_id=request.session_id, profile_updates=updates)
 
     # If the user is explicitly asking for job matches, retrieve real jobs first
     job_context = ""
@@ -5824,15 +6006,6 @@ async def chat(request: ChatRequest):
     # Build message list: use the incoming request messages as the source of truth for the
     # current conversation turn. The persisted window is only used to backfill history that
     # the frontend did not send (i.e. messages older than the current request window).
-    incoming = [{"role": m.role, "content": m.content} for m in request.messages]
-
-    if persisted_window and incoming:
-        incoming_set = {(m["role"], m["content"]) for m in incoming}
-        older = [m for m in persisted_window if (m["role"], m["content"]) not in incoming_set]
-        combined = older + incoming
-    else:
-        combined = incoming
-
     messages = [{"role": "system", "content": system_prompt}] + combined[-CHAT_WINDOW_SIZE:]
 
     try:
