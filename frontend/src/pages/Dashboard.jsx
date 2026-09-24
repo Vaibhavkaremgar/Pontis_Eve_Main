@@ -230,6 +230,8 @@ function Dashboard() {
           voice_intake_resume: data.voice_intake_resume ?? null,
           profile_strength_percent: data.profile_strength_percent ?? data.strengthPercent,
           profile_strength_label: data.profile_strength_label ?? data.strength,
+          profile_strength_detail: data.profile_strength_detail ?? null,
+          recommendation_readiness: data.recommendation_readiness ?? null,
         };
         setUserProfile((prev) => {
           // The persisted payload is authoritative.  In particular, do not
@@ -276,6 +278,8 @@ function Dashboard() {
             voice_intake_resume: parsed.voice_intake_resume ?? null,
             profile_strength_percent: parsed.profile_strength_percent ?? parsed.strengthPercent,
             profile_strength_label: parsed.profile_strength_label ?? parsed.strength,
+            profile_strength_detail: parsed.profile_strength_detail ?? null,
+            recommendation_readiness: parsed.recommendation_readiness ?? null,
           }));
           return profilesAreEqual(prev, next) ? prev : next;
         });
@@ -763,6 +767,11 @@ function Dashboard() {
 
       {/* Dashboard top header with Bell */}
       <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:px-5 border-b border-black/[0.05]">
+        {userProfile.strengthPercent < 90 && (
+          <span data-testid="profile-90-navbar-guidance" className="mr-auto text-xs text-[#62578F] font-medium">
+            Complete your profile to 90% to get personalized job matches.
+          </span>
+        )}
         {resumeFixCreditBalance != null && (
           <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
             {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits

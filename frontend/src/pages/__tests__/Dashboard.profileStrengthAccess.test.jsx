@@ -114,6 +114,7 @@ describe("Dashboard profile-strength jobs access", () => {
     await waitFor(() => dashboard.container.querySelector('[data-testid="chat-hub"]'));
     expect(dashboard.container.querySelector('[data-testid="jobs-tab"]')).toBeNull();
     expect(dashboard.container.querySelector('[data-testid="jobs-for-you-list"]')).toBeNull();
+    expect(dashboard.container.querySelector('[data-testid="profile-90-navbar-guidance"]').textContent).toContain("Complete your profile to 90% to get personalized job matches.");
   });
 
   it("unlocks Jobs for you at exactly 90%", async () => {
@@ -123,6 +124,7 @@ describe("Dashboard profile-strength jobs access", () => {
     await waitFor(() => dashboard.container.querySelector('[data-testid="jobs-for-you-list"]'));
     expect(dashboard.container.querySelector('[data-testid="jobs-tab"]')).not.toBeNull();
     expect(dashboard.container.querySelector('[data-testid="chat-tab"]')).not.toBeNull();
+    expect(dashboard.container.querySelector('[data-testid="profile-90-navbar-guidance"]')).toBeNull();
   });
 
   it("shows both tabs above 90%", async () => {

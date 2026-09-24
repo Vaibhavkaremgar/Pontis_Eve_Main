@@ -1204,6 +1204,31 @@ def _build_explainability(dim_scores: dict, prefs: dict, evidence: dict, vi_stat
     }
 
 
+def _build_ninety_percent_guidance(percent: int, explain: dict) -> dict:
+    """Return UI-safe, actionable completion guidance without recalculating score."""
+    action_sections = {
+        "Tell Eve what kind of role you are targeting": ("Target role", "preferred-roles"),
+        "Upload your resume or add work experience": ("Work experience", "work-experience"),
+        "Add projects or assessments that demonstrate your skills": ("Projects and skill evidence", "additional-information"),
+        "Add your key skills to your profile": ("Key skills", "skills"),
+        "Add projects, assessments, or portfolio links": ("Projects and portfolio", "additional-information"),
+        "Share your availability / notice period": ("Availability", "additional-information"),
+        "Share your preferred work mode (remote/hybrid/on-site)": ("Work preferences", "additional-information"),
+        "Share your salary expectations": ("Salary expectations", "additional-information"),
+    }
+    items = []
+    if percent < 90:
+        for action in explain.get("next_actions", []):
+            title, section = action_sections.get(action, (action, "additional-information"))
+            items.append({"title": title, "action": action, "section": section})
+
+    return {
+        "current_percent": percent,
+        "remaining_percent_to_90": max(0, 90 - percent),
+        "items": items,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Fresher detection (preserved from original, used in scoring)
 # ---------------------------------------------------------------------------
@@ -1402,6 +1427,7 @@ def calculate_profile_strength_v2(
 
     # Explainability
     explain = _build_explainability(dim_scores, prefs, evidence, vi_state)
+    ninety_percent_guidance = _build_ninety_percent_guidance(percent, explain)
 
     # Structured dimension output for API
     def _dim_out(d: dict, key: str) -> dict:
@@ -1448,6 +1474,7 @@ def calculate_profile_strength_v2(
         "missing_critical_information": explain["missing"],
         "recommended_next_actions": explain["next_actions"],
         "explainability": explain,
+        "ninety_percent_guidance": ninety_percent_guidance,
         "role_category": role_category,
         "is_fresher": is_fresher,
         "inconsistencies": inconsistencies,

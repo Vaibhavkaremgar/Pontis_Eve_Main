@@ -88,6 +88,16 @@ def _with_prefs(c, roles=None, location=None, remote=None, availability=None):
     return c
 
 
+def test_ninety_percent_guidance_is_derived_from_the_canonical_score_result():
+    result = calculate_profile_strength_v2(_base())
+
+    guidance = result["ninety_percent_guidance"]
+    assert guidance["current_percent"] == result["percent"]
+    assert guidance["remaining_percent_to_90"] == max(0, 90 - result["percent"])
+    assert guidance["items"]
+    assert all({"title", "action", "section"} <= item.keys() for item in guidance["items"])
+
+
 # ---------------------------------------------------------------------------
 # Candidate 1: Resume only
 # ---------------------------------------------------------------------------

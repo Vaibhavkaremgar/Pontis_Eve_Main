@@ -94,7 +94,30 @@ describe("LivingProfile meter label", () => {
       );
     });
 
-    expect(view.container.querySelector('[data-testid="profile-strength-bar"]')).toHaveClass("profile-strength-meter--improving");
+    expect(view.container.querySelector('[data-testid="profile-strength-bar"]').classList.contains("profile-strength-meter--improving")).toBe(true);
+    view.unmount();
+  });
+
+  it("shows canonical 90% guidance and links each item to its profile section", () => {
+    const view = renderLivingProfile({
+      userProfile: {
+        profile_strength_detail: {
+          ninety_percent_guidance: {
+            current_percent: 82,
+            remaining_percent_to_90: 8,
+            items: [{
+              title: "Key skills",
+              action: "Add your key skills to your profile",
+              section: "skills",
+            }],
+          },
+        },
+      },
+    });
+
+    expect(view.container.querySelector('[data-testid="profile-90-guidance"]').textContent).toContain("82% complete");
+    expect(view.container.querySelector('[data-testid="profile-guidance-skills"]').getAttribute("href")).toBe("#profile-skills");
+    expect(view.container.querySelector("#profile-skills")).toBeTruthy();
     view.unmount();
   });
 });
