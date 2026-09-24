@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any
 
@@ -58,45 +59,38 @@ async def upsert_ats_job(
         # erase an already richer JD.
         refresh_description = len(incoming_description) > len(existing_description.strip())
 
+        # ATS metadata is refreshed on every sync.  COALESCE prevents an
+        # incomplete public-board response from erasing prior data, while
+        # allowing historical empty rows to be backfilled.
+        await db.execute(
+            text("""
+                UPDATE job_descriptions
+                SET job_url = COALESCE(job_url, :job_url),
+                    description = CASE WHEN :refresh_description THEN :description ELSE description END,
+                    employment_type = COALESCE(:employment_type, employment_type),
+                    remote_policy = COALESCE(:remote_policy, remote_policy),
+                    experience_level = COALESCE(:experience_level, experience_level),
+                    experience_required = COALESCE(:experience_required, experience_required),
+                    salary_range = COALESCE(:salary_range, salary_range),
+                    skills_required = CASE WHEN :skills_required IS NOT NULL THEN CAST(:skills_required AS json) ELSE skills_required END,
+                    skills = CASE WHEN :skills IS NOT NULL THEN CAST(:skills AS json) ELSE skills END,
+                    structured_data = CASE WHEN :structured_data IS NOT NULL THEN CAST(:structured_data AS json) ELSE structured_data END,
+                    created_at = COALESCE(CAST(:created_at AS timestamptz), created_at),
+                    is_active = TRUE, status = 'active', job_status = 'active',
+                    updated_at = NOW(), last_synced_at = NOW()
+                WHERE id = :id
+            """),
+            {
+                "id": job_id, "job_url": incoming_job_url, "description": incoming_description,
+                "refresh_description": refresh_description, **_metadata_params(job),
+            },
+        )
+        await db.commit()
         if (not (existing_job_url or "").strip() and incoming_job_url is not None) or refresh_description:
-            await db.execute(
-                text("""
-                    UPDATE job_descriptions
-                    SET job_url = COALESCE(job_url, :job_url),
-                        description = CASE WHEN :refresh_description THEN :description ELSE description END,
-                        is_active = TRUE,
-                        status = 'active',
-                        job_status = 'active',
-                        updated_at = NOW(),
-                        last_synced_at = NOW()
-                    WHERE id = :id
-                """),
-                {
-                    "id": job_id,
-                    "job_url": incoming_job_url,
-                    "description": incoming_description,
-                    "refresh_description": refresh_description,
-                },
-            )
-            await db.commit()
             logger.debug(
                 "[job-scheduler] Refreshed existing ATS job ats_type=%s ats_job_id=%s db_id=%s description_refreshed=%s",
                 ats_type, ats_job_id, job_id,
                 refresh_description,
-            )
-        else:
-            # A record seen on a complete current board is current again even
-            # if no URL update was necessary.
-            await db.execute(text("""
-                UPDATE job_descriptions
-                SET is_active = TRUE, status = 'active', job_status = 'active',
-                    updated_at = NOW(), last_synced_at = NOW()
-                WHERE id = :id
-            """), {"id": job_id})
-            await db.commit()
-            logger.debug(
-                "[job-scheduler] Existing job unchanged ats_type=%s ats_job_id=%s db_id=%s",
-                ats_type, ats_job_id, job_id,
             )
         # Recreate a point that may have been removed while the job was closed.
         # URL-less jobs deliberately remain out of Qdrant.
@@ -148,6 +142,7 @@ async def upsert_ats_job(
                 department,
                 location,
                 employment_type,
+                experience_required,
                 salary_range,
                 description,
                 is_active,
@@ -163,6 +158,7 @@ async def upsert_ats_job(
                 job_status,
                 vetting_mode,
                 skills_required,
+                skills,
                 experience_level,
                 structured_data,
                 remote_policy,
@@ -177,11 +173,12 @@ async def upsert_ats_job(
                 :department,
                 :location,
                 :employment_type,
+                :experience_required,
                 :salary_range,
                 :description,
                 TRUE,
                 'active',
-                NOW(),
+                COALESCE(CAST(:created_at AS timestamptz), NOW()),
                 NOW(),
                 gen_random_uuid(),
                 :agency_id,
@@ -191,10 +188,11 @@ async def upsert_ats_job(
                 'ui',
                 'active',
                 'volume',
-                '[]'::json,
-                '',
-                '{}'::json,
-                '',
+                CAST(:skills_required AS json),
+                CAST(:skills AS json),
+                :experience_level,
+                CAST(:structured_data AS json),
+                :remote_policy,
                 :ats_job_id,
                 :ats_type,
                 :job_url,
@@ -215,6 +213,7 @@ async def upsert_ats_job(
             "ats_job_id": ats_job_id,
             "ats_type": ats_type,
             "job_url": _valid_http_url(job.get("job_url")),
+            **_metadata_params(job),
         },
     )
 
@@ -234,3 +233,18 @@ async def upsert_ats_job(
         logger.error("Qdrant embedding upsert failed for job_id=%s: %s", new_id, exc)
 
     return str(new_id)
+
+
+def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
+    """Serialize optional normalized JSON consistently for PostgreSQL binds."""
+    return {
+        "employment_type": job.get("employment_type"),
+        "remote_policy": job.get("remote_policy"),
+        "experience_level": job.get("experience_level"),
+        "experience_required": job.get("experience_required"),
+        "salary_range": job.get("salary_range"),
+        "skills_required": json.dumps(job["skills_required"]) if job.get("skills_required") is not None else None,
+        "skills": json.dumps(job["skills"]) if job.get("skills") is not None else None,
+        "structured_data": json.dumps(job.get("structured_data") or {}),
+        "created_at": job.get("created_at"),
+    }
