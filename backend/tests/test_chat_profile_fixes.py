@@ -204,6 +204,48 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     }
 
 
+def test_conversational_profile_categories_creation_and_correction():
+    """Direct statements are classified by meaning and retained in schema fields."""
+    _, education = server._extract_profile_updates("", "I completed my Master's at CMR University")
+    assert education == {"education": [{"degree": "Master's", "institution": "CMR University"}]}
+
+    _, cert = server._extract_profile_updates("", "I have an AWS certification")
+    assert cert == {"certifications": ["AWS"]}
+
+    _, skills = server._extract_profile_updates("", "I know Python, Java and Spring Boot")
+    assert skills == {"skills": ["Python", "Java", "Spring Boot"]}
+
+    _, experience = server._extract_profile_updates("", "I worked at TCS as a Python Developer for 2 years")
+    assert experience["work_experience"] == [{"title": "Python Developer", "company": "TCS"}]
+    assert experience["experience_years"] == 2.0
+
+
+def test_degree_is_never_persisted_as_a_certification_even_if_llm_misclassifies_it():
+    reply = '<<<PROFILE_UPDATES>>>\n{"profile_updates":{"certifications":["CMR University"]}}\n<<<END_UPDATES>>>'
+    _, updates = server._extract_profile_updates(reply, "I completed my Master's at CMR University")
+    assert updates["education"][0]["institution"] == "CMR University"
+    assert "certifications" not in updates
+
+
+def test_partial_conversational_records_are_created_and_merged_when_completed_later():
+    state = _make_candidate(education=[], work_experience=[])
+    _run_apply(state, {"education": [{"degree": "Master's", "institution": "CMR University"}]})
+    _run_apply(state, {"education": [{"degree": "Master's", "institution": "CMR University", "start_date": "2021", "end_date": "2023"}]})
+    assert state["education"] == [{"degree": "Master's", "institution": "CMR University", "start_date": "2021", "end_date": "2023"}]
+
+    _run_apply(state, {"work_experience": [{"title": "Python Developer", "company": "TCS"}]})
+    _run_apply(state, {"work_experience": [{"title": "Python Developer", "company": "TCS", "start_date": "2022", "end_date": "Present"}]})
+    assert len(state["work_experience"]) == 1
+    assert state["work_experience"][0]["company"] == "TCS"
+
+
+def test_new_location_preference_replaces_an_explicitly_corrected_one():
+    state = _make_candidate(raw_data={"preferred_locations": ["Hyderabad"]})
+    updates = server._infer_profile_updates_from_message("Actually, I prefer Bangalore now")
+    _run_apply(state, updates)
+    assert state["raw_data"]["preferred_locations"] == ["Bangalore"]
+
+
 # ===========================================================================
 # Canonical preference completion in Chat with Eve
 # ===========================================================================

@@ -451,7 +451,10 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or "{}"
-        return json.loads(raw)
+        # Voice uses the same schema and category guard as chat.  This makes a
+        # directly stated degree/institution authoritative even when an LLM
+        # response labels it incorrectly.
+        return _correct_profile_categories(json.loads(raw), transcript)
     except (OpenAIRateLimitError, AllKeysRateLimitedError) as exc:
         logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
         raise HTTPException(
@@ -4137,7 +4140,7 @@ BEHAVIOR:
 - Only include profile_updates when the candidate actually provides new information.
 - Do not guess a destination for a bare request such as "Add Python". Ask where it belongs before emitting an update.
 - Before changing or deleting an existing value, use the supplied profile context to identify every matching record. If more than one record/section matches, ask the candidate to choose; never emit an update for an ambiguous target.
-- Never create a partial Education or Work Experience record. Education requires degree, institution, start year, and end year. Work Experience requires title, company, start year, and end year. Ask only for the missing field(s), and use the prior conversation when the candidate supplies them.
+- Preserve every explicitly stated Education or Work Experience fact in its proper record. Ask for missing dates/details, and merge those later; do not discard an otherwise meaningful degree/institution or title/company statement.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
 - Do NOT overwrite fields that already have good data unless the candidate is correcting them.
 - DELETION: When the candidate asks to remove/delete a specific item from their profile (e.g. "remove FastAPI from my skills", "delete my AWS cert", "I no longer want Hyderabad as my preferred location"), include a "profile_deletions" key inside profile_updates with the field and item to remove:
@@ -4183,8 +4186,8 @@ FIELD DEFINITIONS — use exactly these keys:
                    description = what they did (technologies used, responsibilities)
                    Do NOT put a technology name as title. Do NOT put a company name as title.
   name, email, phone, location, bio: plain string fields.
-  education      : List of {{"degree": "", "institution": "", "start_date": "", "end_date": ""}}.
-  certifications : List of certification names only.
+  education      : List of {{"degree": "", "institution": "", "start_date": "", "end_date": ""}}. A degree completed/studied at a university is Education, never Certification; retain the stated degree and institution even when dates are absent.
+  certifications : List of certification names only. Use this only for an explicitly stated certificate, certification, credential, licence, or certification exam -- never infer it from a university, college, degree, Master's, Bachelor's, MBA, or PhD.
 
 EXAMPLE — if candidate says "I worked at ABC Technologies as a Python Backend Developer. I built REST APIs with FastAPI and PostgreSQL.":
   <<<PROFILE_UPDATES>>>
@@ -4643,7 +4646,7 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
         sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
         if deletion:
             sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
-        return reply_text.strip(), sanitized or None
+        return reply_text.strip(), _correct_profile_categories(sanitized, candidate_message) or None
 
     parts = reply_text.split(marker_start, 1)
     clean = parts[0].strip()
@@ -4657,13 +4660,13 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
             sanitized = {}
         if deletion:
             sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
-        return clean, sanitized or None
+        return clean, _correct_profile_categories(sanitized, candidate_message) or None
     except Exception:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
         sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
         if deletion:
             sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
-        return clean, sanitized or None
+        return clean, _correct_profile_categories(sanitized, candidate_message) or None
 
 
 def _split_update_list(text: str) -> list[str]:
@@ -4756,6 +4759,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             r"\bpreferably\s+with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:preferably\s+)?working with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bskills?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:i\s+)?know\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bexperience with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\busing\s+(?P<value>.+?)(?:[.!?;]|$)",
         ],
@@ -4806,9 +4810,15 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to")):
         updates["employment_types"] = [_normalize_profile_text(employment_match.group(1)).title().replace("Full-Time", "Full-time").replace("Part-Time", "Part-time")]
 
-    locations = _extract_first_match(text, [r"\b(?:preferred locations?|locations? preferred)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
+    locations = _extract_first_match(text, [
+        r"\b(?:preferred locations?|locations? preferred)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+        r"\b(?:i\s+)?prefer\s+(?P<value>[A-Z][A-Za-z .'-]+?)(?:\s+(?:now|instead)|[.!?;]|$)",
+    ])
     if locations:
         updates["preferred_locations"] = _split_update_list(locations)
+        # "actually ... now" is a correction, not an additional location.
+        if re.search(r"\b(?:actually\s*,?\s*)?i\s+prefer\b.*\b(?:now|instead)\b", text, re.I):
+            updates["replace_preferred_locations"] = True
     industries = _extract_first_match(text, [r"\b(?:preferred|target) industries?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
     if industries:
         updates["preferred_industries"] = _split_update_list(industries)
@@ -4880,6 +4890,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             continue
         company = _normalize_profile_text(match.groupdict().get("company"))
         title = _normalize_profile_text(match.groupdict().get("title"))
+        title = re.sub(r"\s+for\s+\d+(?:\.\d+)?\s*years?\s*$", "", title, flags=re.I).strip()
         if not company or not title:
             continue
         entry: dict[str, str] = {"title": title, "company": company}
@@ -4903,19 +4914,15 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     if work_experience:
         updates["work_experience"] = work_experience
 
-    education = _extract_first_match(
-        text,
-        [
-            r"\b(?:studied|graduated from|earned(?:\s+an?)?)\s+(?P<value>.+?)(?:[.!?;]|$)",
-        ],
+    education_match = re.search(
+        r"\b(?:completed|studied|graduated(?:\s+from)?|earned)\s+(?:my\s+|a\s+|an\s+)?(?P<degree>(?:master'?s|bachelor'?s|mba|m\.?(?:tech|sc|a)|b\.?(?:tech|sc|a)|ph\.?d)[^,.]*?)\s+(?:at|from)\s+(?P<institution>[^,.!?;]+)",
+        text, re.I,
     )
-    if education:
+    if education_match:
         updates["education"] = [
             {
-                "degree": education.strip(),
-                "institution": "",
-                "start_date": "",
-                "end_date": "",
+                "degree": _normalize_profile_text(education_match.group("degree")),
+                "institution": _normalize_profile_text(education_match.group("institution")),
             }
         ]
 
@@ -4926,12 +4933,41 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             r"\b(?:hold|holding|have|earned|completed|obtained|got)\s+(?P<value>.+?)(?:\s+certifications?\b|\s+certified\b|[.!?;]|$)",
         ],
     )
-    if certifications:
-        normalized_certs = _merge_certifications([], _split_update_list(certifications))
+    # A university/degree statement must never flow into certifications merely
+    # because it used a verb such as "completed" or "earned".
+    if certifications and not education_match:
+        normalized_certs = _merge_certifications([], [
+            re.sub(r"^(?:a|an|the)\s+", "", item, flags=re.I).strip()
+            for item in _split_update_list(certifications)
+        ])
         if normalized_certs:
             updates["certifications"] = normalized_certs
 
     return updates
+
+
+def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
+    """Make direct candidate wording authoritative over an LLM's category guess.
+
+    This is deliberately narrow: it supplements a structured extractor with
+    unambiguous conversational facts, rather than attempting a parallel schema.
+    """
+    result = dict(updates or {})
+    inferred = _infer_profile_updates_from_message(candidate_message)
+    if "education" in inferred:
+        # Degree + institution is conclusive education evidence, including when
+        # the institution name resembles a training provider.
+        result["education"] = inferred["education"]
+        result.pop("certifications", None)
+    for field in ("skills", "work_experience", "preferred_roles", "preferred_locations"):
+        if field in inferred:
+            if field in ("skills", "preferred_roles", "preferred_locations") and isinstance(result.get(field), list):
+                result[field] = _merge_profile_updates({field: result[field]}, {field: inferred[field]})[field]
+            else:
+                result[field] = inferred[field]
+    if inferred.get("replace_preferred_locations"):
+        result["replace_preferred_locations"] = True
+    return _sanitize_profile_updates(result)
 
 
 VALID_UPDATE_FIELDS = {
@@ -4942,6 +4978,7 @@ VALID_UPDATE_FIELDS = {
     "remote_preference", "expected_salary", "willing_to_relocate",
     "open_to_opportunities", "additional_information",
     "profile_deletions", "profile_record_replacements",
+    "replace_preferred_locations",
 }
 
 
@@ -5347,7 +5384,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             # New records need a usable identity and timeline.  Updates to an
             # existing record are handled through profile_record_replacements.
             value = [item for item in value if isinstance(item, dict) and all(
-                str(item.get(key) or "").strip() for key in ("title", "company", "start_date", "end_date")
+                str(item.get(key) or "").strip() for key in ("title", "company")
             )]
             if not value:
                 continue
@@ -5359,7 +5396,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             if not isinstance(value, list):
                 continue
             value = [item for item in value if isinstance(item, dict) and all(
-                str(item.get(key) or "").strip() for key in ("degree", "institution", "start_date", "end_date")
+                str(item.get(key) or "").strip() for key in ("degree", "institution")
             )]
             if not value:
                 continue
@@ -5405,7 +5442,8 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                 continue
             has_preference_payload = True
             old_values = _normalize_preference_list(existing_raw.get(field) or [])
-            merged_values = _normalize_preference_list(old_values + value)
+            replace = field == "preferred_locations" and safe.get("replace_preferred_locations") is True
+            merged_values = _normalize_preference_list(value if replace else old_values + value)
             if merged_values != old_values:
                 existing_raw[field] = merged_values
                 raw_data_changed = True
@@ -6314,6 +6352,7 @@ For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "F
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
+For "education": a degree at/from a university or college is always Education. Capture the degree and institution; never place it in certifications unless the candidate also explicitly states a certification.
 For "projects", extract only projects the candidate explicitly says they worked on or built. Preserve the stated project/product name, responsibilities, and technologies. Do not infer projects from general role duties, and do not create a title when none was stated.
 Return only the JSON object."""
 
