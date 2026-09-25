@@ -5026,9 +5026,29 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     """
     text_value = message.strip()
     lower = text_value.lower()
-    # A bare "Add X" has no durable profile destination.  Do not infer Skills.
+    # Education has an unambiguous semantic shape even when the candidate does
+    # not literally say "education" (for example: "Add Masters Degree in CMR
+    # University 2023-2025"). Recognize it before the generic bare-add guard.
+    education_with_dates = re.search(
+        r"\b(?:add|completed|studied|graduated(?:\s+from)?|earned)\s+(?:my\s+|a\s+|an\s+)?"
+        r"(?P<degree>(?:master'?s|bachelor'?s|mba|m\.?(?:tech|sc|a)|b\.?(?:tech|sc|a)|ph\.?d)[^,.;]*?(?:degree)?)"
+        r"\s+(?:at|from|in)\s+(?P<institution>[^,.;]*?)\s+(?P<start>\d{4})\s*(?:-|–|—|to)\s*(?P<end>\d{4}|present)\b",
+        text_value, re.I,
+    )
+    if education_with_dates:
+        degree = _normalize_profile_text(education_with_dates.group("degree"))
+        degree = re.sub(r"\bmasters\b", "Master's", degree, flags=re.I)
+        degree = re.sub(r"\bbachelors\b", "Bachelor's", degree, flags=re.I)
+        return {"reply": f"Added your {degree} at {education_with_dates.group('institution').strip()}.", "updates": {"education": [{
+            "degree": degree,
+            "institution": _normalize_profile_text(education_with_dates.group("institution")),
+            "start_date": education_with_dates.group("start"),
+            "end_date": education_with_dates.group("end"),
+        }]}}
+
+    # A bare "Add X" has no durable profile destination. Do not infer Skills.
     bare_add = re.match(r"^add\s+(.+?)[.!]?$", text_value, re.I)
-    if bare_add and not re.search(r"\b(skill|skills|education|experience|project|certification|preference)\b", lower):
+    if bare_add and not re.search(r"\b(skill|skills|education|experience|project|certification|preference|master'?s|bachelor'?s|mba|university|college|degree)\b", lower):
         return {"reply": f"Where would you like me to add {bare_add.group(1).strip()}?", "updates": None}
 
     # Complete an immediately preceding education/work timeline question using
@@ -5061,12 +5081,16 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
         if total > 1:
             return {"reply": f"I found {requested} in {' and '.join(matches)}. Which record should I delete?", "updates": None}
 
-    replacement = re.search(r"\b(?:update|change)\b.*?(?:\bfrom\s+)?(.+?)\s+to\s+(.+?)[.!]?$", text_value, re.I)
+    replacement = re.search(r"\b(?:replace|update|change)\s+(.+?)\s+(?:with|to)\s+(.+?)[.!]?$", text_value, re.I)
     if replacement:
         old, new = replacement.group(1).strip(), replacement.group(2).strip()
         matches = _profile_edit_matches(candidate, old)
         sections = list(matches)
         total = sum(len(items) for items in matches.values())
+        # Replacing a shared institution fragment across education records is
+        # unambiguous: update every matching education record consistently.
+        if sections == ["Education"] and matches["Education"]:
+            return {"reply": f"Updated {old} to {new} in your education records.", "updates": {"profile_record_replacements": [{"section": "Education", "old": old, "new": new, "all_matches": True}]}}
         if total > 1:
             return {"reply": f"I found {old} in {' and '.join(sections)}. Which one should I update?", "updates": None}
         if total == 1:
@@ -5074,6 +5098,27 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
             if section in ("Education", "Work Experience"):
                 return {"reply": f"Updated {old} to {new} in {section}.", "updates": {"profile_record_replacements": [{"section": section, "old": old, "new": new}]}}
     return None
+
+
+async def _verify_profile_update_persisted(candidate_id: str, updates: dict) -> bool:
+    """Read the canonical candidate row after a chat write before confirming it."""
+    persisted = await _get_candidate_row(candidate_id)
+    for replacement in updates.get("profile_record_replacements") or []:
+        if not isinstance(replacement, dict) or replacement.get("section") != "Education":
+            continue
+        old, new = replacement.get("old"), replacement.get("new")
+        education_text = " ".join(json.dumps(row) for row in (persisted.get("education") or []))
+        if not isinstance(old, str) or not isinstance(new, str) or old.lower() in education_text.lower() or new.lower() not in education_text.lower():
+            return False
+    for entry in updates.get("education") or []:
+        if not isinstance(entry, dict):
+            continue
+        if not any(all(
+            _normalize_profile_key(row.get(field)) == _normalize_profile_key(entry.get(field))
+            for field in ("degree", "institution", "start_date", "end_date")
+        ) for row in (persisted.get("education") or []) if isinstance(row, dict)):
+            return False
+    return True
 
 
 def _remove_item_from_list(existing_list: list, item_to_remove: str) -> tuple[list, bool]:
@@ -5338,21 +5383,25 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                 if not isinstance(replacement, dict):
                     continue
                 section, old, new = replacement.get("section"), replacement.get("old"), replacement.get("new")
+                all_matches = replacement.get("all_matches") is True
                 if not all(isinstance(part, str) and part.strip() for part in (section, old, new)):
                     continue
                 # Re-query the persisted record at write time.  A stale chat turn
                 # can never replace a value that is no longer uniquely targeted.
                 matches = _profile_edit_matches(existing, old)
-                if len(matches.get(section, [])) != 1 or sum(map(len, matches.values())) != 1:
+                if not matches.get(section) or (not all_matches and (
+                    len(matches.get(section, [])) != 1 or sum(map(len, matches.values())) != 1
+                )) or (all_matches and set(matches) != {"Education"}):
                     continue
                 if section == "Education":
                     records = list(existing.get("education") or [])
-                    index = matches[section][0]["index"]
-                    record = dict(records[index])
-                    for key, record_value in record.items():
-                        if old.lower() in str(record_value).lower():
-                            record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
-                    records[index] = record
+                    for match in matches[section] if all_matches else matches[section][:1]:
+                        index = match["index"]
+                        record = dict(records[index])
+                        for key, record_value in record.items():
+                            if old.lower() in str(record_value).lower():
+                                record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
+                        records[index] = record
                     set_clauses.append("education = CAST(:education AS json)")
                     params["education"] = json.dumps(records)
                     existing["education"] = records
@@ -5954,7 +6003,9 @@ async def chat(request: ChatRequest):
             updates = preflight.get("updates")
             if updates:
                 try:
-                    await _apply_profile_updates(request.candidate_id, updates)
+                    apply_result = await _apply_profile_updates(request.candidate_id, updates)
+                    if not apply_result.get("updated") or not await _verify_profile_update_persisted(request.candidate_id, updates):
+                        return ChatResponse(reply="I couldn't update your profile, so no confirmation was made.", session_id=request.session_id)
                     asyncio.ensure_future(_trigger_matching(request.candidate_id))
                 except Exception:
                     logger.exception("Profile preflight update failed")
@@ -6097,7 +6148,10 @@ async def chat(request: ChatRequest):
             requested_deletions = profile_updates.get("profile_deletions") or {}
             applied_deletions = apply_result.get("deleted") or {}
             not_found_deletions = apply_result.get("not_found") or {}
-            if requested_deletions and not applied_deletions:
+            if not apply_result.get("updated") and not applied_deletions:
+                clean_reply = "I couldn't update your profile, so no changes were made."
+                profile_updates = None
+            elif requested_deletions and not applied_deletions:
                 # The LLM writes its reply before persistence. Do not tell the
                 # candidate an item was removed unless the database changed.
                 missing_additional = not_found_deletions.get("additional_information") or []

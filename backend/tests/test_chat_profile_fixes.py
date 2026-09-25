@@ -246,6 +246,36 @@ def test_new_location_preference_replaces_an_explicitly_corrected_one():
     assert state["raw_data"]["preferred_locations"] == ["Bangalore"]
 
 
+def test_add_masters_with_university_and_dates_is_education_not_a_clarification():
+    state = _make_candidate(education=[])
+    preflight = server._chat_profile_preflight(
+        "Add Masters Degree in CMR UNIVERSITY 2023-2025", state, []
+    )
+    assert preflight is not None
+    assert "where would you like" not in preflight["reply"].lower()
+    assert preflight["updates"] == {"education": [{
+        "degree": "Master's Degree", "institution": "CMR UNIVERSITY",
+        "start_date": "2023", "end_date": "2025",
+    }]}
+    _run_apply(state, preflight["updates"])
+    assert state["education"] == preflight["updates"]["education"]
+
+
+def test_replace_institution_updates_all_matching_education_records_and_profile_data():
+    state = _make_candidate(education=[
+        {"degree": "Bachelor's", "institution": "CMR Engineering College", "start_date": "2019", "end_date": "2023"},
+        {"degree": "Master's", "institution": "CMR University", "start_date": "2023", "end_date": "2025"},
+    ])
+    preflight = server._chat_profile_preflight("Replace CMR with CBIT", state, [])
+    assert preflight and preflight["updates"]
+    _run_apply(state, preflight["updates"])
+    institutions = [entry["institution"] for entry in state["education"]]
+    assert institutions == ["CBIT Engineering College", "CBIT University"]
+    profile = server._normalize_for_frontend(state)
+    assert all("CMR" not in str(entry) for entry in profile["education"])
+    assert all("CBIT" in entry["institution"] for entry in profile["education"])
+
+
 # ===========================================================================
 # Canonical preference completion in Chat with Eve
 # ===========================================================================
