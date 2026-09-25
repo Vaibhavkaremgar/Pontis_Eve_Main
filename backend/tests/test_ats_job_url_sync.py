@@ -352,3 +352,37 @@ async def test_scheduler_continues_after_a_single_job_failure(monkeypatch):
     assert state["good_job_upserted"] is True
     assert state["rollback_count"] == 1
     assert state["company_registry_updated"] is False
+
+
+@pytest.mark.asyncio
+async def test_provider_404_does_not_stop_other_company_sync(monkeypatch):
+    state = {"synced": []}
+
+    class Collector:
+        def collect_company_jobs(self, ats_type, identifier, company_name):
+            if company_name == "Broken board":
+                raise RuntimeError("Workable returned HTTP 404")
+            return [{"ats_type": "ashby", "ats_job_id": "good", "company_name": company_name, "title": "Good"}]
+
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def execute(self, statement, params=None):
+            sql = " ".join(str(statement).lower().split())
+            if "select id, company_name, ats_type, identifier" in sql:
+                return FakeResult([
+                    {"id": "broken", "company_name": "Broken board", "ats_type": "workable", "identifier": "gone"},
+                    {"id": "good", "company_name": "Healthy board", "ats_type": "ashby", "identifier": "healthy"},
+                ])
+            if "update company_registry" in sql: return FakeResult()
+            raise AssertionError(sql)
+        async def commit(self): pass
+
+    async def upsert(_, job):
+        state["synced"].append(job["company_name"])
+
+    monkeypatch.setattr("app.job_ingestion.collect_jobs.JobCollector", lambda: Collector())
+    monkeypatch.setattr(scheduler, "_get_session_local", lambda: lambda: Session())
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.upsert_ats_job", upsert)
+    await scheduler.sync_jobs()
+    assert state["synced"] == ["Healthy board"]

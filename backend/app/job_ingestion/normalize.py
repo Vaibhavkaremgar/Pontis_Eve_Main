@@ -14,6 +14,20 @@ def _valid_http_url(value: Any) -> str | None:
 def _text(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
+UNKNOWN_EXPERIENCE_LEVEL = "Not specified"
+
+def _skill_list(value: Any) -> list[str]:
+    """Return JSON-safe skill strings without treating arbitrary objects as skills."""
+    if isinstance(value, str):
+        value = re.split(r"[,;/|]", value)
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+def _ats_id(value: Any) -> str:
+    """Do not turn a missing provider ID into the literal string ``'None'``."""
+    return str(value).strip() if value is not None else ""
+
 def _first(*values: Any) -> Any:
     return next((v for v in values if v not in (None, "", [], {})), None)
 
@@ -83,9 +97,13 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     # supplied ATS skills first, then the conservative labelled-JD extraction,
     # and represent a genuinely unknown skill set as an empty JSON list rather
     # than SQL NULL.  This is intentionally not a guessed skill list.
-    if result["skills_required"] is None:
-        result["skills_required"] = []
+    result["skills_required"] = _skill_list(result["skills_required"])
     result["skills"] = result.get("skills_required")
+    # This column is NOT NULL.  A stated requirement (for example, "5+ years")
+    # is useful evidence but is deliberately not converted into a guessed
+    # seniority bucket.  When neither source states experience, retain an
+    # explicit unknown representation rather than SQL NULL.
+    result["experience_level"] = _text(result["experience_level"]) or _text(result["experience_required"]) or UNKNOWN_EXPERIENCE_LEVEL
     categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
     source_data = {k: v for k, v in {
         "requisition_id": _first(job.get("requisition_id"), job.get("requisitionId"), job.get("requisition")),
@@ -115,27 +133,27 @@ def _lever_description(job: dict[str, Any]) -> str | None:
 
 def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("content")
-    meta = _metadata(job, "greenhouse", description=description, remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=parse_ats_datetime(_first(job.get("created_at"), job.get("updated_at"))))
+    meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=parse_ats_datetime(_first(job.get("created_at"), job.get("updated_at"))))
     departments = job.get("departments") or []
-    return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
 
 def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = _lever_description(job); categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
-    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
-    return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
+    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), experience_level=_first(job.get("experience_level"), job.get("seniority"), categories.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("descriptionHtml"); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
     salary = _first(job.get("salaryRange"), job.get("salary_range"), compensation.get("summary"))
     if not salary and compensation.get("minValue") is not None and compensation.get("maxValue") is not None: salary = f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
-    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(_first(job.get("publishedAt"), job.get("createdAt"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
+    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), experience_level=_first(job.get("experienceLevel"), job.get("experience_level"), job.get("seniority")), experience_required=job.get("experienceRequired"), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(_first(job.get("publishedAt"), job.get("createdAt"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     department = job.get("department") if isinstance(job.get("department"), dict) else {}
-    return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": department.get("name"), "location": job.get("location") if isinstance(job.get("location"), str) else None, "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": department.get("name"), "location": job.get("location") if isinstance(job.get("location"), str) else None, "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
 
 def normalize_workable(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("description"); location = job.get("location")
-    meta = _metadata(job, "workable", description=description, employment_type=job.get("employment_type"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type"), "Remote" if isinstance(location, dict) and location.get("telecommuting") else None), salary_range=_first(job.get("salary_range"), job.get("salary")), created_at=parse_ats_datetime(_first(job.get("published_on"), job.get("published_at"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skills_required")))
-    return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": job.get("department"), "location": location.get("city") if isinstance(location, dict) else location, "salary_range": meta.get("salary_range"), "job_url": job.get("url"), "ats_type": "workable", **meta}
+    meta = _metadata(job, "workable", description=description, employment_type=job.get("employment_type"), experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type"), "Remote" if isinstance(location, dict) and location.get("telecommuting") else None), salary_range=_first(job.get("salary_range"), job.get("salary")), created_at=parse_ats_datetime(_first(job.get("published_on"), job.get("published_at"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skills_required")))
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": job.get("department"), "location": location.get("city") if isinstance(location, dict) else location, "salary_range": meta.get("salary_range"), "job_url": job.get("url"), "ats_type": "workable", **meta}
 
 def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
     """Normalize a global Fantastic record without inventing a registry company."""
@@ -157,7 +175,7 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
               "ai_requirements_summary", "ai_work_arrangement", "ai_key_skills")
     meta["structured_data"].update({key: job[key] for key in useful if job.get(key) not in (None, "", [], {})})
     meta["structured_data"]["fantastic"] = {key: value for key, value in job.items() if key not in {"description_text", "description"}}
-    return {"ats_job_id": str(job.get("id") or "").strip(), "ats_type": "fantastic",
+    return {"ats_job_id": _ats_id(job.get("id")), "ats_type": "fantastic",
             "company_name": _text(job.get("organization")) or _text(job.get("organization_name")) or "Unknown organization",
             "title": _text(job.get("title")), "description": description, "department": _text(job.get("department")),
             "location": locations, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}

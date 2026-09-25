@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unused:unused@localhost/unused")
 
 from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable, parse_ats_datetime
-from app.job_ingestion.job_ingestion_service import _metadata_params, upsert_ats_job
+from app.job_ingestion.job_ingestion_service import _metadata_params, _persistence_safe_job, upsert_ats_job
 import server
 
 
@@ -21,6 +21,37 @@ def test_representative_public_ats_payloads_preserve_explicit_metadata():
     assert lever["employment_type"] == "Full-time" and lever["remote_policy"] == "hybrid"
     assert greenhouse["remote_policy"] == "Remote" and greenhouse["salary_range"] == "$90k-$110k"
     assert workable["remote_policy"] == "Remote" and workable["skills_required"] == ["Figma", "CSS"]
+
+
+def test_ashby_derives_skills_from_labelled_jd_when_structured_skills_are_absent():
+    job = normalize_ashby(
+        {
+            "id": "ashby-derived-skills",
+            "title": "Staff Software Engineer",
+            "descriptionHtml": "<h2>Requirements</h2><p>Required Skills: Python, PostgreSQL, AWS</p>",
+            "jobUrl": "https://jobs.example/ashby-derived-skills",
+        },
+        "Supa Health",
+    )
+
+    assert job["skills_required"] == ["Python", "PostgreSQL", "AWS"]
+    assert job["skills"] == job["skills_required"]
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "payload"),
+    [
+        (normalize_ashby, {"id": "a-no-skills", "title": "Engineer"}),
+        (normalize_lever, {"id": "l-no-skills", "text": "Engineer"}),
+        (normalize_greenhouse, {"id": "g-no-skills", "title": "Engineer"}),
+        (normalize_workable, {"id": "w-no-skills", "title": "Engineer"}),
+    ],
+)
+def test_eligible_normalized_ats_jobs_never_have_null_skills_required(normalizer, payload):
+    job = normalizer(payload, "Acme")
+
+    assert job["skills_required"] == []
+    assert _metadata_params(job)["skills_required"] == "[]"
 
 
 def test_ats_dates_are_bind_safe_datetimes_and_preserve_offsets():
@@ -98,6 +129,100 @@ def test_existing_sync_writes_normalized_metadata(monkeypatch):
     assert session.params["employment_type"] == "Full-time"
     assert session.params["remote_policy"] == "Remote"
     assert session.params["skills_required"] == '["Python", "SQL"]'
+
+
+def test_persistence_guard_never_binds_null_skills_required_for_legacy_normalized_jobs():
+    assert _metadata_params({"skills_required": None})["skills_required"] == "[]"
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "payload", "expected"),
+    [
+        (normalize_ashby, {"id": "a-exp", "title": "A", "experienceLevel": "Senior"}, "Senior"),
+        (normalize_lever, {"id": "l-exp", "text": "L", "experience_required": "5 years"}, "5 years"),
+        (normalize_greenhouse, {"id": "g-exp", "title": "G", "content": "Experience Level: Mid-level"}, "Mid-level"),
+        (normalize_workable, {"id": "w-exp", "title": "W"}, "Not specified"),
+    ],
+)
+def test_all_providers_supply_non_null_experience_level(normalizer, payload, expected):
+    job = normalizer(payload, "Acme")
+    assert job["experience_level"] == expected
+    assert _metadata_params(job)["experience_level"] == expected
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "payload"),
+    [
+        (normalize_ashby, {"id": "a-final", "title": None}),
+        (normalize_lever, {"id": "l-final", "text": None}),
+        (normalize_greenhouse, {"id": "g-final", "title": None}),
+        (normalize_workable, {"id": "w-final", "title": None}),
+    ],
+)
+def test_each_provider_final_insert_values_are_non_null_for_required_ats_contract(normalizer, payload):
+    # This is the final pre-SQL boundary, intentionally not merely normalizer output.
+    safe = _persistence_safe_job(normalizer(payload, "Acme"))
+    params = _metadata_params(safe)
+    assert all(safe[key] is not None for key in ("ats_type", "ats_job_id", "title", "company_name", "description"))
+    assert all(params[key] is not None for key in ("experience_level", "skills_required", "skills", "structured_data"))
+
+
+@pytest.mark.parametrize("normalizer", [normalize_ashby, normalize_lever, normalize_greenhouse, normalize_workable])
+def test_missing_provider_ids_are_rejected_instead_of_colliding_on_the_string_none(normalizer):
+    job = normalizer({}, "Acme")
+    assert job["ats_job_id"] == ""
+    with pytest.raises(ValueError, match="ats_job_id"):
+        asyncio.run(upsert_ats_job(_Session(), job))
+
+
+def test_final_persistence_boundary_coerces_missing_and_malformed_optional_data():
+    safe = _persistence_safe_job({
+        "ats_type": "ASHBY", "ats_job_id": 7, "company_name": "Acme", "title": None,
+        "description": None, "experience_level": None, "skills_required": None,
+        "skills": {"not": "a list"}, "structured_data": None, "created_at": "invalid",
+    })
+    assert safe["title"] == "Untitled ATS job"
+    assert safe["description"] == ""
+    assert safe["experience_level"] == "Not specified"
+    assert safe["skills_required"] == safe["skills"] == []
+    assert safe["structured_data"] == {} and safe["created_at"] is None
+
+
+def test_metadata_params_rejects_non_json_provider_metadata_before_database_binding():
+    with pytest.raises(ValueError, match="JSON-compatible"):
+        _metadata_params({"structured_data": {"bad": object()}})
+
+
+def test_eligible_normalized_job_insert_binds_non_null_skills_required(monkeypatch):
+    job = normalize_ashby({"id": "insert-safe", "title": "Engineer"}, "Acme")
+
+    class InsertResult:
+        def scalar_one(self): return "new-job"
+
+    class NewJobSession:
+        def __init__(self): self.insert_params = None
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT id, job_url, description" in sql:
+                return _Result()
+            if "FROM company_registry" in sql:
+                return _Result([("company-id",)])
+            if "INSERT INTO job_descriptions" in sql:
+                self.insert_params = params
+                return InsertResult()
+            raise AssertionError(f"Unexpected SQL: {sql}")
+        async def commit(self): pass
+
+    session = NewJobSession()
+    async def agency_id(*_): return "agency-id"
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", agency_id)
+
+    assert asyncio.run(upsert_ats_job(session, job)) == "new-job"
+    assert session.insert_params["skills_required"] == "[]"
+    assert session.insert_params["experience_level"] == "Not specified"
+    assert session.insert_params["title"] == "Engineer"
+    assert session.insert_params["description"] == ""
+    assert session.insert_params["structured_data"] == '{"source": "ashby"}'
 
 
 def test_candidate_jobs_serializes_normalized_metadata_without_changing_matching(monkeypatch):

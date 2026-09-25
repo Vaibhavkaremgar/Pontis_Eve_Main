@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ats_agency_service import get_or_create_ats_agency
-from app.job_ingestion.normalize import _valid_http_url, parse_ats_datetime
+from app.job_ingestion.normalize import UNKNOWN_EXPERIENCE_LEVEL, _valid_http_url, parse_ats_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,8 @@ async def upsert_ats_job(
         The job_descriptions.id UUID as a string.
     """
 
-    ats_type = (job.get("ats_type") or "").strip().lower()
+    job = _persistence_safe_job(job)
+    ats_type = job["ats_type"]
     ats_job_id = str(job.get("ats_job_id") or "").strip()
 
     if not ats_type:
@@ -66,10 +67,6 @@ async def upsert_ats_job(
             text("""
                 UPDATE job_descriptions
                 SET job_url = CASE WHEN :is_global_provider AND :job_url IS NOT NULL THEN :job_url ELSE COALESCE(job_url, :job_url) END,
-                    title = CASE WHEN :is_global_provider THEN COALESCE(:title, title) ELSE title END,
-                    company_name = CASE WHEN :is_global_provider THEN COALESCE(:company_name, company_name) ELSE company_name END,
-                    department = CASE WHEN :is_global_provider THEN COALESCE(:department, department) ELSE department END,
-                    location = CASE WHEN :is_global_provider THEN COALESCE(:location, location) ELSE location END,
                     description = CASE WHEN :refresh_description THEN :description ELSE description END,
                     employment_type = COALESCE(:employment_type, employment_type),
                     remote_policy = COALESCE(:remote_policy, remote_policy),
@@ -86,8 +83,6 @@ async def upsert_ats_job(
             """),
             {
                 "id": job_id, "job_url": incoming_job_url, "description": incoming_description,
-                "title": job.get("title"), "company_name": job.get("company_name"),
-                "department": job.get("department"), "location": job.get("location"),
                 "is_global_provider": ats_type == "fantastic",
                 "refresh_description": refresh_description, **_metadata_params(job),
             },
@@ -137,7 +132,7 @@ async def upsert_ats_job(
             LIMIT 1
         """),
             {
-                "company_name": job.get("company_name") or "",
+                "company_name": job["company_name"],
                 "ats_type": ats_type,
             },
         )
@@ -217,13 +212,13 @@ async def upsert_ats_job(
             RETURNING id
         """),
         {
-            "title": job.get("title"),
-            "company_name": job.get("company_name"),
+            "title": job["title"],
+            "company_name": job["company_name"],
             "department": job.get("department"),
             "location": job.get("location"),
             "employment_type": job.get("employment_type"),
             "salary_range": job.get("salary_range"),
-            "description": job.get("description"),
+            "description": job["description"],
             "agency_id": agency_id,
             "company_registry_id": company_registry_id,
             "ats_job_id": ats_job_id,
@@ -256,19 +251,65 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
     # Normalizers use [] for an ATS job whose skills cannot be stated from
     # provider metadata or the JD.  Keep this guard for older/direct callers
     # so a new ATS insert can never bind SQL NULL to the required JSON column.
-    skills_required = job.get("skills_required")
-    if skills_required is None:
-        skills_required = []
+    safe = _persistence_safe_job(job)
     return {
-        "employment_type": job.get("employment_type"),
-        "remote_policy": job.get("remote_policy"),
-        "experience_level": job.get("experience_level"),
-        "experience_required": job.get("experience_required"),
-        "salary_range": job.get("salary_range"),
-        "skills_required": json.dumps(skills_required),
-        "skills": json.dumps(job["skills"]) if job.get("skills") is not None else None,
-        "structured_data": json.dumps(job.get("structured_data") or {}),
+        "employment_type": safe.get("employment_type"),
+        "remote_policy": safe.get("remote_policy"),
+        "experience_level": safe["experience_level"],
+        "experience_required": safe.get("experience_required"),
+        "salary_range": safe.get("salary_range"),
+        "skills_required": json.dumps(safe["skills_required"]),
+        "skills": json.dumps(safe["skills"]),
+        "structured_data": json.dumps(safe["structured_data"]),
         # Defensive coercion also covers jobs normalized by older deployments
         # that stored ISO timestamps as strings.
-        "created_at": parse_ats_datetime(job.get("created_at")),
+        "created_at": parse_ats_datetime(safe.get("created_at")),
     }
+
+
+def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Enforce the ATS insert contract immediately before SQL binding.
+
+    Normalizers are intentionally permissive because public boards omit many
+    fields.  This is the single defensive boundary for normalizer upgrades,
+    old queued payloads, and direct callers; JSON values are serialized here,
+    not delegated to PostgreSQL's implicit casts.
+    """
+    if not isinstance(job, dict):
+        raise ValueError("ATS job must be a mapping")
+    safe = dict(job)
+    def text_value(key: str, fallback: str | None = None) -> str | None:
+        value = safe.get(key)
+        if value is None:
+            return fallback
+        value = str(value).strip()
+        return value or fallback
+    safe["ats_type"] = (text_value("ats_type") or "").lower()
+    safe["ats_job_id"] = text_value("ats_job_id") or ""
+    # These are core persisted text fields.  Empty description/title are an
+    # honest representation of an incomplete board response, unlike invented
+    # employment or seniority data.
+    safe["title"] = text_value("title", "Untitled ATS job")
+    safe["company_name"] = text_value("company_name", "Unknown company")
+    safe["description"] = text_value("description", "")
+    for key in ("department", "location", "employment_type", "remote_policy", "experience_required", "salary_range"):
+        safe[key] = text_value(key)
+    safe["experience_level"] = text_value("experience_level") or safe["experience_required"] or UNKNOWN_EXPERIENCE_LEVEL
+    for key in ("skills_required", "skills"):
+        value = safe.get(key)
+        if isinstance(value, str):
+            value = [part.strip() for part in value.replace(";", ",").split(",")]
+        safe[key] = [part.strip() for part in value if isinstance(part, str) and part.strip()] if isinstance(value, (list, tuple, set)) else []
+    structured = safe.get("structured_data")
+    if not isinstance(structured, (dict, list)):
+        structured = {}
+    try:
+        # Fail early with a clear per-job reason for unsupported metadata
+        # rather than letting asyncpg abort the company transaction.
+        json.dumps(structured)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"ATS structured_data is not JSON-compatible: {exc}") from exc
+    safe["structured_data"] = structured
+    safe["created_at"] = parse_ats_datetime(safe.get("created_at"))
+    safe["job_url"] = _valid_http_url(safe.get("job_url"))
+    return safe
