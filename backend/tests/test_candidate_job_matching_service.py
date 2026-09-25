@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import candidate_job_matching_service as matcher  # noqa: E402
 
+VOICE_INTAKE_COMPLETED = matcher.voice_intake_completed
+
 
 class FixedDateTime(datetime):
     @classmethod
@@ -111,6 +113,9 @@ class FakeSessionFactory:
 def fixed_datetime(monkeypatch):
     monkeypatch.setattr(matcher, "datetime", FixedDateTime)
     monkeypatch.setattr(matcher, "timezone", timezone)
+    # Existing matching tests exercise completed profiles; completion itself is
+    # covered explicitly below.
+    monkeypatch.setattr(matcher, "voice_intake_completed", lambda candidate: True)
 
 
 def test_candidate_total_experience_years_merges_overlaps_and_counts_present():
@@ -505,6 +510,41 @@ def test_refresh_preserves_active_database_filtering(monkeypatch):
     ))
 
     assert state["inserted"] == ["active"]
+
+
+def test_refresh_skips_resume_only_candidate_until_voice_intake_completes(monkeypatch):
+    state = {"jobs": {"java-job": {
+        "title": "Java Backend Developer",
+        "description": "Build Java APIs.",
+        "skills": ["Java"],
+    }}}
+    monkeypatch.setattr(matcher, "voice_intake_completed", lambda candidate: False)
+    monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java Backend Developer")
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: pytest.fail("matching must not embed resume-only profiles"))
+
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate", {"skills": ["Java"]}, FakeSessionFactory(state),
+    ))
+
+    assert "inserted" not in state
+
+    monkeypatch.setattr(matcher, "voice_intake_completed", VOICE_INTAKE_COMPLETED)
+    monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("java-job", .9)])
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+    asyncio.run(matcher.refresh_candidate_job_matches(
+        "candidate",
+        {"skills": ["Java"], "raw_data": {"voice_intake": {"status": "completed"}}},
+        FakeSessionFactory(state),
+    ))
+
+    assert state["inserted"] == ["java-job"]
+
+
+def test_voice_intake_completed_reads_existing_persisted_status():
+    assert VOICE_INTAKE_COMPLETED({"raw_data": {"voice_intake": {"status": "completed"}}})
+    assert not VOICE_INTAKE_COMPLETED({"raw_data": {"voice_intake": {"status": "in_progress"}}})
+    assert not VOICE_INTAKE_COMPLETED({"raw_data": {}})
 
 
 def _candidate_preferences(**overrides):

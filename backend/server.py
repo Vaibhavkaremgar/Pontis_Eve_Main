@@ -3305,6 +3305,12 @@ async def _trigger_matching(candidate_id: str) -> None:
         logger.warning("[matching] Failed for candidate %s: %s", candidate_id, e)
 
 
+def _voice_intake_completed_for_matching(candidate: dict) -> bool:
+    """Use the existing persisted Voice Intake status as the matching gate."""
+    from candidate_job_matching_service import voice_intake_completed
+    return voice_intake_completed(candidate)
+
+
 # ---------- Routes ----------
 
 @api_router.get("/")
@@ -5926,6 +5932,16 @@ async def chat(request: ChatRequest):
     job_context = ""
     if request.candidate_id and _is_job_search_request(last_user.content):
         try:
+            candidate_row = await _get_candidate_row(request.candidate_id)
+            if not _voice_intake_completed_for_matching(candidate_row):
+                job_context = (
+                    "\n\nPersonalized job recommendations are unavailable until "
+                    "you complete Voice Intake."
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Voice Intake must be completed before personalized recommendations are available.",
+                )
             # Check if this is a preference update + job search — refresh matching with new prefs
             if _is_preference_update_with_job_search(last_user.content):
                 new_roles = await _extract_preferred_roles_from_message(last_user.content)
@@ -5990,7 +6006,7 @@ async def chat(request: ChatRequest):
             job_context = "\n\nREAL JOB MATCHES FROM DATABASE:\n" + _format_jobs_for_context(jobs)
             logger.info("[chat] Injected %d real job matches for candidate %s", len(jobs), request.candidate_id)
         except HTTPException as e:
-            if e.status_code != 403:
+            if e.status_code not in (403, 409):
                 logger.warning("[chat] Job retrieval failed for candidate %s: %s", request.candidate_id, e)
                 job_context = "\n\nJob search attempted but no results could be retrieved at this time."
         except Exception as e:
@@ -8404,6 +8420,14 @@ async def _claim_daily_job_access(
 async def get_candidate_jobs(candidate_id: str, request_more: bool = False, response: Response = None):
     """Return semantic job recommendations for this candidate, joined with job_descriptions."""
     candidate = await _get_candidate_row(candidate_id)
+    if not _voice_intake_completed_for_matching(candidate):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "voice_intake_required",
+                "message": "Complete Voice Intake before personalized job recommendations are available.",
+            },
+        )
     if await _effective_profile_strength_percent(candidate_id, candidate) < 90:
         raise HTTPException(
             status_code=403,

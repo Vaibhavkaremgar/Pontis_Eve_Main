@@ -27,6 +27,32 @@ W_RELEVANT_HISTORY = 0.12
 W_PREFERENCES = 0.12
 W_SEMANTIC = 0.10
 
+
+def voice_intake_completed(candidate: Dict[str, Any]) -> bool:
+    """Return the persisted Voice Intake completion state for a candidate.
+
+    ``raw_data.voice_intake`` is the canonical profile snapshot written by the
+    existing intake flow.  Preferences alone are intentionally insufficient:
+    they can be populated by a resume, chat, or an in-progress intake and must
+    not start personalized recommendations.
+    """
+    raw_data = candidate.get("raw_data") or {}
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except Exception:
+            return False
+    if not isinstance(raw_data, dict):
+        return False
+    intake = raw_data.get("voice_intake") or {}
+    if isinstance(intake, str):
+        try:
+            intake = json.loads(intake)
+        except Exception:
+            return False
+    return isinstance(intake, dict) and str(intake.get("status") or "").lower() == "completed"
+
+
 # Evidence level weights for skill scoring (Phase 7/8)
 _EVIDENCE_WEIGHT = {
     0: 0.3,   # Unknown
@@ -990,6 +1016,10 @@ async def refresh_candidate_job_matches(
     Build candidate embedding, search Qdrant, re-rank with hybrid scoring,
     and upsert into candidate_job_recommendations.
     """
+    if not voice_intake_completed(candidate):
+        logger.info("[matching] Candidate %s has not completed Voice Intake — skipping", candidate_id)
+        return
+
     # Read target intent before retrieval; it is also reused by the existing
     # eligibility and hybrid ranking logic below.
     signals = _build_candidate_signals(candidate)
