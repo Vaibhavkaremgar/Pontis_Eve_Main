@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -13,7 +13,7 @@ from app.job_ingestion.scheduler import _log_fantastic_upsert_error
 def _record(**overrides):
     record = {"id": "fj-1", "organization": "Acme", "title": "Backend Engineer",
               "description_text": "Build APIs", "url": "https://jobs.example/fj-1",
-              "locations_derived": ["Bengaluru", "India"], "date_created": "2026-07-16T22:10:27+05:30",
+              "locations_derived": ["Bengaluru", "India"], "date_posted": "2020-07-16T22:10:27+05:30", "date_created": "2026-07-16T22:10:27+05:30",
               "ai_employment_type": "Full-time", "ai_experience_level": "Senior",
               "ai_requirements_summary": "5 years", "ai_work_arrangement": "Hybrid",
               "ai_key_skills": ["Python", "FastAPI"], "salary_range": "₹20L-₹30L",
@@ -27,14 +27,20 @@ def test_normalization_preserves_fields_and_binds_datetime():
     assert job["skills_required"] == ["Python", "FastAPI"] and job["employment_type"] == "Full-time"
     assert isinstance(job["created_at"], datetime)
     assert isinstance(_metadata_params(job)["created_at"], datetime)  # asyncpg regression guard
+    assert job["created_at"].year == 2020
     assert job["structured_data"]["source"] == "greenhouse"
 
 
 def test_normalization_falls_back_locations_and_rejects_bad_url():
     job = normalize_fantastic(_record(locations_derived=None, locations_alt="Remote", url="javascript:bad",
-                                     ai_key_skills="Python, SQL", date_created=None))
+                                     ai_key_skills="Python, SQL", date_posted=None))
     assert job["location"] == "Remote" and job["job_url"] is None
     assert job["skills_required"] == ["Python", "SQL"] and job["created_at"] is None
+
+
+def test_normalization_uses_source_date_posted_not_fantastic_record_created_at():
+    job = normalize_fantastic(_record(date_posted="2020-01-02T03:04:05Z", date_created="2026-01-02T03:04:05Z"))
+    assert job["created_at"] == datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
 def test_client_paginates_with_caps():

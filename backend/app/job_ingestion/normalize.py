@@ -133,7 +133,11 @@ def _lever_description(job: dict[str, Any]) -> str | None:
 
 def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("content")
-    meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=parse_ats_datetime(_first(job.get("created_at"), job.get("updated_at"))))
+    # Greenhouse's public board response supplies ``updated_at`` but no
+    # original posted/created timestamp.  It must not be treated as a posting
+    # date: leaving this as None lets persistence retain an existing source
+    # timestamp or use its established NOW() fallback for a new row.
+    meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=None)
     departments = job.get("departments") or []
     return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
 
@@ -146,7 +150,9 @@ def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("descriptionHtml"); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
     salary = _first(job.get("salaryRange"), job.get("salary_range"), compensation.get("summary"))
     if not salary and compensation.get("minValue") is not None and compensation.get("maxValue") is not None: salary = f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
-    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), experience_level=_first(job.get("experienceLevel"), job.get("experience_level"), job.get("seniority")), experience_required=job.get("experienceRequired"), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(_first(job.get("publishedAt"), job.get("createdAt"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
+    # ``publishedAt`` is Ashby's public posting timestamp.  Do not substitute
+    # other lifecycle timestamps when it is absent or malformed.
+    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), experience_level=_first(job.get("experienceLevel"), job.get("experience_level"), job.get("seniority")), experience_required=job.get("experienceRequired"), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(job.get("publishedAt")), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     department = job.get("department") if isinstance(job.get("department"), dict) else {}
     return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": department.get("name"), "location": job.get("location") if isinstance(job.get("location"), str) else None, "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
 
@@ -169,7 +175,10 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
         employment_type=_first(job.get("employment_type"), job.get("ai_employment_type")),
         experience_level=job.get("ai_experience_level"), experience_required=job.get("ai_requirements_summary"),
         remote_policy=job.get("ai_work_arrangement"), salary_range=salary, skills_required=skills,
-        created_at=parse_ats_datetime(job.get("date_created")))
+        # Fantastic preserves the source job's original publication time in
+        # ``date_posted``.  ``date_created`` is the Fantastic record's own
+        # creation time and must not replace the source posting timestamp.
+        created_at=parse_ats_datetime(job.get("date_posted")))
     useful = ("source", "source_type", "source_domain", "source_slug", "domain_derived", "date_posted",
               "date_created", "date_valid_through", "ai_employment_type", "ai_experience_level",
               "ai_requirements_summary", "ai_work_arrangement", "ai_key_skills")

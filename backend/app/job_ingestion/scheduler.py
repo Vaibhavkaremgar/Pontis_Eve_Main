@@ -294,6 +294,11 @@ def _ats_sync_trigger() -> CronTrigger:
     return CronTrigger(hour=SYNC_HOURS_IST, minute=0, second=0, timezone=IST)
 
 
+def _fantastic_sync_trigger() -> CronTrigger:
+    """Return the Fantastic sync schedule aligned with the ATS schedule in IST."""
+    return CronTrigger(hour=SYNC_HOURS_IST, minute=0, second=0, timezone=IST)
+
+
 def start_scheduler() -> None:
     """Start the APScheduler. Safe to call from FastAPI startup."""
     global _scheduler, _sync_lock
@@ -320,8 +325,7 @@ def start_scheduler() -> None:
     if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
         fantastic_job = _scheduler.add_job(
             _sync_fantastic_guarded,
-            trigger=CronTrigger(day_of_week=os.getenv("FANTASTIC_SCHEDULE_DAY_OF_WEEK", "sun"),
-                                hour=os.getenv("FANTASTIC_SCHEDULE_HOUR", "3"), minute=0, timezone=IST),
+            trigger=_fantastic_sync_trigger(),
             id="fantastic_job_sync", replace_existing=True,
         )
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)

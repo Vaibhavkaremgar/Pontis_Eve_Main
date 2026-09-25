@@ -58,14 +58,14 @@ def test_ats_dates_are_bind_safe_datetimes_and_preserve_offsets():
     jobs = [
         normalize_ashby({"id": "a", "title": "A", "publishedAt": "2026-07-16T22:10:27.434Z"}, "Acme"),
         normalize_lever({"id": "l", "text": "L", "createdAt": 1784248827434}, "Acme"),
-        normalize_greenhouse({"id": "g", "title": "G", "created_at": "2026-07-16T22:10:27.434000+05:30"}, "Acme"),
+        normalize_greenhouse({"id": "g", "title": "G", "updated_at": "2026-07-16T22:10:27.434000+05:30"}, "Acme"),
         normalize_workable({"id": "w", "title": "W", "published_on": "2026-07-16"}, "Acme"),
     ]
-    for job in jobs:
+    for job in (jobs[0], jobs[1], jobs[3]):
         assert isinstance(job["created_at"], datetime)
         assert job["created_at"].tzinfo is not None
         assert isinstance(_metadata_params(job)["created_at"], datetime)
-    assert jobs[2]["created_at"].utcoffset().total_seconds() == 19800
+    assert jobs[2]["created_at"] is None
     assert jobs[3]["created_at"] == datetime(2026, 7, 16, tzinfo=timezone.utc)
 
 
@@ -99,7 +99,7 @@ def test_ats_timestamp_parser_always_returns_a_bind_safe_datetime_or_none(value,
     [
         (normalize_ashby, {"id": "a", "title": "A", "publishedAt": "not-a-timestamp"}),
         (normalize_lever, {"id": "l", "text": "L", "createdAt": "not-a-timestamp"}),
-        (normalize_greenhouse, {"id": "g", "title": "G", "created_at": "not-a-timestamp"}),
+        (normalize_greenhouse, {"id": "g", "title": "G", "updated_at": "2026-01-02T12:00:00Z"}),
         (normalize_workable, {"id": "w", "title": "W", "published_on": "not-a-timestamp"}),
     ],
 )
@@ -107,6 +107,21 @@ def test_each_ats_source_drops_invalid_timestamps_before_persistence(normalizer,
     job = normalizer(payload, "Acme")
     assert job["created_at"] is None
     assert _metadata_params(job)["created_at"] is None
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "payload", "expected"),
+    [
+        (normalize_ashby, {"id": "a-original", "title": "A", "publishedAt": "2020-01-02T03:04:05Z", "createdAt": "2026-01-02T03:04:05Z"}, datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc)),
+        (normalize_lever, {"id": "l-original", "text": "L", "createdAt": 1577934245000}, datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc)),
+        (normalize_greenhouse, {"id": "g-original", "title": "G", "updated_at": "2026-01-02T03:04:05Z"}, None),
+    ],
+)
+def test_public_ats_original_posting_timestamps(normalizer, payload, expected):
+    """Only fields representing the job's original posting time reach persistence."""
+    job = normalizer(payload, "Acme")
+    assert job["created_at"] == expected
+    assert _metadata_params(job)["created_at"] == expected
 
 
 class _Result:

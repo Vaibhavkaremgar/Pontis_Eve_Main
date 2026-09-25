@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.job_ingestion.scheduler import IST, _ats_sync_trigger
+from app.job_ingestion.scheduler import IST, _ats_sync_trigger, _fantastic_sync_trigger
 
 
 def _next_run(startup_time: datetime) -> datetime:
@@ -42,4 +42,16 @@ def test_ats_sync_slots_are_exactly_six_hours_apart_in_ist():
 
     assert first_run == datetime(2026, 9, 24, 0, 0, tzinfo=IST)
     assert second_run == datetime(2026, 9, 24, 6, 0, tzinfo=IST)
+    assert second_run - first_run == timedelta(hours=6)
+
+
+def test_fantastic_sync_schedule_matches_the_six_hour_ats_slots_in_ist():
+    trigger = _fantastic_sync_trigger()
+    first_run = trigger.get_next_fire_time(None, datetime(2026, 9, 24, 0, 1, tzinfo=IST))
+    second_run = trigger.get_next_fire_time(first_run, first_run)
+
+    assert trigger.timezone == IST
+    assert trigger.fields[5].__str__() == "0,6,12,18"
+    assert first_run == datetime(2026, 9, 24, 6, 0, tzinfo=IST)
+    assert second_run == datetime(2026, 9, 24, 12, 0, tzinfo=IST)
     assert second_run - first_run == timedelta(hours=6)
