@@ -111,14 +111,18 @@ async def upsert_ats_job(
                 logger.error("Qdrant embedding upsert failed for reactivated job_id=%s: %s", job_id, exc)
         return str(job_id)
 
-    # Fantastic is a global provider: it intentionally has no company_registry
-    # row.  Its source agency remains useful for ownership/auditing.
+    # Fantastic is a global provider: it intentionally has neither a
+    # company_registry row nor a company-scoped ATS agency.  In particular,
+    # do not delegate it to get_or_create_ats_agency(), whose allow-list is
+    # intentionally limited to the company-scoped ATS integrations.
     is_global_provider = ats_type == "fantastic"
-    # Get the default system agency for this ATS.
-    agency_id = await get_or_create_ats_agency(
-        db,
-        ats_type,
-    )
+    agency_id = None
+    if not is_global_provider:
+        # Get the default system agency for this company-scoped ATS.
+        agency_id = await get_or_create_ats_agency(
+            db,
+            ats_type,
+        )
 
     # Resolve the active company_registry record only for company-scoped ATSs.
     cr_row = None

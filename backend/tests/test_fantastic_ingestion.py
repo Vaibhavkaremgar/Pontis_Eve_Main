@@ -56,7 +56,7 @@ def test_client_stops_on_provider_errors(status):
     with pytest.raises(FantasticAPIError): asyncio.run(run())
 
 
-def test_global_insert_does_not_query_or_create_company_registry(monkeypatch):
+def test_global_insert_bypasses_company_scoped_ats_validation(monkeypatch):
     class Result:
         def first(self): return None
         def scalar_one(self): return "new-id"
@@ -68,8 +68,12 @@ def test_global_insert_does_not_query_or_create_company_registry(monkeypatch):
             if "INSERT" in sql: self.insert = params
             return Result()
         async def commit(self): pass
-    async def agency(*_): return "fantastic-agency"
-    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", agency)
+    async def company_scoped_agency(*_):
+        raise AssertionError("Fantastic must not use company-scoped ATS agency validation")
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", company_scoped_agency)
     session = Session(); job = normalize_fantastic(_record()); job["job_url"] = None
     assert asyncio.run(upsert_ats_job(session, job)) == "new-id"
     assert session.insert["company_registry_id"] is None
+    assert session.insert["agency_id"] is None
+    assert session.insert["ats_type"] == "fantastic"
+    assert session.insert["ats_job_id"] == "fj-1"
