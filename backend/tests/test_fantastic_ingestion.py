@@ -7,6 +7,7 @@ import pytest
 from app.job_ingestion.connectors.fantastic import FantasticAPIError, FantasticClient, FantasticConfig
 from app.job_ingestion.normalize import normalize_fantastic
 from app.job_ingestion.job_ingestion_service import _metadata_params, upsert_ats_job
+from app.job_ingestion.scheduler import _log_fantastic_upsert_error
 
 
 def _record(**overrides):
@@ -77,3 +78,29 @@ def test_global_insert_bypasses_company_scoped_ats_validation(monkeypatch):
     assert session.insert["agency_id"] is None
     assert session.insert["ats_type"] == "fantastic"
     assert session.insert["ats_job_id"] == "fj-1"
+
+
+def test_fantastic_upsert_error_log_preserves_postgres_diagnostics(caplog):
+    """Regression guard for Railway logs: do not collapse asyncpg diagnostics."""
+    class UniqueViolationError(Exception):
+        sqlstate = "23505"
+        constraint_name = "uq_job_descriptions_ats_type_ats_job_id"
+        column_name = None
+
+        def __str__(self):
+            return "duplicate key value violates unique constraint"
+
+    with caplog.at_level("WARNING"):
+        _log_fantastic_upsert_error(
+            UniqueViolationError(),
+            {"ats_job_id": "fj-1", "title": "Backend Engineer", "structured_data": {"secret": "never logged"}},
+        )
+
+    message = caplog.messages[-1]
+    assert "exception_class=UniqueViolationError" in message
+    assert "exception_message=duplicate key value violates unique constraint" in message
+    assert "sqlstate=23505" in message
+    assert "constraint=uq_job_descriptions_ats_type_ats_job_id" in message
+    assert "column=None" in message
+    assert "id=fj-1" in message and "title='Backend Engineer'" in message
+    assert "never logged" not in message

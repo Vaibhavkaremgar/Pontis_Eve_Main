@@ -237,10 +237,44 @@ async def sync_fantastic_jobs() -> dict[str, int]:
                 stats["updated" if existing.first() else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1
-                logger.warning("[fantastic] job upsert failed id=%s: %s", job["ats_job_id"], exc)
+                _log_fantastic_upsert_error(exc, job)
                 await db.rollback()
     logger.info("[fantastic] sync completed fetched=%(fetched)d inserted=%(inserted)d updated=%(updated)d skipped=%(skipped)d failed=%(failed)d embedding=%(inserted)d", stats)
     return stats
+
+
+def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
+    """Log PostgreSQL diagnostics for one Fantastic row without raw payload data.
+
+    SQLAlchemy wraps asyncpg errors in ``DBAPIError``.  The driver exception is
+    normally available as ``.orig`` (or as a chained exception), where its
+    SQLSTATE and constraint/column diagnostics live.  Keep the record context
+    limited to its public identity fields; ``structured_data`` can contain the
+    provider's complete response and must never be logged here.
+    """
+    database_error = exc
+    seen: set[int] = set()
+    while database_error is not None and id(database_error) not in seen:
+        seen.add(id(database_error))
+        if any(hasattr(database_error, name) for name in ("sqlstate", "constraint_name", "column_name")):
+            break
+        database_error = (
+            getattr(database_error, "orig", None)
+            or getattr(database_error, "__cause__", None)
+            or getattr(database_error, "__context__", None)
+        )
+
+    logger.warning(
+        "[fantastic] job upsert failed id=%s title=%r exception_class=%s "
+        "exception_message=%s sqlstate=%s constraint=%s column=%s",
+        job.get("ats_job_id"),
+        job.get("title"),
+        type(database_error or exc).__name__,
+        str(database_error or exc),
+        getattr(database_error, "sqlstate", None),
+        getattr(database_error, "constraint_name", None),
+        getattr(database_error, "column_name", None),
+    )
 
 
 async def _sync_fantastic_guarded() -> None:
