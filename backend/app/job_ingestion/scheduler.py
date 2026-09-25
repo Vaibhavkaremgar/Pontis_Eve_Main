@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 PROGRESS_INTERVAL = 25
 MAX_LOGGED_JOB_FAILURES = 3
 IST = ZoneInfo("Asia/Kolkata")
-# Temporary production-test cadence: run on every IST clock hour.
-SYNC_HOURS_IST = "*"
+# Run at 00:00, 06:00, 12:00, and 18:00 IST.
+SYNC_HOURS_IST = "0,6,12,18"
 
 _scheduler: AsyncIOScheduler | None = None
 _sync_lock: asyncio.Lock | None = None
