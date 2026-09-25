@@ -282,6 +282,7 @@ def start_scheduler() -> None:
         id="job_sync",
         replace_existing=True,
     )
+    _scheduler.start()
     if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
         fantastic_job = _scheduler.add_job(
             _sync_fantastic_guarded,
@@ -290,7 +291,6 @@ def start_scheduler() -> None:
             id="fantastic_job_sync", replace_existing=True,
         )
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
-    _scheduler.start()
     next_run = job.next_run_time
     if next_run is not None:
         logger.info(
