@@ -1,11 +1,13 @@
 """Regression coverage for public ATS payload -> normalized job -> API fields."""
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unused:unused@localhost/unused")
 
-from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable
+from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable, parse_ats_datetime
 from app.job_ingestion.job_ingestion_service import _metadata_params, upsert_ats_job
 import server
 
@@ -39,6 +41,41 @@ def test_ats_dates_are_bind_safe_datetimes_and_preserve_offsets():
 def test_legacy_normalized_iso_date_is_coerced_before_database_binding():
     params = _metadata_params({"created_at": "2026-07-16T22:10:27.434000+00:00"})
     assert params["created_at"] == datetime(2026, 7, 16, 22, 10, 27, 434000, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-07-16T22:10:27.434000+00:00", datetime(2026, 7, 16, 22, 10, 27, 434000, tzinfo=timezone.utc)),
+        ("2026-07-16T22:10:27.434000-04:00", datetime.fromisoformat("2026-07-16T22:10:27.434000-04:00")),
+        ("2026-07-16T22:10:27.434Z", datetime(2026, 7, 16, 22, 10, 27, 434000, tzinfo=timezone.utc)),
+        ("2026-07-16", datetime(2026, 7, 16, tzinfo=timezone.utc)),
+        (date(2026, 7, 16), datetime(2026, 7, 16, tzinfo=timezone.utc)),
+        (datetime(2026, 7, 16, 12, tzinfo=timezone.utc), datetime(2026, 7, 16, 12, tzinfo=timezone.utc)),
+        ("not-a-timestamp", None),
+        (None, None),
+    ],
+)
+def test_ats_timestamp_parser_always_returns_a_bind_safe_datetime_or_none(value, expected):
+    parsed = parse_ats_datetime(value)
+    assert parsed == expected
+    assert parsed is None or isinstance(parsed, datetime)
+    assert _metadata_params({"created_at": value})["created_at"] == expected
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "payload"),
+    [
+        (normalize_ashby, {"id": "a", "title": "A", "publishedAt": "not-a-timestamp"}),
+        (normalize_lever, {"id": "l", "text": "L", "createdAt": "not-a-timestamp"}),
+        (normalize_greenhouse, {"id": "g", "title": "G", "created_at": "not-a-timestamp"}),
+        (normalize_workable, {"id": "w", "title": "W", "published_on": "not-a-timestamp"}),
+    ],
+)
+def test_each_ats_source_drops_invalid_timestamps_before_persistence(normalizer, payload):
+    job = normalizer(payload, "Acme")
+    assert job["created_at"] is None
+    assert _metadata_params(job)["created_at"] is None
 
 
 class _Result:

@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 logger = logging.getLogger(__name__)
 
 PROGRESS_INTERVAL = 25
+MAX_LOGGED_JOB_FAILURES = 3
 IST = ZoneInfo("Asia/Kolkata")
 # Temporary production-test cadence: run on every IST clock hour.
 SYNC_HOURS_IST = "*"
@@ -137,13 +138,13 @@ async def sync_jobs() -> None:
                     # A provider-wide schema failure can affect every job on
                     # a board.  Keep enough examples for diagnosis without
                     # exhausting Railway's log-rate allowance.
-                    if logged_failures < 10:
+                    if logged_failures < MAX_LOGGED_JOB_FAILURES:
                         logger.error(
                             "[job-scheduler] failed job id=%s title=%r for company=%s: %s",
                             job_ats_id, job.get("title"), company_name, exc,
                         )
                         logged_failures += 1
-                    elif logged_failures == 10:
+                    elif logged_failures == MAX_LOGGED_JOB_FAILURES:
                         logger.error(
                             "[job-scheduler] additional per-job failures for company=%s are suppressed",
                             company_name,

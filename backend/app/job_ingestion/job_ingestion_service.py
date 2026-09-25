@@ -1,29 +1,13 @@
 import json
 import logging
-from datetime import date, datetime, time, timezone
 from typing import Any
 
 from sqlalchemy import text
 
 from ats_agency_service import get_or_create_ats_agency
-from app.job_ingestion.normalize import _valid_http_url
+from app.job_ingestion.normalize import _valid_http_url, parse_ats_datetime
 
 logger = logging.getLogger(__name__)
-
-
-def _coerce_ats_datetime(value: Any) -> datetime | None:
-    """Convert normalized or legacy ATS date values to bind-safe UTC datetimes."""
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-    if isinstance(value, date):
-        return datetime.combine(value, time.min, tzinfo=timezone.utc)
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
-    return None
 
 
 async def upsert_ats_job(
@@ -91,7 +75,7 @@ async def upsert_ats_job(
                     skills_required = CASE WHEN :skills_required IS NOT NULL THEN CAST(:skills_required AS json) ELSE skills_required END,
                     skills = CASE WHEN :skills IS NOT NULL THEN CAST(:skills AS json) ELSE skills END,
                     structured_data = CASE WHEN :structured_data IS NOT NULL THEN CAST(:structured_data AS json) ELSE structured_data END,
-                    created_at = COALESCE(CAST(:created_at AS timestamptz), created_at),
+                    created_at = COALESCE(:created_at, created_at),
                     is_active = TRUE, status = 'active', job_status = 'active',
                     updated_at = NOW(), last_synced_at = NOW()
                 WHERE id = :id
@@ -194,7 +178,7 @@ async def upsert_ats_job(
                 :description,
                 TRUE,
                 'active',
-                COALESCE(CAST(:created_at AS timestamptz), NOW()),
+                COALESCE(:created_at, NOW()),
                 NOW(),
                 gen_random_uuid(),
                 :agency_id,
@@ -264,5 +248,5 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
         "structured_data": json.dumps(job.get("structured_data") or {}),
         # Defensive coercion also covers jobs normalized by older deployments
         # that stored ISO timestamps as strings.
-        "created_at": _coerce_ats_datetime(job.get("created_at")),
+        "created_at": parse_ats_datetime(job.get("created_at")),
     }

@@ -311,3 +311,44 @@ async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
 
     assert state.get("upsert_called") == 1
     assert state["company_registry_updated"] is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_continues_after_a_single_job_failure(monkeypatch):
+    state = {"rollback_count": 0, "company_registry_updated": False}
+
+    class Collector:
+        def collect_company_jobs(self, *_):
+            return [
+                {"ats_type": "ashby", "ats_job_id": "bad", "title": "Bad"},
+                {"ats_type": "ashby", "ats_job_id": "good", "title": "Good"},
+            ]
+
+    class Session(FakeSession):
+        async def execute(self, statement, params=None):
+            sql = " ".join(str(statement).lower().split())
+            if "from company_registry" in sql and "select id, company_name, ats_type, identifier" in sql:
+                return FakeResult([{"id": "company-1", "company_name": "Acme", "ats_type": "ashby", "identifier": "acme"}])
+            if "update company_registry" in sql:
+                state["company_registry_updated"] = True
+                return FakeResult()
+            raise AssertionError(f"Unexpected scheduler SQL: {sql}")
+
+        async def rollback(self):
+            state["rollback_count"] += 1
+
+    async def fake_upsert(_, job):
+        if job["ats_job_id"] == "bad":
+            raise ValueError("invalid timestamp")
+        state["good_job_upserted"] = True
+        return "good-id"
+
+    monkeypatch.setattr("app.job_ingestion.collect_jobs.JobCollector", lambda: Collector())
+    monkeypatch.setattr(scheduler, "_get_session_local", lambda: lambda: Session(state))
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.upsert_ats_job", fake_upsert)
+
+    await scheduler.sync_jobs()
+
+    assert state["good_job_upserted"] is True
+    assert state["rollback_count"] == 1
+    assert state["company_registry_updated"] is False

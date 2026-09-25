@@ -17,7 +17,7 @@ def _text(value: Any) -> str | None:
 def _first(*values: Any) -> Any:
     return next((v for v in values if v not in (None, "", [], {})), None)
 
-def _date(value: Any) -> datetime | None:
+def parse_ats_datetime(value: Any) -> datetime | None:
     """Return an UTC-aware datetime from public ATS date representations.
 
     PostgreSQL's asyncpg driver validates Python bind values before applying
@@ -29,13 +29,29 @@ def _date(value: Any) -> datetime | None:
     if isinstance(value, date):
         return datetime.combine(value, time.min, tzinfo=timezone.utc)
     if isinstance(value, (int, float)) and value > 946684800000:
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
-    if isinstance(value, str):
         try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
-        except ValueError: pass
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            # ``fromisoformat`` accepts offsets and fractional seconds.  Python
+            # versions before 3.11 do not consistently accept a trailing Z.
+            parsed = datetime.fromisoformat(
+                f"{raw[:-1]}+00:00" if raw.endswith(("Z", "z")) else raw
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     return None
+
+
+# Kept as a local compatibility alias for callers that imported the former
+# helper.  New code should use the explicit, shared parser above.
+_date = parse_ats_datetime
 
 def _html_text(value: Any) -> str:
     text = html.unescape(str(value or ""))
@@ -93,24 +109,24 @@ def _lever_description(job: dict[str, Any]) -> str | None:
 
 def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("content")
-    meta = _metadata(job, "greenhouse", description=description, remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=_date(_first(job.get("created_at"), job.get("updated_at"))))
+    meta = _metadata(job, "greenhouse", description=description, remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=parse_ats_datetime(_first(job.get("created_at"), job.get("updated_at"))))
     departments = job.get("departments") or []
     return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
 
 def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = _lever_description(job); categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
-    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=_date(_first(job.get("createdAt"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
+    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("descriptionHtml"); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
     salary = _first(job.get("salaryRange"), job.get("salary_range"), compensation.get("summary"))
     if not salary and compensation.get("minValue") is not None and compensation.get("maxValue") is not None: salary = f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
-    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=_date(_first(job.get("publishedAt"), job.get("createdAt"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
+    meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(_first(job.get("publishedAt"), job.get("createdAt"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     department = job.get("department") if isinstance(job.get("department"), dict) else {}
     return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": department.get("name"), "location": job.get("location") if isinstance(job.get("location"), str) else None, "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
 
 def normalize_workable(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("description"); location = job.get("location")
-    meta = _metadata(job, "workable", description=description, employment_type=job.get("employment_type"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type"), "Remote" if isinstance(location, dict) and location.get("telecommuting") else None), salary_range=_first(job.get("salary_range"), job.get("salary")), created_at=_date(_first(job.get("published_on"), job.get("published_at"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skills_required")))
+    meta = _metadata(job, "workable", description=description, employment_type=job.get("employment_type"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type"), "Remote" if isinstance(location, dict) and location.get("telecommuting") else None), salary_range=_first(job.get("salary_range"), job.get("salary")), created_at=parse_ats_datetime(_first(job.get("published_on"), job.get("published_at"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skills_required")))
     return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": job.get("department"), "location": location.get("city") if isinstance(location, dict) else location, "salary_range": meta.get("salary_range"), "job_url": job.get("url"), "ats_type": "workable", **meta}
