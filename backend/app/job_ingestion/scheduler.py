@@ -210,6 +210,46 @@ async def _sync_jobs_guarded() -> None:
         logger.info("[job-scheduler] Job sync completed")
 
 
+async def sync_fantastic_jobs() -> dict[str, int]:
+    """Sync Fantastic independently of company_registry and other ATS sources."""
+    from app.job_ingestion.connectors.fantastic import FantasticClient
+    from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    if os.getenv("FANTASTIC_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+    logger.info("[fantastic] starting sync")
+    try:
+        raw_jobs = await FantasticClient().fetch_active_ats()
+    except Exception as exc:
+        logger.error("[fantastic] sync fetch failed: %s", exc)
+        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 1}
+    from app.job_ingestion.normalize import normalize_fantastic
+    jobs = [normalize_fantastic(job) for job in raw_jobs]
+    stats = {"fetched": len(raw_jobs), "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+    logger.info("[fantastic] normalized %d jobs", len(jobs))
+    SessionLocal = _get_session_local()
+    async with SessionLocal() as db:
+        for job in jobs:
+            if not job["ats_job_id"] or not job["title"] or not job["job_url"]:
+                stats["skipped"] += 1; continue
+            try:
+                existing = await db.execute(text("SELECT id FROM job_descriptions WHERE ats_type='fantastic' AND ats_job_id=:ats_job_id LIMIT 1"), {"ats_job_id": job["ats_job_id"]})
+                await upsert_ats_job(db, job)
+                stats["updated" if existing.first() else "inserted"] += 1
+            except Exception as exc:
+                stats["failed"] += 1
+                logger.warning("[fantastic] job upsert failed id=%s: %s", job["ats_job_id"], exc)
+                await db.rollback()
+    logger.info("[fantastic] sync completed fetched=%(fetched)d inserted=%(inserted)d updated=%(updated)d skipped=%(skipped)d failed=%(failed)d embedding=%(inserted)d", stats)
+    return stats
+
+
+async def _sync_fantastic_guarded() -> None:
+    try:
+        await sync_fantastic_jobs()
+    except Exception:
+        logger.exception("[fantastic] unexpected scheduled sync failure")
+
+
 def _apscheduler_listener(event) -> None:
     if event.exception:
         logger.error("[job-scheduler] scheduled run raised an exception: %s", event.exception)
@@ -242,6 +282,14 @@ def start_scheduler() -> None:
         id="job_sync",
         replace_existing=True,
     )
+    if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        fantastic_job = _scheduler.add_job(
+            _sync_fantastic_guarded,
+            trigger=CronTrigger(day_of_week=os.getenv("FANTASTIC_SCHEDULE_DAY_OF_WEEK", "sun"),
+                                hour=os.getenv("FANTASTIC_SCHEDULE_HOUR", "3"), minute=0, timezone=IST),
+            id="fantastic_job_sync", replace_existing=True,
+        )
+        logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
     _scheduler.start()
     next_run = job.next_run_time
     if next_run is not None:

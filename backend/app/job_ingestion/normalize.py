@@ -79,6 +79,12 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     evidence = _jd_evidence(description)
     metadata_keys = ("employment_type", "remote_policy", "experience_level", "experience_required", "salary_range", "skills_required", "created_at")
     result = {key: _first(explicit.get(key), evidence.get(key)) for key in metadata_keys}
+    # ``skills_required`` is a required JSON column.  Preserve explicitly
+    # supplied ATS skills first, then the conservative labelled-JD extraction,
+    # and represent a genuinely unknown skill set as an empty JSON list rather
+    # than SQL NULL.  This is intentionally not a guessed skill list.
+    if result["skills_required"] is None:
+        result["skills_required"] = []
     result["skills"] = result.get("skills_required")
     categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
     source_data = {k: v for k, v in {
@@ -130,3 +136,28 @@ def normalize_workable(job: dict[str, Any], company_name: str) -> dict[str, Any]
     description = job.get("description"); location = job.get("location")
     meta = _metadata(job, "workable", description=description, employment_type=job.get("employment_type"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type"), "Remote" if isinstance(location, dict) and location.get("telecommuting") else None), salary_range=_first(job.get("salary_range"), job.get("salary")), created_at=parse_ats_datetime(_first(job.get("published_on"), job.get("published_at"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skills_required")))
     return {"ats_job_id": str(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": job.get("department"), "location": location.get("city") if isinstance(location, dict) else location, "salary_range": meta.get("salary_range"), "job_url": job.get("url"), "ats_type": "workable", **meta}
+
+def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a global Fantastic record without inventing a registry company."""
+    locations = _first(job.get("locations_derived"), job.get("locations_alt"))
+    if isinstance(locations, (list, tuple)):
+        locations = ", ".join(str(item) for item in locations if item)
+    skills = job.get("ai_key_skills")
+    if isinstance(skills, str):
+        skills = [part.strip() for part in re.split(r"[,;/|]", skills) if part.strip()]
+    salary = _first(job.get("salary_range"), job.get("salary"), job.get("ai_salary_range"))
+    description = _first(job.get("description_text"), job.get("description"))
+    meta = _metadata(job, "fantastic", description=description,
+        employment_type=_first(job.get("employment_type"), job.get("ai_employment_type")),
+        experience_level=job.get("ai_experience_level"), experience_required=job.get("ai_requirements_summary"),
+        remote_policy=job.get("ai_work_arrangement"), salary_range=salary, skills_required=skills,
+        created_at=parse_ats_datetime(job.get("date_created")))
+    useful = ("source", "source_type", "source_domain", "source_slug", "domain_derived", "date_posted",
+              "date_created", "date_valid_through", "ai_employment_type", "ai_experience_level",
+              "ai_requirements_summary", "ai_work_arrangement", "ai_key_skills")
+    meta["structured_data"].update({key: job[key] for key in useful if job.get(key) not in (None, "", [], {})})
+    meta["structured_data"]["fantastic"] = {key: value for key, value in job.items() if key not in {"description_text", "description"}}
+    return {"ats_job_id": str(job.get("id") or "").strip(), "ats_type": "fantastic",
+            "company_name": _text(job.get("organization")) or _text(job.get("organization_name")) or "Unknown organization",
+            "title": _text(job.get("title")), "description": description, "department": _text(job.get("department")),
+            "location": locations, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}

@@ -65,7 +65,11 @@ async def upsert_ats_job(
         await db.execute(
             text("""
                 UPDATE job_descriptions
-                SET job_url = COALESCE(job_url, :job_url),
+                SET job_url = CASE WHEN :is_global_provider AND :job_url IS NOT NULL THEN :job_url ELSE COALESCE(job_url, :job_url) END,
+                    title = CASE WHEN :is_global_provider THEN COALESCE(:title, title) ELSE title END,
+                    company_name = CASE WHEN :is_global_provider THEN COALESCE(:company_name, company_name) ELSE company_name END,
+                    department = CASE WHEN :is_global_provider THEN COALESCE(:department, department) ELSE department END,
+                    location = CASE WHEN :is_global_provider THEN COALESCE(:location, location) ELSE location END,
                     description = CASE WHEN :refresh_description THEN :description ELSE description END,
                     employment_type = COALESCE(:employment_type, employment_type),
                     remote_policy = COALESCE(:remote_policy, remote_policy),
@@ -82,6 +86,9 @@ async def upsert_ats_job(
             """),
             {
                 "id": job_id, "job_url": incoming_job_url, "description": incoming_description,
+                "title": job.get("title"), "company_name": job.get("company_name"),
+                "department": job.get("department"), "location": job.get("location"),
+                "is_global_provider": ats_type == "fantastic",
                 "refresh_description": refresh_description, **_metadata_params(job),
             },
         )
@@ -104,15 +111,20 @@ async def upsert_ats_job(
                 logger.error("Qdrant embedding upsert failed for reactivated job_id=%s: %s", job_id, exc)
         return str(job_id)
 
+    # Fantastic is a global provider: it intentionally has no company_registry
+    # row.  Its source agency remains useful for ownership/auditing.
+    is_global_provider = ats_type == "fantastic"
     # Get the default system agency for this ATS.
     agency_id = await get_or_create_ats_agency(
         db,
         ats_type,
     )
 
-    # Resolve the active company_registry record.
-    cr_result = await db.execute(
-        text("""
+    # Resolve the active company_registry record only for company-scoped ATSs.
+    cr_row = None
+    if not is_global_provider:
+        cr_result = await db.execute(
+            text("""
             SELECT id
             FROM company_registry
             WHERE LOWER(company_name) = LOWER(:company_name)
@@ -120,18 +132,18 @@ async def upsert_ats_job(
               AND is_active = TRUE
             LIMIT 1
         """),
-        {
-            "company_name": job.get("company_name") or "",
-            "ats_type": ats_type,
-        },
-    )
-    cr_row = cr_result.first()
-    if cr_row is None:
+            {
+                "company_name": job.get("company_name") or "",
+                "ats_type": ats_type,
+            },
+        )
+        cr_row = cr_result.first()
+    if cr_row is None and not is_global_provider:
         raise ValueError(
             f"No active company_registry record found for "
             f"company_name={job.get('company_name')!r}, ats_type={ats_type!r}"
         )
-    company_registry_id = cr_row[0]
+    company_registry_id = cr_row[0] if cr_row is not None else None
 
     # New ATS job.
     result = await db.execute(
@@ -237,13 +249,19 @@ async def upsert_ats_job(
 
 def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
     """Serialize optional normalized JSON consistently for PostgreSQL binds."""
+    # Normalizers use [] for an ATS job whose skills cannot be stated from
+    # provider metadata or the JD.  Keep this guard for older/direct callers
+    # so a new ATS insert can never bind SQL NULL to the required JSON column.
+    skills_required = job.get("skills_required")
+    if skills_required is None:
+        skills_required = []
     return {
         "employment_type": job.get("employment_type"),
         "remote_policy": job.get("remote_policy"),
         "experience_level": job.get("experience_level"),
         "experience_required": job.get("experience_required"),
         "salary_range": job.get("salary_range"),
-        "skills_required": json.dumps(job["skills_required"]) if job.get("skills_required") is not None else None,
+        "skills_required": json.dumps(skills_required),
         "skills": json.dumps(job["skills"]) if job.get("skills") is not None else None,
         "structured_data": json.dumps(job.get("structured_data") or {}),
         # Defensive coercion also covers jobs normalized by older deployments
