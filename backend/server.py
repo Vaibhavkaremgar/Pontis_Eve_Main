@@ -3145,7 +3145,15 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 }
             )
             existing_raw_data["projects"] = _merge_projects(
-                existing_raw_data.get("projects"), parsed.get("projects")
+                existing_raw_data.get("projects"),
+                [*(parsed.get("projects") or []), *_projects_explicitly_named_in_work_experience(parsed.get("work_experience"))],
+            )
+            resume_evidence_text = "\n".join(
+                _normalize_profile_text(item.get("description") or item.get("summary"))
+                for item in (parsed.get("work_experience") or []) if isinstance(item, dict)
+            )
+            existing_raw_data = _append_demonstrated_skill_evidence(
+                existing_raw_data, normalized_skills, resume_evidence_text, "resume"
             )
 
             # UPDATE existing candidate — merge resume into existing profile.
@@ -3256,10 +3264,13 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "exp_years": parsed.get("experience_years"),
                     "resume_file_path": stored_name,
                     "resume_text": resume_text,
-                    "raw_data": json.dumps({
+                    "raw_data": json.dumps(_append_demonstrated_skill_evidence({
                         "certifications": _candidate_certification_sources({"parsed_resume_json": parsed}),
-                        "projects": _normalize_projects(parsed.get("projects")),
-                    }),
+                        "projects": _merge_projects(parsed.get("projects"), _projects_explicitly_named_in_work_experience(parsed.get("work_experience"))),
+                    }, normalized_skills, "\n".join(
+                        _normalize_profile_text(item.get("description") or item.get("summary"))
+                        for item in (parsed.get("work_experience") or []) if isinstance(item, dict)
+                    ), "resume")),
                     "parsed_resume_json": json.dumps(parsed),
                     "parsed_resume_text": resume_text,
                 },
@@ -4421,7 +4432,16 @@ def _sanitize_profile_updates(updates: dict) -> dict:
                 continue
             clean_items = _sanitize_structured_list_items(value)
             if clean_items:
-                sanitized[field] = clean_items
+                if field == "skills":
+                    clean_items = _normalize_skills(clean_items)
+                elif field == "certifications":
+                    clean_items = _normalize_certifications(clean_items)
+                if clean_items:
+                    sanitized[field] = clean_items
+        elif field == "projects":
+            projects = _normalize_projects(value)
+            if projects:
+                sanitized[field] = projects
         elif field == "work_experience":
             if not isinstance(value, list):
                 continue
@@ -5441,7 +5461,7 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
 
 
 _EXPLICIT_SKILL_USAGE = re.compile(
-    r"\b(?:i\s+(?:personally\s+)?(?:used|use|built|developed|implemented|created|wrote|worked\s+with)|"
+    r"\b(?:(?:i\s+(?:personally\s+)?)?(?:used|use|built|developed|implemented|created|wrote|worked\s+with)|"
     r"my\s+(?:work|role|project)\s+(?:used|uses|involved))\b",
     re.IGNORECASE,
 )
@@ -5450,16 +5470,19 @@ _EXPLICIT_SKILL_USAGE = re.compile(
 def _existing_skills_explicitly_used(existing_skills: Any, statement: Any) -> list[str]:
     """Return existing skills named in a candidate's explicit usage statement.
 
-    This intentionally does not infer use from a technology list or project
-    description.  It also never returns a skill that was not already on the
-    profile at the start of the interaction.
+    It accepts profile skills plus recognised technologies actually named in a
+    direct-use statement. A mere skills list never passes the usage gate.
     """
     text_value = _normalize_profile_text(statement)
     if not text_value or not _EXPLICIT_SKILL_USAGE.search(text_value):
         return []
     supported: list[str] = []
     seen: set[str] = set()
-    for skill in existing_skills if isinstance(existing_skills, list) else []:
+    available = _normalize_skills(existing_skills or [])
+    for alias, canonical in _CONCATENATED_SKILL_ALIASES:
+        if re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", text_value, re.I):
+            available.append(canonical)
+    for skill in _normalize_skills(available):
         name = _normalize_profile_text(skill)
         key = _normalize_profile_key(name)
         if not name or not key or key in seen:
@@ -5471,7 +5494,7 @@ def _existing_skills_explicitly_used(existing_skills: Any, statement: Any) -> li
 
 
 def _append_demonstrated_skill_evidence(raw_data: dict, existing_skills: Any, statement: Any, source: str) -> dict:
-    """Add idempotent direct-usage provenance, retaining only existing skills."""
+    """Add idempotent, direct-use evidence; never elevate a bare claim."""
     supported = _existing_skills_explicitly_used(existing_skills, statement)
     if not supported:
         return raw_data
@@ -5682,6 +5705,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             existing_certs = _candidate_certification_sources(existing)
             if merged_certs != existing_certs:
                 existing_raw["certifications"] = merged_certs
+                raw_data_changed = True
+        elif field == "projects":
+            merged_projects = _merge_projects(existing_raw.get("projects"), value)
+            if merged_projects != _normalize_projects(existing_raw.get("projects")):
+                existing_raw["projects"] = merged_projects
                 raw_data_changed = True
         elif field in ("availability", "notice_period"):
             if not isinstance(value, str):
@@ -5959,6 +5987,23 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             candidate_id,
             preference_payload,
         )
+
+    # A successful response is contingent on a fresh canonical read after the
+    # database write, not merely on commit completing without an exception.
+    if persisted or has_preference_payload:
+        confirmed = await _get_candidate_row(candidate_id)
+        if not confirmed:
+            return {"updated": False, "deleted": {}, "not_found": not_found_deletions}
+        if "skills" in params:
+            confirmed_skills = _normalize_skills(confirmed.get("skills") or [])
+            if not all(skill in confirmed_skills for skill in _normalize_skills(safe.get("skills") or [])):
+                return {"updated": False, "deleted": {}, "not_found": not_found_deletions}
+        if "raw_data" in params and safe.get("projects"):
+            confirmed_raw = _parse_raw_data(confirmed.get("raw_data"))
+            confirmed_titles = {_normalize_profile_key(p.get("project_name") or p.get("title")) for p in _normalize_projects(confirmed_raw.get("projects"))}
+            expected_titles = {_normalize_profile_key(p.get("project_name") or p.get("title")) for p in _normalize_projects(safe["projects"])}
+            if not expected_titles.issubset(confirmed_titles):
+                return {"updated": False, "deleted": {}, "not_found": not_found_deletions}
 
     return {
         "updated": persisted or has_preference_payload,
@@ -6654,6 +6699,20 @@ def _looks_like_certification(value: Any) -> bool:
     )
 
 
+def _is_actual_certification(value: Any) -> bool:
+    """Reject narrative claims while preserving concise named credentials."""
+    cleaned = _normalize_profile_text(value)
+    if not cleaned or len(cleaned) > 140 or len(cleaned.split()) > 16:
+        return False
+    if re.search(r"\b(?:i|i've|i have|my|been|am|was|learning|strengthening|studying|skills?)\b", cleaned, re.I):
+        return False
+    # Credentials normally carry a cert marker, a recognised designation, or
+    # a vendor credential name.  This prevents prose from becoming a cert.
+    return bool(_looks_like_certification(cleaned) or re.search(
+        r"\b(?:pmp|cissp|scrum master|aws|azure|google cloud|oracle|salesforce|comptia)\b", cleaned, re.I
+    ))
+
+
 def _normalize_certifications(certifications: Any) -> list[str]:
     if not isinstance(certifications, list):
         return []
@@ -6666,6 +6725,8 @@ def _normalize_certifications(certifications: Any) -> list[str]:
             continue
         # Drop bare conversational filler words (e.g. "any", "yes", "some")
         if cleaned.lower() in _CONVERSATIONAL_FILLER_WORDS:
+            continue
+        if not _is_actual_certification(cleaned):
             continue
         strict_key = _normalize_profile_key(cleaned)
         relaxed_key = _certification_relaxed_key(cleaned)
@@ -6733,7 +6794,7 @@ _CONCATENATED_SKILL_ALIASES = (
     ("Kubernetes", "Kubernetes"), ("FastAPI", "FastAPI"), ("Spring Boot", "Spring Boot"), ("REST APIs", "REST APIs"),
     ("GraphQL", "GraphQL"), ("Next.js", "Next.js"), ("HTML5", "HTML5"),
     ("Express.js", "Express.js"), ("ExpressJS", "Express.js"), ("Flask", "Flask"), ("CSS3", "CSS3"),
-    ("Docker", "Docker"),
+    ("Docker", "Docker"), ("Hibernate", "Hibernate"), ("Qdrant", "Qdrant"),
     ("Angular", "Angular"), ("Vue.js", "Vue.js"), ("Python", "Python"), ("Java", "Java"),
     ("SQL", "SQL"), ("C++", "C++"), ("C#", "C#"), ("AWS", "AWS"), ("Azure", "Azure"),
 )
@@ -6800,6 +6861,26 @@ def _split_skill_value(value: Any) -> list[str]:
     return _split_legacy_technical_boundaries(text_value)
 
 
+_SKILL_PROSE_PATTERN = re.compile(
+    r"\b(?:i|i'm|im|my|looking|seek(?:ing)?|want|prefer|interested|role|roles|"
+    r"worked|built|developed|implemented|learn(?:ing|ed)?|strengthen(?:ing|ed)?|"
+    r"experience|responsible|responsibilities)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_real_skill_value(value: Any) -> bool:
+    """Accept a compact skill/technology label, never a candidate sentence."""
+    cleaned = _normalize_profile_text(value)
+    if not cleaned or len(cleaned) > 80 or _SKILL_PROSE_PATTERN.search(cleaned):
+        return False
+    if cleaned.casefold() in _CONCATENATED_SKILL_CANONICAL:
+        return True
+    # Retain compact, explicitly supplied labels (including transferable skills)
+    # while rejecting sentence-like fragments and accidental concatenations.
+    return len(cleaned.split()) <= 5 and not re.search(r"[.!?]|\b(?:and|with|for)\b.*\b(?:and|with|for)\b", cleaned, re.I)
+
+
 def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
     if not isinstance(skills, (list, tuple, set, str, dict)):
         return []
@@ -6815,6 +6896,12 @@ def _normalize_skills(skills: Any, certifications: Any = None) -> list[str]:
         # Apply the same canonical aliases to individually supplied values as
         # to values split from a legacy concatenated string.
         cleaned = _CONCATENATED_SKILL_CANONICAL.get(cleaned.casefold(), cleaned)
+
+        # A skills field is evidence, not a transcript.  Do not retain career
+        # preferences, task sentences, or malformed prose from legacy parsers.
+        # Known aliases remain accepted even when they contain more than a word.
+        if not _is_real_skill_value(cleaned):
+            continue
 
         key = _normalize_profile_key(cleaned)
         if key in seen:
@@ -7155,10 +7242,19 @@ def _normalize_projects(items: Any) -> list[dict]:
     for item in items:
         if isinstance(item, str):
             title = _normalize_profile_text(item)
-            record = {"title": title} if title else {}
+            record = {"project_name": title, "title": title} if title else {}
         elif isinstance(item, dict):
             title = _normalize_profile_text(item.get("title") or item.get("name") or item.get("project_name"))
-            description = _normalize_profile_text(item.get("description") or item.get("summary") or item.get("responsibilities"))
+            role = _normalize_profile_text(item.get("role"))
+            description = _normalize_profile_text(item.get("description") or item.get("summary"))
+            responsibilities = item.get("responsibilities")
+            if isinstance(responsibilities, str):
+                responsibilities = [responsibilities]
+            responsibilities = [_normalize_profile_text(v) for v in responsibilities or [] if _normalize_profile_text(v)]
+            outcomes = item.get("outcomes") or item.get("outcome") or []
+            if isinstance(outcomes, str):
+                outcomes = [outcomes]
+            outcomes = [_normalize_profile_text(v) for v in outcomes if _normalize_profile_text(v)]
             technologies = item.get("technologies") or item.get("skills") or []
             if isinstance(technologies, str):
                 technologies = [technologies]
@@ -7166,25 +7262,31 @@ def _normalize_projects(items: Any) -> list[dict]:
                 _normalize_profile_text(value) for value in technologies
                 if _normalize_profile_text(value)
             ] if isinstance(technologies, list) else []
-            record = {"title": title} if title else {}
+            record = {"project_name": title, "title": title} if title else {}
+            if role:
+                record["role"] = role
             if description:
                 record["description"] = description
+            if responsibilities:
+                record["responsibilities"] = list(dict.fromkeys(responsibilities))
+            if outcomes:
+                record["outcomes"] = list(dict.fromkeys(outcomes))
             if technologies:
-                record["technologies"] = list(dict.fromkeys(technologies))
+                record["technologies"] = _normalize_skills(technologies)
         else:
             continue
-        title = record.get("title", "")
+        title = record.get("project_name", "")
         if not title:
             continue
         key = _normalize_profile_key(title)
         if key in seen:
             existing = next(p for p in normalized if _normalize_profile_key(p.get("title")) == key)
-            if not existing.get("description") and record.get("description"):
-                existing["description"] = record["description"]
-            existing_tech = existing.get("technologies") or []
-            incoming_tech = record.get("technologies") or []
-            if incoming_tech:
-                existing["technologies"] = list(dict.fromkeys([*existing_tech, *incoming_tech]))
+            for field in ("role", "description"):
+                if not existing.get(field) and record.get(field):
+                    existing[field] = record[field]
+            for field in ("technologies", "responsibilities", "outcomes"):
+                if record.get(field):
+                    existing[field] = list(dict.fromkeys([*(existing.get(field) or []), *record[field]]))
             continue
         seen.add(key)
         normalized.append(record)
@@ -7194,6 +7296,35 @@ def _normalize_projects(items: Any) -> list[dict]:
 def _merge_projects(existing: Any, incoming: Any) -> list[dict]:
     """Merge candidate-provided project records without duplicating titles."""
     return _normalize_projects([*_normalize_projects(existing), *_normalize_projects(incoming)])
+
+
+def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
+    """Promote only explicitly named projects embedded in a work record.
+
+    A generic responsibility remains work experience.  This deliberately
+    requires ``Project: Name`` / ``project named Name`` so no project identity
+    is invented from a task description.
+    """
+    projects: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        description = _normalize_profile_text(item.get("description") or item.get("summary") or "")
+        match = re.search(r"\bproject\s*(?::\s*|named\s+)([\w][\w ._/#&\-]{1,80})", description, re.I)
+        if not match:
+            continue
+        name = match.group(1).strip(" .;:-")
+        # Stop before an ordinary sentence clause while retaining meaningful
+        # product names such as "Order Management API".
+        name = re.split(r"\s+(?:where|which|that|using|with|and\s+(?:i|we)\b)", name, maxsplit=1, flags=re.I)[0].strip()
+        if not name:
+            continue
+        technologies = [canonical for alias, canonical in _CONCATENATED_SKILL_ALIASES
+                        if re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", description, re.I)]
+        record = {"project_name": name, "role": _normalize_profile_text(item.get("title") or item.get("role")),
+                  "description": description, "responsibilities": [description], "technologies": technologies}
+        projects.append(record)
+    return _normalize_projects(projects)
 
 
 def _merge_education(existing: list, new_items: list) -> list:
@@ -7541,9 +7672,10 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     )
     if voice.get("additional_information"):
         raw_data["additional_information"] = voice["additional_information"]
-    if raw_data.get("projects") or voice.get("projects"):
+    if raw_data.get("projects") or voice.get("projects") or _projects_explicitly_named_in_work_experience(voice.get("work_experience")):
         raw_data["projects"] = _merge_projects(
-            raw_data.get("projects"), voice.get("projects")
+            raw_data.get("projects"),
+            [*(voice.get("projects") or []), *_projects_explicitly_named_in_work_experience(voice.get("work_experience"))],
         )
 
     # Merge lists after raw_data is normalized so certifications can be excluded
