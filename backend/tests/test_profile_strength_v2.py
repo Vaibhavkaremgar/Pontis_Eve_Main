@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from profile_strength_service import (
+    build_profile_strength_diagnostic,
     calculate_profile_strength_v2,
     calculate_profile_strength_compat,
     get_voice_intake_state,
@@ -96,6 +97,19 @@ def test_ninety_percent_guidance_is_derived_from_the_canonical_score_result():
     assert guidance["remaining_percent_to_90"] == max(0, 90 - result["percent"])
     assert guidance["items"]
     assert all({"title", "action", "section"} <= item.keys() for item in guidance["items"])
+
+
+def test_profile_strength_diagnostic_reports_existing_calculation_without_changing_it():
+    candidate = _with_prefs(_with_voice(_with_resume(), topics=["skills_technologies", "responsibilities_projects"]), roles=["Backend Engineer"])
+    original = calculate_profile_strength_v2(candidate)
+    diagnostic = build_profile_strength_diagnostic(candidate)
+
+    assert diagnostic["calculator_result"]["percent"] == original["percent"]
+    assert diagnostic["skills_capability"]["score"] == original["dimensions"]["skills_capability"]["score"]
+    assert diagnostic["evidence_dimension"]["score"] == original["dimensions"]["evidence"]["score"]
+    assert diagnostic["career_readiness"]["score"] == original["dimensions"]["career_readiness"]["score"]
+    assert diagnostic["final_calculation"] == original["calculation"]
+    assert diagnostic["evidence_dimension"]["responsibilities_projects_from_voice"] is True
 
 
 # ---------------------------------------------------------------------------

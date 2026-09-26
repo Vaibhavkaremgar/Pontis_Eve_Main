@@ -294,6 +294,29 @@ def _completed_assessment_scores(candidate: dict) -> tuple[Optional[float], Opti
 # Phase 1 — Item-level provenance / evidence model
 # ---------------------------------------------------------------------------
 
+_HANDS_ON_SKILLS = (("REST APIs", r"\bREST\s+APIs?\b"), ("Python", r"\bPython\b"), ("FastAPI", r"\bFastAPI\b"), ("Redis", r"\bRedis\b"), ("PostgreSQL", r"\bPostgreSQL\b"), ("MySQL", r"\bMySQL\b"), ("Embeddings", r"\bembeddings?\b"), ("Qdrant", r"\bQdrant\b"), ("Semantic Search", r"\bsemantic\s+(?:job\s+)?matching\b"), ("Asterisk", r"\bAsterisk\b"), ("PHP", r"\bPHP\b"), ("AGI", r"\bAGI\b"), ("CRM", r"\bCRM\b"))
+
+
+def _backfill_demonstrated_skill_evidence(candidate: dict, raw: dict) -> dict:
+    """Idempotently derive evidence records from existing hands-on text."""
+    result = dict(raw or {})
+    records = [r for r in (result.get("demonstrated_skill_evidence") or []) if isinstance(r, dict)]
+    skills = {str(s).strip().casefold(): str(s).strip() for s in (candidate.get("skills") or []) if str(s).strip()}
+    texts = []
+    for item in candidate.get("work_experience") or []:
+        if isinstance(item, dict):
+            texts.extend(str(item.get(k) or "") for k in ("description", "responsibilities", "summary"))
+    for item in result.get("projects") or []:
+        if isinstance(item, dict):
+            texts.extend(str(item.get(k) or "") for k in ("description", "responsibilities", "summary"))
+    text_value = " ".join(texts)
+    found = [skills[name.casefold()] for name, pattern in _HANDS_ON_SKILLS if name.casefold() in skills and re.search(pattern, text_value, re.I)]
+    if found and not any(r.get("source") == "resume_work_experience" and r.get("skills") == found for r in records):
+        records.append({"source": "resume_work_experience", "statement": text_value[:4000], "skills": found})
+    result["demonstrated_skill_evidence"] = records
+    return result
+
+
 def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) -> dict:
     """
     Build a lightweight evidence map for key candidate attributes.
@@ -304,7 +327,7 @@ def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) 
     Sources: claimed_from_resume | provided_by_candidate | extracted_from_voice
              | demonstrated_in_assessment | verified_by_document | system_inferred
     """
-    raw = _parse_raw(candidate.get("raw_data"))
+    raw = _backfill_demonstrated_skill_evidence(candidate, _parse_raw(candidate.get("raw_data")))
     vi_state = get_voice_intake_state(candidate)
     now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -1259,6 +1282,137 @@ def _is_fresher(candidate: dict, raw: dict) -> bool:
     return not role_text or not any(
         t in role_text for t in ("senior", "lead", "principal", "manager", "director")
     )
+
+
+# ---------------------------------------------------------------------------
+# Temporary support diagnostic (read-only; does not participate in scoring)
+# ---------------------------------------------------------------------------
+
+def build_profile_strength_diagnostic(
+    candidate: dict,
+    raw_data: Optional[dict] = None,
+    prefs_row: Optional[dict] = None,
+) -> dict:
+    """Return a point-level explanation of the existing score calculation.
+
+    This helper is intentionally observational: it calls the production
+    calculator and describes the inputs/components it used.  It must not be
+    used by request handling or scoring paths.
+    """
+    result = calculate_profile_strength_v2(candidate, raw_data, prefs_row)
+    raw = raw_data if isinstance(raw_data, dict) else _parse_raw(candidate.get("raw_data"))
+    parsed_resume = _parse_raw(candidate.get("parsed_resume_json"))
+
+    def prefer(primary: Any, fallback: Any) -> Any:
+        return primary if primary is not None and primary != "" and primary != [] else fallback
+
+    skills = prefer(candidate.get("skills"), parsed_resume.get("skills")) or []
+    if not isinstance(skills, list):
+        skills = []
+    work_experience = prefer(candidate.get("work_experience"), parsed_resume.get("work_experience")) or []
+    if not isinstance(work_experience, list):
+        work_experience = []
+    evidence = result["evidence"]
+    skill_evidence = evidence.get("skills", {})
+    evidence_level = skill_evidence.get("evidence_level", EVIDENCE_UNKNOWN)
+    now_ts = datetime.now(timezone.utc).timestamp()
+    evidence_timestamp = skill_evidence.get("timestamp")
+    years_old = _years_ago(evidence_timestamp, now_ts) if evidence_timestamp else None
+    freshness = _freshness_factor(years_old, decay_after=3.0, floor=0.6)
+    role_category = result["role_category"]
+    technical_descriptions = [
+        {
+            "title": item.get("title"),
+            "company": item.get("company"),
+            "description": item.get("description") or item.get("summary"),
+        }
+        for item in work_experience
+        if isinstance(item, dict) and _has_text(item.get("description"))
+    ]
+    complete_records = [
+        item for item in work_experience
+        if isinstance(item, dict)
+        and _has_text(item.get("title"))
+        and _has_text(item.get("company"))
+        and _experience_has_dates(item)
+        and _has_text(item.get("description") or item.get("summary"))
+    ]
+    voice = get_voice_intake_state({**candidate, "raw_data": raw})
+    dimensions = result["dimensions"]
+    readiness_weights = (
+        {"identity": 0.15, "skills": 0.35, "evidence": 0.35, "intent": 0.15}
+        if role_category == "technical" else
+        {"identity": 0.20, "skills": 0.20, "evidence": 0.30, "intent": 0.30}
+        if role_category == "sales" else
+        {"identity": 0.25, "skills": 0.25, "evidence": 0.25, "intent": 0.25}
+    )
+    readiness_inputs = {
+        "identity": dimensions["identity_background"]["score"] or 0,
+        "skills": dimensions["skills_capability"]["score"] or 0,
+        "evidence": dimensions["evidence"]["score"] or 0,
+        "intent": dimensions["career_intent"]["score"] or 0,
+    }
+
+    projects = raw.get("projects") or candidate.get("projects") or parsed_resume.get("projects") or []
+    claimed_certs = _as_list(candidate.get("certifications") or raw.get("certifications") or parsed_resume.get("certifications"))
+    uploaded_certs = candidate.get("candidate_certificates") or []
+    tech_assessment, _, _ = _completed_assessment_scores({**candidate, "raw_data": raw})
+    skill_evidence_component = (
+        {"name": "skills_demonstrated", "points": 25 * freshness}
+        if evidence_level >= EVIDENCE_DEMONSTRATED else
+        {"name": "skills_corroborated", "points": 20 * freshness}
+        if evidence_level >= EVIDENCE_CORROBORATED else
+        {"name": "skills_claimed", "points": 10 * freshness}
+        if evidence_level >= EVIDENCE_CLAIMED else None
+    )
+    return {
+        "candidate_id": candidate.get("id") or candidate.get("candidate_id"),
+        "calculator_result": result,
+        "skills_capability": {
+            "score": dimensions["skills_capability"]["score"],
+            "signals": dimensions["skills_capability"]["signals"],
+            "components": [
+                {"name": "has_skills", "present": len(skills) >= 1, "points": 20 if len(skills) >= 1 else 0},
+                {"name": "multiple_skills", "present": len(skills) >= 3, "points": 15 if len(skills) >= 3 else 0},
+                {"name": "broad_skills", "present": len(skills) >= 6, "points": 10 if len(skills) >= 6 else 0},
+                skill_evidence_component,
+                {"name": "technical_descriptions", "present": role_category == "technical" and bool(technical_descriptions), "points": 10 if role_category == "technical" and technical_descriptions else 0},
+            ],
+            "claimed_skills": skills if evidence_level >= EVIDENCE_CLAIMED else [],
+            "corroborated_skills": skills if evidence_level >= EVIDENCE_CORROBORATED else [],
+            "demonstrated_skills": skills if evidence_level >= EVIDENCE_DEMONSTRATED else [],
+            "technical_descriptions": technical_descriptions,
+            "freshness_evidence": {**skill_evidence, "years_old": years_old, "freshness_factor": freshness},
+        },
+        "evidence_dimension": {
+            "score": dimensions["evidence"]["score"],
+            "signals": dimensions["evidence"]["signals"],
+            "projects_detected": projects,
+            "project_summary_present": _has_text(raw.get("project_summary")),
+            "certifications_detected": claimed_certs,
+            "uploaded_verified_certifications": uploaded_certs,
+            "responsibilities_projects_from_voice": "responsibilities_projects" in voice["known_topics"],
+            "described_experience": technical_descriptions,
+            "complete_experience_records": complete_records,
+            "technical_assessment_score": tech_assessment,
+            "all_evidence_signals": evidence,
+        },
+        "career_readiness": {
+            "score": dimensions["career_readiness"]["score"],
+            "signals": dimensions["career_readiness"]["signals"],
+            "missing_critical": dimensions["career_readiness"].get("missing_critical", []),
+            "contributions": {
+                key: {"score": score, "weight": readiness_weights[key], "contribution": score * readiness_weights[key]}
+                for key, score in readiness_inputs.items()
+            },
+        },
+        "final_calculation": result["calculation"],
+        "missing_critical_information": result["missing_critical_information"],
+        "recommended_next_actions": result["recommended_next_actions"],
+        "explainability": result["explainability"],
+        "inconsistencies": result["inconsistencies"],
+        "evidence": evidence,
+    }
 
 
 # ---------------------------------------------------------------------------
