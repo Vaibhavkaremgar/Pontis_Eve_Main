@@ -98,7 +98,7 @@ describe("LivingProfile meter label", () => {
     view.unmount();
   });
 
-  it("shows canonical 90% guidance and links each item to its profile section", () => {
+  it("does not render 90% guidance in the right-side profile panel", () => {
     const view = renderLivingProfile({
       userProfile: {
         profile_strength_detail: {
@@ -115,8 +115,7 @@ describe("LivingProfile meter label", () => {
       },
     });
 
-    expect(view.container.querySelector('[data-testid="profile-90-guidance"]').textContent).toContain("82% complete");
-    expect(view.container.querySelector('[data-testid="profile-guidance-skills"]').getAttribute("href")).toBe("#profile-skills");
+    expect(view.container.querySelector('[data-testid="profile-90-guidance"]')).toBeNull();
     expect(view.container.querySelector("#profile-skills")).toBeTruthy();
     view.unmount();
   });

@@ -27,6 +27,8 @@ export default function Sidebar({
 }) {
   const displayName = (footerIdentity ?? userProfile).name;
   const displayEmail = (footerIdentity ?? userProfile).email;
+  const profileGuidance = userProfile?.profile_strength_detail?.ninety_percent_guidance;
+  const guidanceItems = profileGuidance?.items || [];
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef(null);
 
@@ -117,6 +119,36 @@ export default function Sidebar({
           </button>
           */}
         </nav>
+
+        {profileGuidance && profileGuidance.current_percent < 90 && (
+          <section
+            data-testid="profile-90-guidance"
+            className="mx-2 mt-3 min-w-0 rounded-2xl border border-[#DDD8EF] bg-[#F7F5FC] p-4"
+          >
+            <p className="text-[14px] font-semibold text-[#1F1F1F]">
+              Reach 90% Profile
+            </p>
+            <p className="mt-1 text-[12.5px] text-[#4A4A48]">
+              {profileGuidance.current_percent}% complete · {profileGuidance.remaining_percent_to_90}% to go
+            </p>
+            {guidanceItems.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {guidanceItems.map((item) => (
+                  <li key={`${item.section}-${item.action}`} className="min-w-0">
+                    <a
+                      data-testid={`profile-guidance-${item.section}`}
+                      href={`#profile-${item.section}`}
+                      onClick={() => setActiveTab("profile")}
+                      className="block break-words text-[12.5px] text-[#62578F] underline underline-offset-2 hover:text-[#4F437F]"
+                    >
+                      {item.action}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
         
 
         {/* Recent activity */}

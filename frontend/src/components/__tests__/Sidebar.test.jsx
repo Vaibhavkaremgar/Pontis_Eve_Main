@@ -108,6 +108,8 @@ describe("Sidebar user footer", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  it("opens the settings menu from the footer", () => {
     const onSettings = jest.fn();
     renderResult = renderSidebar({ onSettings });
 
@@ -127,5 +129,37 @@ describe("Sidebar user footer", () => {
     });
 
     expect(onSettings).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Sidebar profile guidance", () => {
+  let renderResult;
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("renders the 90% profile card directly after Billing with live guidance values", () => {
+    renderResult = renderSidebar({
+      userProfile: {
+        name: "Jane Doe",
+        email: "jane@example.com",
+        profile_strength_detail: {
+          ninety_percent_guidance: {
+            current_percent: 82,
+            remaining_percent_to_90: 8,
+            items: [{ section: "skills", action: "Add your key skills" }],
+          },
+        },
+      },
+    });
+
+    const billing = renderResult.container.querySelector('[data-testid="nav-tab-billing"]');
+    const guidance = renderResult.container.querySelector('[data-testid="profile-90-guidance"]');
+    expect(guidance.textContent).toContain("Reach 90% Profile");
+    expect(guidance.textContent).toContain("82% complete · 8% to go");
+    expect(billing.compareDocumentPosition(guidance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(guidance.querySelector('[data-testid="profile-guidance-skills"]').getAttribute("href")).toBe("#profile-skills");
   });
 });

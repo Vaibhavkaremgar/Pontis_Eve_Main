@@ -365,8 +365,6 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
     : groupedExperience.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
   const hobbies = [profile.hobbies, profile.interests, profile.raw_data?.hobbies, profile.raw_data?.interests]
     .find((value) => Array.isArray(value) && value.length > 0) || [];
-  const guidance = profile.profile_strength_detail?.ninety_percent_guidance;
-  const guidanceItems = guidance?.items || [];
 
   return (
     <div className="space-y-8" data-testid="living-profile-content">
@@ -415,32 +413,6 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
           <ProfilePhotoUpload user={profile} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} />
         </div>
       </div>
-
-      {guidance && guidance.current_percent < 90 && (
-        <section data-testid="profile-90-guidance" className="rounded-2xl border border-[#DDD8EF] bg-[#F7F5FC] p-5">
-          <p className="text-[14px] font-semibold text-[#1F1F1F]">
-            Reach 90% Profile
-          </p>
-          <p className="mt-1 text-[12.5px] text-[#4A4A48]">
-            {guidance.current_percent}% complete · {guidance.remaining_percent_to_90}% to go
-          </p>
-          {guidanceItems.length > 0 && (
-            <ul className="mt-3 space-y-2">
-              {guidanceItems.map((item) => (
-                <li key={`${item.section}-${item.action}`}>
-                  <a
-                    data-testid={`profile-guidance-${item.section}`}
-                    href={`#profile-${item.section}`}
-                    className="text-[12.5px] text-[#62578F] underline underline-offset-2 hover:text-[#4F437F]"
-                  >
-                    {item.action}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
 
       {/* Resume content */}
       <section id="profile-summary">
