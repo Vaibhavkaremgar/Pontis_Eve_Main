@@ -26,13 +26,13 @@ def test_duplicate_replacement_never_selects_a_section():
     )
     result = server._chat_profile_preflight("Update CMR to CBIT", candidate, [{"role": "user", "content": "Update CMR to CBIT"}])
     assert result["updates"] is None
-    assert "Education" in result["reply"] and "Work Experience" in result["reply"]
+    assert "1." in result["reply"] and "2." in result["reply"] and "Both" in result["reply"]
 
 
 def test_unique_replacement_has_a_validated_target_instruction():
     candidate = _candidate(education=[{"degree": "B.Tech", "institution": "CMR"}])
     result = server._chat_profile_preflight("Update CMR to CBIT", candidate, [{"role": "user", "content": "Update CMR to CBIT"}])
-    assert result["updates"]["profile_record_replacements"] == [{"section": "Education", "old": "CMR", "new": "CBIT"}]
+    assert result["updates"]["profile_record_replacements"] == [{"section": "Education", "old": "CMR", "new": "CBIT", "record_indexes": [0], "all_matches": False}]
 
 
 def test_new_education_and_work_request_missing_timeline():

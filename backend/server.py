@@ -5017,6 +5017,65 @@ def _profile_edit_matches(candidate: dict, value: str) -> dict[str, list[dict]]:
     return matches
 
 
+def _profile_record_label(section: str, record: object) -> str:
+    """A short, human-readable label for a selectable profile record."""
+    if isinstance(record, dict):
+        if section == "Education":
+            return " — ".join(part for part in (record.get("degree"), record.get("institution")) if part) or "Education record"
+        if section == "Work Experience":
+            return " — ".join(part for part in (record.get("title"), record.get("company")) if part) or "Work experience record"
+        if section == "Projects":
+            return str(record.get("name") or record.get("title") or "Project")
+        return " — ".join(str(value) for value in record.values() if value)[:120] or section
+    return str(record) or section
+
+
+def _replacement_update(section: str, old: str, new: str, matches: list[dict], *, all_matches: bool = False) -> dict:
+    """Make a replacement payload whose exact persisted records are explicit."""
+    return {"profile_record_replacements": [{
+        "section": section, "old": old, "new": new,
+        "record_indexes": [match["index"] for match in matches],
+        "all_matches": all_matches,
+    }]}
+
+
+def _replacement_clarification(old: str, matches: dict[str, list[dict]]) -> str:
+    choices = [(section, item) for section, items in matches.items() for item in items]
+    lines = [f"I found {old} in multiple profile records. Which one would you like to update?", ""]
+    lines.extend(f"{number}. {_profile_record_label(section, item['record'])}" for number, (section, item) in enumerate(choices, 1))
+    lines.append(f"{len(choices) + 1}. Both")
+    return "\n".join(lines)
+
+
+def _pending_replacement_selection(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
+    """Resolve a number or 'both' after an ambiguity prompt, without storing state client-side."""
+    choice = message.strip().lower().rstrip(".")
+    if not (choice == "both" or re.fullmatch(r"\d+", choice)):
+        return None
+    prior_users = [m.get("content", "") for m in history[:-1] if m.get("role") == "user"]
+    for prior in reversed(prior_users):
+        replacement = re.search(r"\b(?:replace|update|change)\s+(.+?)\s+(?:with|to)\s+(.+?)[.!]?$", prior, re.I)
+        if not replacement:
+            continue
+        old, new = replacement.group(1).strip(), replacement.group(2).strip()
+        matches = _profile_edit_matches(candidate, old)
+        choices = [(section, item) for section, items in matches.items() for item in items]
+        if len(choices) < 2:
+            return None
+        selected = choices if choice == "both" else [choices[int(choice) - 1]] if 0 < int(choice) <= len(choices) else []
+        if not selected:
+            return {"reply": f"Please choose a number from 1 to {len(choices)}, or Both.", "updates": None}
+        by_section: dict[str, list[dict]] = {}
+        for section, item in selected:
+            by_section.setdefault(section, []).append(item)
+        updates = {"profile_record_replacements": [
+            {"section": section, "old": old, "new": new, "record_indexes": [item["index"] for item in items], "all_matches": choice == "both"}
+            for section, items in by_section.items()
+        ]}
+        return {"reply": f"Updated {old} to {new}.", "updates": updates}
+    return None
+
+
 def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
     """Resolve deterministic profile-edit safety cases before asking the LLM.
 
@@ -5026,6 +5085,9 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     """
     text_value = message.strip()
     lower = text_value.lower()
+    pending_selection = _pending_replacement_selection(text_value, candidate, history)
+    if pending_selection:
+        return pending_selection
     # Education has an unambiguous semantic shape even when the candidate does
     # not literally say "education" (for example: "Add Masters Degree in CMR
     # University 2023-2025"). Recognize it before the generic bare-add guard.
@@ -5067,7 +5129,7 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
             return {"reply": f"Added your {title} experience at {company} from {years.group(1)} - {years.group(2)}.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": years.group(1), "end_date": years.group(2)}]}}
 
     new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
-    if new_education and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
+    if new_education and not re.search(r"\b(?:change|update)\b.*\bfrom\b.*\bto\b", text_value, re.I) and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
         return {"reply": f"What was the time period for your {new_education.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
     new_work = re.search(r"(?:worked|work)\s+(?:at|for)\s+([^,.]+?)\s+as\s+(?:a\s+)?([^,.]+)", text_value, re.I)
     if new_work and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
@@ -5081,22 +5143,32 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
         if total > 1:
             return {"reply": f"I found {requested} in {' and '.join(matches)}. Which record should I delete?", "updates": None}
 
+    explicit_target = re.search(r"\b(?:change|update)\s+(?:my\s+)?(?P<target>master(?:'s|s)|bachelor(?:'s|s)|mba|ph\.?d).*?\s+from\s+(?P<old>.+?)\s+to\s+(?P<new>.+?)[.!]?$", text_value, re.I)
     replacement = re.search(r"\b(?:replace|update|change)\s+(.+?)\s+(?:with|to)\s+(.+?)[.!]?$", text_value, re.I)
+    if explicit_target:
+        old, new = explicit_target.group("old").strip(), explicit_target.group("new").strip()
+        matches = _profile_edit_matches(candidate, old)
+        target = _normalize_profile_key(explicit_target.group("target")).replace("'", "")
+        matches = {section: [item for item in items if target in _normalize_profile_key(json.dumps(item["record"])).replace("'", "")] for section, items in matches.items()}
+        matches = {section: items for section, items in matches.items() if items}
+        if sum(map(len, matches.values())) == 1:
+            section, items = next(iter(matches.items()))
+            return {"reply": f"Updated {old} to {new} in {section}.", "updates": _replacement_update(section, old, new, items)}
     if replacement:
         old, new = replacement.group(1).strip(), replacement.group(2).strip()
+        explicit_both = bool(re.search(r"\s+in\s+both\b", new, re.I))
+        new = re.sub(r"\s+in\s+both\b.*$", "", new, flags=re.I).strip()
         matches = _profile_edit_matches(candidate, old)
         sections = list(matches)
         total = sum(len(items) for items in matches.values())
-        # Replacing a shared institution fragment across education records is
-        # unambiguous: update every matching education record consistently.
-        if sections == ["Education"] and matches["Education"]:
-            return {"reply": f"Updated {old} to {new} in your education records.", "updates": {"profile_record_replacements": [{"section": "Education", "old": old, "new": new, "all_matches": True}]}}
+        if explicit_both and total:
+            return {"reply": f"Updated {old} to {new} in all matching records.", "updates": {"profile_record_replacements": [_replacement_update(section, old, new, items, all_matches=True)["profile_record_replacements"][0] for section, items in matches.items()]}}
         if total > 1:
-            return {"reply": f"I found {old} in {' and '.join(sections)}. Which one should I update?", "updates": None}
+            return {"reply": _replacement_clarification(old, matches), "updates": None}
         if total == 1:
             section = sections[0]
             if section in ("Education", "Work Experience"):
-                return {"reply": f"Updated {old} to {new} in {section}.", "updates": {"profile_record_replacements": [{"section": section, "old": old, "new": new}]}}
+                return {"reply": f"Updated {old} to {new} in {section}.", "updates": _replacement_update(section, old, new, matches[section])}
     return None
 
 
@@ -5104,11 +5176,15 @@ async def _verify_profile_update_persisted(candidate_id: str, updates: dict) -> 
     """Read the canonical candidate row after a chat write before confirming it."""
     persisted = await _get_candidate_row(candidate_id)
     for replacement in updates.get("profile_record_replacements") or []:
-        if not isinstance(replacement, dict) or replacement.get("section") != "Education":
+        if not isinstance(replacement, dict) or replacement.get("section") not in ("Education", "Work Experience"):
             continue
         old, new = replacement.get("old"), replacement.get("new")
-        education_text = " ".join(json.dumps(row) for row in (persisted.get("education") or []))
-        if not isinstance(old, str) or not isinstance(new, str) or old.lower() in education_text.lower() or new.lower() not in education_text.lower():
+        records = persisted.get("education" if replacement["section"] == "Education" else "work_experience") or []
+        indexes = replacement.get("record_indexes") or []
+        if not isinstance(old, str) or not isinstance(new, str) or not indexes or any(
+            not isinstance(index, int) or index >= len(records) or new.lower() not in json.dumps(records[index]).lower()
+            for index in indexes
+        ):
             return False
     for entry in updates.get("education") or []:
         if not isinstance(entry, dict):
@@ -5384,19 +5460,25 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                     continue
                 section, old, new = replacement.get("section"), replacement.get("old"), replacement.get("new")
                 all_matches = replacement.get("all_matches") is True
+                record_indexes = replacement.get("record_indexes")
                 if not all(isinstance(part, str) and part.strip() for part in (section, old, new)):
                     continue
                 # Re-query the persisted record at write time.  A stale chat turn
                 # can never replace a value that is no longer uniquely targeted.
                 matches = _profile_edit_matches(existing, old)
-                if not matches.get(section) or (not all_matches and (
-                    len(matches.get(section, [])) != 1 or sum(map(len, matches.values())) != 1
-                )) or (all_matches and set(matches) != {"Education"}):
+                if not matches.get(section) or not isinstance(record_indexes, list) or not record_indexes:
+                    continue
+                matching_indexes = {match["index"] for match in matches[section]}
+                selected_indexes = set(record_indexes)
+                if not selected_indexes.issubset(matching_indexes):
+                    continue
+                # 'Both' means every match in the selected section(s), never
+                # an implicit fan-out to records the user did not select.
+                if all_matches and selected_indexes != matching_indexes:
                     continue
                 if section == "Education":
                     records = list(existing.get("education") or [])
-                    for match in matches[section] if all_matches else matches[section][:1]:
-                        index = match["index"]
+                    for index in record_indexes:
                         record = dict(records[index])
                         for key, record_value in record.items():
                             if old.lower() in str(record_value).lower():
@@ -5407,12 +5489,12 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                     existing["education"] = records
                 elif section == "Work Experience":
                     records = list(existing.get("work_experience") or [])
-                    index = matches[section][0]["index"]
-                    record = dict(records[index])
-                    for key, record_value in record.items():
-                        if old.lower() in str(record_value).lower():
-                            record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
-                    records[index] = record
+                    for index in record_indexes:
+                        record = dict(records[index])
+                        for key, record_value in record.items():
+                            if old.lower() in str(record_value).lower():
+                                record[key] = re.sub(re.escape(old), new, str(record_value), flags=re.I)
+                        records[index] = record
                     set_clauses.append("work_experience = CAST(:work_experience AS json)")
                     params["work_experience"] = json.dumps(records)
                     existing["work_experience"] = records

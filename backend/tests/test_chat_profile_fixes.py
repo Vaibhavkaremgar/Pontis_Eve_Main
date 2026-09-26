@@ -261,19 +261,49 @@ def test_add_masters_with_university_and_dates_is_education_not_a_clarification(
     assert state["education"] == preflight["updates"]["education"]
 
 
-def test_replace_institution_updates_all_matching_education_records_and_profile_data():
+def test_replace_institution_with_multiple_matches_asks_before_writing():
     state = _make_candidate(education=[
         {"degree": "Bachelor's", "institution": "CMR Engineering College", "start_date": "2019", "end_date": "2023"},
         {"degree": "Master's", "institution": "CMR University", "start_date": "2023", "end_date": "2025"},
     ])
     preflight = server._chat_profile_preflight("Replace CMR with CBIT", state, [])
-    assert preflight and preflight["updates"]
-    _run_apply(state, preflight["updates"])
+    assert preflight["updates"] is None
+    assert "1. Bachelor's — CMR Engineering College" in preflight["reply"]
+    assert "2. Master's — CMR University" in preflight["reply"]
+    assert "3. Both" in preflight["reply"]
     institutions = [entry["institution"] for entry in state["education"]]
-    assert institutions == ["CBIT Engineering College", "CBIT University"]
-    profile = server._normalize_for_frontend(state)
-    assert all("CMR" not in str(entry) for entry in profile["education"])
-    assert all("CBIT" in entry["institution"] for entry in profile["education"])
+    assert institutions == ["CMR Engineering College", "CMR University"]
+
+
+def test_replacement_selection_updates_only_chosen_record():
+    state = _make_candidate(education=[
+        {"degree": "Bachelor's", "institution": "CMR Engineering College"},
+        {"degree": "Master's", "institution": "CMR University"},
+    ])
+    history = [{"role": "user", "content": "Replace CMR with CBIT"}, {"role": "assistant", "content": "Which one?"}, {"role": "user", "content": "1"}]
+    preflight = server._chat_profile_preflight("1", state, history)
+    _run_apply(state, preflight["updates"])
+    assert [row["institution"] for row in state["education"]] == ["CBIT Engineering College", "CMR University"]
+
+
+def test_explicit_both_updates_all_matching_records():
+    state = _make_candidate(education=[
+        {"degree": "Bachelor's", "institution": "CMR Engineering College"},
+        {"degree": "Master's", "institution": "CMR University"},
+    ])
+    preflight = server._chat_profile_preflight("Replace CMR with CBIT in both my Bachelor's and Master's", state, [])
+    _run_apply(state, preflight["updates"])
+    assert [row["institution"] for row in state["education"]] == ["CBIT Engineering College", "CBIT University"]
+
+
+def test_explicit_degree_target_updates_only_that_education_record():
+    state = _make_candidate(education=[
+        {"degree": "Bachelor's", "institution": "CMR Engineering College"},
+        {"degree": "Master's in AI/ML", "institution": "CMR University"},
+    ])
+    preflight = server._chat_profile_preflight("Change my Master's university from CMR to CBIT", state, [])
+    _run_apply(state, preflight["updates"])
+    assert [row["institution"] for row in state["education"]] == ["CMR Engineering College", "CBIT University"]
 
 
 # ===========================================================================
