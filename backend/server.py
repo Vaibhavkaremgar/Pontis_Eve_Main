@@ -435,6 +435,7 @@ PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resu
   "certifications": ["cert1"]
 }
 For education, extract the actual stated start and completion dates. Do not use "Present" for a completed degree; use it only when the resume explicitly says the course is current or ongoing. If only a completion year is stated, place it in end_date and leave start_date empty.
+"current_role" must be an actual job title (for example, "Python Developer"), never a skill, technology, database, company, or date range. "location" must be the candidate's actual geographic location or "Remote", never an education/employment date or timeline.
 For projects, extract only explicitly described named projects or products. Keep the candidate's project title, their stated work, and explicitly named technologies. Do not turn a general job responsibility into a project and do not infer a title.
 Return only the JSON object, no markdown, no explanation."""
 
@@ -451,10 +452,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or "{}"
-        # Voice uses the same schema and category guard as chat.  This makes a
-        # directly stated degree/institution authoritative even when an LLM
-        # response labels it incorrectly.
-        return _correct_profile_categories(json.loads(raw), transcript)
+        return _sanitize_profile_field_mapping(json.loads(raw))
     except (OpenAIRateLimitError, AllKeysRateLimitedError) as exc:
         logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
         raise HTTPException(
@@ -2997,6 +2995,16 @@ def _merge_resume_into_existing_profile(existing: dict, parsed: dict) -> dict:
       using the existing merge helpers — no duplicates, existing data preserved.
     """
     merged = dict(existing)
+    parsed = _sanitize_profile_field_mapping(parsed)
+
+    # A legacy extractor may have persisted a date range in location or a
+    # technology in current_role. Treat only those invalid values as absent so
+    # a subsequent valid resume value can repair the profile without a manual
+    # database edit. Valid existing profile data remains authoritative.
+    if merged.get("current_role") and not _is_actual_job_role(merged.get("current_role")):
+        merged["current_role"] = ""
+    if merged.get("location") and not _is_actual_location(merged.get("location")):
+        merged["location"] = ""
 
     # Identity is always immutable
     merged["name"] = existing.get("name") or ""
@@ -3012,6 +3020,8 @@ def _merge_resume_into_existing_profile(existing: dict, parsed: dict) -> dict:
         ("summary", "bio"),
         ("summary", "summary"),
     ):
+        if field == "current_role" and parsed_key == "headline" and not _is_actual_job_role(parsed.get(parsed_key)):
+            continue
         if not merged.get(field) and parsed.get(parsed_key):
             merged[field] = parsed[parsed_key]
 
@@ -3233,7 +3243,10 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     "name": parsed.get("name", ""),
                     "email": parsed.get("email", ""),
                     "phone": parsed.get("phone", ""),
-                    "current_role": parsed.get("current_role") or parsed.get("headline", ""),
+                    "current_role": (
+                        parsed.get("current_role")
+                        or (parsed.get("headline", "") if _is_actual_job_role(parsed.get("headline")) else "")
+                    ),
                     "current_company": parsed.get("current_company", ""),
                     "location": parsed.get("location", ""),
                     "summary": parsed.get("bio") or parsed.get("summary", ""),
@@ -4448,7 +4461,77 @@ def _sanitize_profile_updates(updates: dict) -> dict:
                 sanitized[field] = cleaned
         elif value is not None:
             sanitized[field] = value
-    return sanitized
+    return _sanitize_profile_field_mapping(sanitized)
+
+
+# Scalar profile fields are shared by resume parsing, voice intake, and chat.
+# Keep this validation deterministic: model prompts improve extraction, but must
+# never be the only protection before a value reaches the candidates table.
+_TIMELINE_ONLY_VALUE = re.compile(
+    r"^\s*(?:\d{4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4})"
+    r"\s*(?:[-–—]|to|through|until)\s*(?:\d{4}|present|current|now|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4})\s*$",
+    re.IGNORECASE,
+)
+_ROLE_WORDS = frozenset({
+    "architect", "analyst", "associate", "consultant", "coordinator", "designer",
+    "developer", "director", "engineer", "executive", "founder", "head", "intern",
+    "lead", "manager", "officer", "partner", "president", "producer", "professor",
+    "researcher", "scientist", "specialist", "supervisor", "technician", "trainee",
+    "vice president", "vp",
+})
+_TECHNOLOGY_ONLY_VALUES = frozenset({
+    "postgres", "postgresql", "mysql", "mongodb", "redis", "sqlite", "oracle", "sql",
+    "python", "java", "javascript", "typescript", "fastapi", "django", "flask",
+    "react", "angular", "node", "node.js", "spring", "spring boot", "docker",
+    "kubernetes", "aws", "azure", "gcp", "git", "linux", "html", "css",
+})
+
+
+def _is_timeline_only_value(value: Any) -> bool:
+    text_value = _normalize_profile_text(value)
+    return bool(text_value and _TIMELINE_ONLY_VALUE.fullmatch(text_value))
+
+
+def _is_actual_job_role(value: Any) -> bool:
+    text_value = _normalize_profile_text(value)
+    if not text_value or _is_timeline_only_value(text_value):
+        return False
+    lowered = text_value.casefold()
+    if lowered in _TECHNOLOGY_ONLY_VALUES:
+        return False
+    words = set(re.findall(r"[a-z]+", lowered))
+    return bool(words & _ROLE_WORDS)
+
+
+def _is_actual_location(value: Any) -> bool:
+    text_value = _normalize_profile_text(value)
+    if not text_value or _is_timeline_only_value(text_value):
+        return False
+    # A lone technology/database is not a geographic location either.
+    return text_value.casefold() not in _TECHNOLOGY_ONLY_VALUES
+
+
+def _sanitize_profile_field_mapping(values: dict) -> dict:
+    """Drop invalid role/location scalars and retain misclassified skills."""
+    if not isinstance(values, dict):
+        return {}
+    result = dict(values)
+    role = result.get("current_role")
+    if role is not None and not _is_actual_job_role(role):
+        # Preserve a clearly recognizable misclassified technology as a skill;
+        # never let it overwrite a job-title column.
+        role_text = _normalize_profile_text(role)
+        if role_text and role_text.casefold() in _TECHNOLOGY_ONLY_VALUES:
+            skills = result.get("skills") if isinstance(result.get("skills"), list) else []
+            result["skills"] = _merge_skills(skills, [role_text])
+        result.pop("current_role", None)
+    location = result.get("location")
+    if location is not None and not _is_actual_location(location):
+        result.pop("location", None)
+    return result
 
 
 # Patterns that signal a deletion intent in natural language.
@@ -6489,6 +6572,7 @@ For work_experience start_date and end_date: extract the exact month and year th
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
 For "education": a degree at/from a university or college is always Education. Capture the degree and institution; never place it in certifications unless the candidate also explicitly states a certification.
+"current_role" must be an actual job title, never a skill, technology, database, company, or date range. "location" must be an actual geographic location or "Remote", never an education/employment date or timeline.
 For "projects", extract only projects the candidate explicitly says they worked on or built. Preserve the stated project/product name, responsibilities, and technologies. Do not infer projects from general role duties, and do not create a title when none was stated.
 Return only the JSON object."""
 
@@ -6506,7 +6590,7 @@ async def _extract_voice_info(transcript: str) -> dict:
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or "{}"
-        return json.loads(raw)
+        return _sanitize_profile_field_mapping(json.loads(raw))
     except Exception as e:
         logger.warning("Voice extraction LLM failed: %s", e)
         return {}
@@ -7376,6 +7460,14 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
     - Stores availability, preferred_roles, certifications, additional_information in raw_data
     """
     merged = dict(existing)
+    voice = _sanitize_profile_field_mapping(voice)
+
+    # Invalid legacy scalar values should not block a later, valid voice
+    # answer from filling the field. Do not alter valid existing data.
+    if merged.get("current_role") and not _is_actual_job_role(merged.get("current_role")):
+        merged["current_role"] = ""
+    if merged.get("location") and not _is_actual_location(merged.get("location")):
+        merged["location"] = ""
 
     # An explicit current role/company pair from Voice Intake describes the
     # candidate's latest employment, so it takes precedence over resume scalars.
@@ -7621,6 +7713,7 @@ async def _persist_voice_intake_profile_state(
     The same helper is used by both the final intake endpoint and the progress
     endpoint so repeated cumulative submissions remain idempotent.
     """
+    voice_data = _sanitize_profile_field_mapping(voice_data)
     merged = _merge_voice_into_profile(candidate, voice_data)
 
     update_params: dict[str, Any] = {"cid": candidate_id}

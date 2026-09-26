@@ -17,6 +17,59 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server
 
 
+class TestProfileScalarFieldMapping:
+    """Regression coverage for role/location values emitted by extractors."""
+
+    def test_skill_cannot_be_persisted_as_current_role(self):
+        result = server._sanitize_profile_field_mapping({
+            "current_role": "postgres",
+            "skills": ["Python"],
+        })
+
+        assert "current_role" not in result
+        assert result["skills"] == ["Python", "postgres"]
+
+    def test_education_or_work_timeline_cannot_be_persisted_as_location(self):
+        result = server._sanitize_profile_field_mapping({
+            "current_role": "Python Developer",
+            "location": "2023-2025",
+        })
+
+        assert result["current_role"] == "Python Developer"
+        assert "location" not in result
+
+    def test_resume_and_voice_merges_replace_only_invalid_legacy_scalars(self):
+        existing = {
+            "current_role": "postgres",
+            "location": "2023-2025",
+            "skills": ["Python"],
+            "work_experience": [],
+            "education": [],
+            "raw_data": {},
+        }
+        voice = {
+            "current_role": "Python Developer",
+            "current_company": "Viral Bug",
+            "location": "Bengaluru, India",
+        }
+
+        merged = server._merge_voice_into_profile(existing, voice)
+
+        assert merged["current_role"] == "Python Developer"
+        assert merged["current_company"] == "Viral Bug"
+        assert merged["location"] == "Bengaluru, India"
+
+    def test_resume_merge_does_not_write_misclassified_scalars(self):
+        merged = server._merge_resume_into_existing_profile(
+            {"current_role": "", "location": "", "skills": [], "work_experience": [], "education": []},
+            {"current_role": "PostgreSQL", "location": "2023-2025", "skills": ["Python"]},
+        )
+
+        assert merged["current_role"] == ""
+        assert merged["location"] == ""
+        assert merged["skills"] == ["Python", "PostgreSQL"]
+
+
 # ---------------------------------------------------------------------------
 # _sanitize_structured_list_items
 # ---------------------------------------------------------------------------
