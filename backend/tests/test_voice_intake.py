@@ -603,6 +603,73 @@ class TestProfileMerge:
 
 
 class TestVoiceIntakePersistenceRegression:
+    def test_completed_intake_returns_success_when_merge_result_is_none(self, monkeypatch):
+        """A successful intake save must not 500 while building response metadata."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        candidate = {
+            "id": "candidate-none-merge",
+            "raw_data": {},
+            "skills": [],
+            "work_experience": [],
+            "education": [],
+        }
+
+        class FakeResult:
+            def fetchone(self):
+                return None
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, statement, params=None):
+                return FakeResult()
+
+            async def commit(self):
+                return None
+
+        async def fake_get_candidate_row(_candidate_id):
+            return candidate
+
+        async def fake_persist(*_args):
+            # Reproduces the historical implicit-None return after the intake
+            # record was already committed.
+            return None
+
+        async def fake_load_certificates(_candidate_id):
+            return []
+
+        async def fake_llm_analysis(*_args):
+            return {}
+
+        async def fake_extract_voice_info(*_args):
+            return {}
+
+        monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
+        monkeypatch.setattr(server, "_persist_voice_intake_profile_state", fake_persist)
+        monkeypatch.setattr(server, "_load_candidate_certificates", fake_load_certificates)
+        monkeypatch.setattr(server, "_llm_analyze_intake", fake_llm_analysis)
+        monkeypatch.setattr(server, "_build_voice_intake_resume_from_notes", lambda *_args, **_kwargs: {
+            "status": "in_progress", "completed_turns": []
+        })
+        monkeypatch.setattr(server, "_extract_voice_info", fake_extract_voice_info)
+
+        response = asyncio.run(server.candidate_voice_intake(
+            server.VoiceCandidateIntakeRequest(
+                candidate_id=candidate["id"], transcript="I am looking for a backend role."
+            )
+        ))
+
+        assert response["status"] == "in_progress"
+        assert response["fields_updated"] == []
+
     def test_new_candidate_progress_saves_with_verified_candidate_id(self, monkeypatch):
         """A parsed, new candidate without availability can persist /progress."""
         import sys, os

@@ -7713,6 +7713,9 @@ async def _persist_voice_intake_profile_state(
     The same helper is used by both the final intake endpoint and the progress
     endpoint so repeated cumulative submissions remain idempotent.
     """
+    # A missing profile payload means there is nothing canonical to merge yet.
+    # Keep the save path valid and let the voice data establish the profile.
+    candidate = candidate if isinstance(candidate, dict) else {}
     voice_data = _sanitize_profile_field_mapping(voice_data)
     merged = _merge_voice_into_profile(candidate, voice_data)
 
@@ -7755,6 +7758,23 @@ async def _persist_voice_intake_profile_state(
         for turn in (voice_intake_state.get("completed_turns") or [])
         if isinstance(turn, dict)
     )
+    merged_raw = _append_demonstrated_skill_evidence(
+        merged_raw, candidate.get("skills") or [], voice_usage_text, "eve_voice"
+    )
+    set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
+    update_params["raw_data"] = json.dumps(merged_raw)
+
+    set_clauses.append("updated_at = now()")
+    set_clauses.append("updated_by_source = 'eve_voice'")
+    async with SessionLocal() as db:
+        await db.execute(
+            text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
+            update_params,
+        )
+        await db.commit()
+
+    await _upsert_candidate_preferences(candidate_id, voice_data)
+    return merged
 
 
 def _updated_resume_pdf_path(candidate_id: str) -> Path:
@@ -7958,23 +7978,6 @@ async def download_application_resume(candidate_id: str, rec_id: str):
         await db.commit()
     return FileResponse(str(destination), media_type="application/pdf", filename=filename,
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-    merged_raw = _append_demonstrated_skill_evidence(
-        merged_raw, candidate.get("skills") or [], voice_usage_text, "eve_voice"
-    )
-    set_clauses.append("raw_data = CAST(:raw_data AS jsonb)")
-    update_params["raw_data"] = json.dumps(merged_raw)
-
-    set_clauses.append("updated_at = now()")
-    set_clauses.append("updated_by_source = 'eve_voice'")
-    async with SessionLocal() as db:
-        await db.execute(
-            text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
-            update_params,
-        )
-        await db.commit()
-
-    await _upsert_candidate_preferences(candidate_id, voice_data)
-    return merged
 
 
 # ---------- Voice intake endpoint ----------
@@ -8076,10 +8079,18 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
     # Return updated profile so dashboard can refresh immediately
     updated_candidate = await _get_candidate_row(request.candidate_id)
-    updated_profile_row = dict(updated_candidate)
+    updated_profile_row = dict(updated_candidate) if isinstance(updated_candidate, dict) else {}
     updated_profile_row["candidate_certificates"] = await _load_candidate_certificates(request.candidate_id)
     updated_profile = _normalize_for_frontend(updated_profile_row)
     updated_profile["voice_intake_resume"] = voice_intake_state
+
+    # The intake record is already committed above.  A sparse legacy profile
+    # (or an unexpected empty merge result) must not turn that successful save
+    # into a 500 while calculating this response-only metadata.
+    candidate_for_comparison = candidate if isinstance(candidate, dict) else {}
+    # A non-dict return represents no merge result, so report no field changes
+    # rather than treating absent list keys as updates.
+    merged_for_comparison = merged if isinstance(merged, dict) else candidate_for_comparison
 
     return {
         "status": voice_intake_state["status"],
@@ -8088,12 +8099,12 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         "fields_updated": [
             *[
                 field for field in ("summary", "current_role", "current_company", "location", "experience_years", "skills", "work_experience", "education")
-                if merged.get(field) != candidate.get(field)
+                if merged_for_comparison.get(field) != candidate_for_comparison.get(field)
             ],
             *(
                 ["projects"]
-                if _parse_raw_data(merged.get("raw_data")).get("projects")
-                != _parse_raw_data(candidate.get("raw_data")).get("projects")
+                if _parse_raw_data(merged_for_comparison.get("raw_data")).get("projects")
+                != _parse_raw_data(candidate_for_comparison.get("raw_data")).get("projects")
                 else []
             ),
         ],
