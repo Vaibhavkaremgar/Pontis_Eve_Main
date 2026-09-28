@@ -1,5 +1,6 @@
 import json
 import logging
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -51,6 +52,25 @@ def voice_intake_completed(candidate: Dict[str, Any]) -> bool:
         except Exception:
             return False
     return isinstance(intake, dict) and str(intake.get("status") or "").lower() == "completed"
+
+
+def candidate_ready_for_matching(candidate: Dict[str, Any]) -> Tuple[bool, str]:
+    """Use persisted profile signal, rather than resumable intake status."""
+    candidate_text = build_candidate_text(candidate)
+    if not candidate_text.strip():
+        return False, "empty_candidate_profile_text"
+    raw = candidate.get("raw_data") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    intake = raw.get("voice_intake") if isinstance(raw, dict) else {}
+    if (not isinstance(raw, dict) or not raw) and not candidate.get("current_role"):
+        return False, "voice_intake_state_missing"
+    status = intake.get("status") if isinstance(intake, dict) else "profile_data"
+    status = status or "profile_data"
+    return True, f"profile_text_available_voice_intake_{status or 'unknown'}"
 
 
 # Evidence level weights for skill scoring (Phase 7/8)
@@ -1016,8 +1036,9 @@ async def refresh_candidate_job_matches(
     Build candidate embedding, search Qdrant, re-rank with hybrid scoring,
     and upsert into candidate_job_recommendations.
     """
-    if not voice_intake_completed(candidate):
-        logger.info("[matching] Candidate %s has not completed Voice Intake — skipping", candidate_id)
+    ready, readiness_reason = candidate_ready_for_matching(candidate)
+    logger.info("[matching] candidate=%s readiness=%s reason=%s", candidate_id, ready, readiness_reason)
+    if not ready:
         return
 
     # Read target intent before retrieval; it is also reused by the existing
@@ -1031,6 +1052,7 @@ async def refresh_candidate_job_matches(
     # Preserve the existing broad candidate-semantic retrieval.
     query_vector = generate_embedding(candidate_text)
     job_scores = search_job_chunks(query_vector, limit=QDRANT_TOP_K)
+    logger.info("[matching] candidate=%s broad_qdrant_results=%d", candidate_id, len(job_scores))
 
     # An explicit preferred role receives an independent, intent-only path.
     # Current role, skills, and resume history are intentionally excluded so a
@@ -1045,6 +1067,7 @@ async def refresh_candidate_job_matches(
         target_role_scores = search_job_chunks(
             generate_embedding(target_role_query), limit=QDRANT_TOP_K
         )
+        logger.info("[matching] candidate=%s target_role_qdrant_results=%d", candidate_id, len(target_role_scores))
 
     # Merge both paths by ID and retain the strongest semantic score.  Hybrid
     # scoring itself remains exactly as it was.
@@ -1107,6 +1130,7 @@ async def refresh_candidate_job_matches(
         "[matching] candidate=%s active DB overlap=%d discarded_missing_or_inactive=%d",
         candidate_id, len(job_details), len(candidate_job_ids) - len(job_details),
     )
+    logger.info("[matching] candidate=%s eligibility_input_jobs=%d", candidate_id, len(job_details))
 
     # 3. Compute candidate intelligence once (evidence quality + constraints)
     intelligence = _get_candidate_intelligence(candidate)

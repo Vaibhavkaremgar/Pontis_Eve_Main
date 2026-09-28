@@ -3333,9 +3333,11 @@ async def _trigger_matching(candidate_id: str) -> None:
 
 
 def _voice_intake_completed_for_matching(candidate: dict) -> bool:
-    """Use the existing persisted Voice Intake status as the matching gate."""
-    from candidate_job_matching_service import voice_intake_completed
-    return voice_intake_completed(candidate)
+    """Require usable persisted profile data, not completed workflow status."""
+    from candidate_job_matching_service import candidate_ready_for_matching
+    ready, reason = candidate_ready_for_matching(candidate)
+    logger.info("[matching] API readiness=%s reason=%s", ready, reason)
+    return ready
 
 
 # ---------- Routes ----------
@@ -8290,6 +8292,11 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
+    logger.info(
+        "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
+        request.candidate_id, resume.get("status"),
+    )
+    asyncio.ensure_future(_trigger_matching(request.candidate_id))
     return {
         "status": "saved",
         "candidate_id": request.candidate_id,
