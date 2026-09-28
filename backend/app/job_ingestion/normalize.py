@@ -89,10 +89,37 @@ def _jd_evidence(description: Any) -> dict[str, Any]:
             found[key] = [v.strip() for v in re.split(r"[,;/|]", value) if v.strip()] if key == "skills_required" else value
     return found
 
+def _experience_from_text(description: Any) -> str | None:
+    """Find an explicit years-of-experience requirement in JD text."""
+    text = _html_text(description)
+    match = re.search(r"\b(\d+\s*\+?\s*(?:years?|yrs?)(?:\s+of\s+experience)?)\b", text, re.I)
+    return match.group(1).strip() if match else None
+
+def _lever_required_skills(job: dict[str, Any], description: Any) -> list[str]:
+    """Extract explicit skills from Lever's required-qualification lists."""
+    skills: list[str] = []
+    for section in job.get("lists") or []:
+        if not isinstance(section, dict):
+            continue
+        heading = _html_text(section.get("text"))
+        if not re.search(r"required|qualification|must have|skill", heading, re.I):
+            continue
+        content = str(section.get("content") or "")
+        for item in re.findall(r"<li\b[^>]*>(.*?)</li>", content, re.I | re.S):
+            value = re.sub(r"\s+", " ", _html_text(item)).strip(" .;:-")
+            if value and not re.search(r"\b\d+\s*\+?\s*(?:years?|yrs?)\b|degree|bachelor|master|location", value, re.I):
+                skills.append(value)
+    if not skills:
+        skills = _skill_list(_jd_evidence(description).get("skills_required"))
+    return list(dict.fromkeys(skills))
+
 def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit: Any) -> dict[str, Any]:
     evidence = _jd_evidence(description)
     metadata_keys = ("employment_type", "remote_policy", "experience_level", "experience_required", "salary_range", "skills_required", "created_at")
     result = {key: _first(explicit.get(key), evidence.get(key)) for key in metadata_keys}
+    # Preserve an explicit years requirement even when a provider omits its
+    # dedicated field. This applies uniformly to all normalized sources.
+    result["experience_required"] = _first(result["experience_required"], _experience_from_text(description))
     # ``skills_required`` is a required JSON column.  Preserve explicitly
     # supplied ATS skills first, then the conservative labelled-JD extraction,
     # and represent a genuinely unknown skill set as an empty JSON list rather
@@ -143,8 +170,10 @@ def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, An
 
 def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = _lever_description(job); categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
-    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), experience_level=_first(job.get("experience_level"), job.get("seniority"), categories.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
-    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
+    experience = _first(job.get("experience_required"), _jd_evidence(description).get("experience_required"), _experience_from_text(description))
+    skills = _first(job.get("skills"), job.get("skillsRequired"), _lever_required_skills(job, description))
+    meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), experience_level=_first(job.get("experience_level"), job.get("seniority"), categories.get("seniority")), experience_required=experience, remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=skills)
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "requirements": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("descriptionHtml"); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}

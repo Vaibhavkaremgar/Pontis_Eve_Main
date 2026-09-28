@@ -34,7 +34,7 @@ async def upsert_ats_job(
     # Check whether this ATS job already exists.
     result = await db.execute(
         text("""
-            SELECT id, job_url, description
+            SELECT id, job_url, description, requirements
             FROM job_descriptions
             WHERE ats_type = :ats_type
               AND ats_job_id = :ats_job_id
@@ -52,6 +52,7 @@ async def upsert_ats_job(
         job_id = existing[0]
         existing_job_url = existing[1]
         existing_description = existing[2] or ""
+        existing_requirements = existing[3] or ""
         incoming_job_url = _valid_http_url(job.get("job_url"))
         incoming_description = str(job.get("description") or "").strip()
         # Refresh only when the newly collected JD contains strictly more
@@ -68,6 +69,7 @@ async def upsert_ats_job(
                 UPDATE job_descriptions
                 SET job_url = CASE WHEN :is_global_provider AND :job_url IS NOT NULL THEN :job_url ELSE COALESCE(job_url, :job_url) END,
                     description = CASE WHEN :refresh_description THEN :description ELSE description END,
+                    requirements = CASE WHEN :refresh_description OR (requirements IS NULL AND :requirements IS NOT NULL) THEN :requirements ELSE requirements END,
                     employment_type = COALESCE(:employment_type, employment_type),
                     remote_policy = COALESCE(:remote_policy, remote_policy),
                     experience_level = COALESCE(:experience_level, experience_level),
@@ -156,6 +158,7 @@ async def upsert_ats_job(
                 experience_required,
                 salary_range,
                 description,
+                requirements,
                 is_active,
                 status,
                 created_at,
@@ -187,6 +190,7 @@ async def upsert_ats_job(
                 :experience_required,
                 :salary_range,
                 :description,
+                :requirements,
                 TRUE,
                 'active',
                 COALESCE(:created_at, NOW()),
@@ -219,6 +223,7 @@ async def upsert_ats_job(
             "employment_type": job.get("employment_type"),
             "salary_range": job.get("salary_range"),
             "description": job["description"],
+            "requirements": job.get("requirements") or job.get("description") or "",
             "agency_id": agency_id,
             "company_registry_id": company_registry_id,
             "ats_job_id": ats_job_id,
@@ -258,6 +263,7 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
         "experience_level": safe["experience_level"],
         "experience_required": safe.get("experience_required"),
         "salary_range": safe.get("salary_range"),
+        "requirements": safe.get("requirements"),
         "skills_required": json.dumps(safe["skills_required"]),
         "skills": json.dumps(safe["skills"]),
         "structured_data": json.dumps(safe["structured_data"]),
@@ -292,6 +298,7 @@ def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
     safe["title"] = text_value("title", "Untitled ATS job")
     safe["company_name"] = text_value("company_name", "Unknown company")
     safe["description"] = text_value("description", "")
+    safe["requirements"] = text_value("requirements") or safe["description"]
     for key in ("department", "location", "employment_type", "remote_policy", "experience_required", "salary_range"):
         safe[key] = text_value(key)
     safe["experience_level"] = text_value("experience_level") or safe["experience_required"] or UNKNOWN_EXPERIENCE_LEVEL

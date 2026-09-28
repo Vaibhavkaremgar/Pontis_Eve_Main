@@ -1,6 +1,5 @@
 import json
 import logging
-import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -484,8 +483,13 @@ def _job_text(job_title: str, job_description: str, job_requirements: Any = "", 
     return " ".join(part for part in parts if part)
 
 
+def normalize_job_experience(job_text: Any = "", experience_required: Any = "") -> tuple[float | None, float | None]:
+    """Normalize explicit experience from any source into common min/max years."""
+    return _job_experience_bounds(_job_text("", job_text, experience_required))
+
+
 def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
-    normalized = _normalize_text(job_text).lower()
+    normalized = _normalize_text(job_text).lower().replace("–", "-").replace("—", "-")
     if not normalized:
         return None, None
 
@@ -512,7 +516,12 @@ def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
     for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", range_free):
         years = float(match.group("years"))
         min_years = years if min_years is None else max(min_years, years)
-        max_years = years if max_years is None else max_years
+        # Bare "5 years" is treated as an exact stated band; phrases that
+        # explicitly establish a floor remain open-ended.
+        prefix = (match.group(0)[:match.group(0).lower().find(str(int(years)))].strip().lower()
+                  if str(int(years)) in match.group(0) else "")
+        if not prefix and max_years is None:
+            max_years = years
 
     if min_years is not None and max_years is not None and max_years < min_years:
         max_years = None
@@ -529,18 +538,30 @@ def _count_skill_matches(candidate_skills: List[str], job_text: str) -> int:
 
 def _job_is_eligible(signals: Dict[str, Any], candidate_years: float, job_title: str, job_description: str, job_requirements: Any = "", job_skills: Any = None) -> bool:
     job_text = _job_text(job_title, job_description, job_requirements, job_skills)
-    if not _job_passes_experience(candidate_years, job_text):
+    if not _job_passes_experience(candidate_years, job_text, job_requirements):
         return False
     return _job_passes_skills_or_role(signals, job_title, job_text)
 
 
-def _job_passes_experience(candidate_years: float, job_text: str) -> bool:
-    min_years, max_years = _job_experience_bounds(job_text)
+def experience_eligibility(candidate_years: float, job_text: Any = "", experience_required: Any = "") -> Dict[str, Any]:
+    """Central hard gate applied before scoring, regardless of job source."""
+    min_years, max_years = normalize_job_experience(job_text, experience_required)
+    reason = None
     if min_years is not None and candidate_years + EXPERIENCE_EPSILON_YEARS < min_years:
-        return False
-    if max_years is not None and candidate_years - EXPERIENCE_EPSILON_YEARS > max_years:
-        return False
-    return True
+        reason = "candidate_below_job_minimum"
+    elif max_years is not None and candidate_years - EXPERIENCE_EPSILON_YEARS > max_years:
+        reason = "candidate_above_job_maximum"
+    result = {"candidate_years": candidate_years, "job_min_years": min_years,
+              "job_max_years": max_years, "eligible": reason is None,
+              "decision": "eligible" if reason is None else "rejected",
+              "rejection_reason": reason}
+    logger.info("[experience-eligibility] candidate_years=%s job_min_years=%s job_max_years=%s decision=%s rejection_reason=%s",
+                result["candidate_years"], result["job_min_years"], result["job_max_years"], result["decision"], result["rejection_reason"])
+    return result
+
+
+def _job_passes_experience(candidate_years: float, job_text: str, experience_required: Any = "") -> bool:
+    return bool(experience_eligibility(candidate_years, job_text, experience_required)["eligible"])
 
 
 def _job_passes_skills_or_role(signals: Dict[str, Any], job_title: str, job_text: str) -> bool:
@@ -618,7 +639,8 @@ def _preference_eligibility(signals: Dict[str, Any], job: Dict[str, Any], candid
         reasons.append("employment_type_mismatch")
     # The established experience boundary remains an eligibility gate.
     job_text = _job_text(job.get("title", ""), job.get("description", ""), job.get("requirements", ""), job.get("skills"))
-    if not _job_passes_experience(candidate_years, job_text):
+    experience = experience_eligibility(candidate_years, job_text, job.get("experience_required"))
+    if not experience["eligible"]:
         reasons.append("experience_outside_required_range")
     return not reasons, reasons
 
@@ -1138,6 +1160,7 @@ async def refresh_candidate_job_matches(
     # 4. Hybrid re-ranking
     scored: List[Tuple[str, float, Dict]] = []
     rejected_experience = 0
+    experience_ineligible_job_ids: set[str] = set()
     rejected_skills_role = 0
     rejected_preferences = 0
     for job_id, job_data in job_details.items():
@@ -1146,6 +1169,7 @@ async def refresh_candidate_job_matches(
         if not preference_eligible:
             if "experience_outside_required_range" in ineligibility:
                 rejected_experience += 1
+                experience_ineligible_job_ids.add(job_id)
             else:
                 rejected_preferences += 1
             continue
@@ -1230,6 +1254,15 @@ async def refresh_candidate_job_matches(
     # 6. Upsert recommendations
     import json as _json
     async with SessionLocal() as db:
+        # Reconcile recommendations made from older or incomplete job data.
+        # Only explicit experience failures are hidden here; jobs omitted by
+        # ranking limits or other preference rules retain their history.
+        for stale_job_id in experience_ineligible_job_ids:
+            await db.execute(text("""
+                UPDATE candidate_job_recommendations
+                SET hidden_at = COALESCE(hidden_at, NOW()), generated_at = NOW()
+                WHERE candidate_id = :cid AND job_id = :jid
+            """), {"cid": candidate_id, "jid": stale_job_id})
         for rank, (job_id, score, components) in enumerate(ranked_jobs, start=1):
             ex = existing.get(job_id)
             match_reason = _json.dumps({"type": "hybrid_match", **components})
@@ -1288,7 +1321,7 @@ async def refresh_candidate_job_match(
     import json as _json
     async with SessionLocal() as db:
         row = await db.execute(text("""
-            SELECT cjr.match_reason, jd.title, jd.description, jd.requirements, jd.skills
+            SELECT cjr.match_reason, jd.title, jd.description, jd.requirements, jd.skills, jd.experience_required
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -1305,6 +1338,20 @@ async def refresh_candidate_job_match(
             reason = {}
     semantic_score = float(reason.get("semantic_score", 0.0)) if isinstance(reason, dict) else 0.0
     signals = _build_candidate_signals(candidate)
+    experience = experience_eligibility(
+        _candidate_total_experience_years(candidate),
+        _job_text(selected["title"] or "", selected["description"] or "", selected["requirements"] or "", selected["skills"] or []),
+        selected["experience_required"],
+    )
+    if not experience["eligible"]:
+        async with SessionLocal() as db:
+            await db.execute(text("""
+                UPDATE candidate_job_recommendations
+                SET hidden_at = COALESCE(hidden_at, NOW()), generated_at = NOW()
+                WHERE id = :rid AND candidate_id = :cid
+            """), {"rid": recommendation_id, "cid": candidate_id})
+            await db.commit()
+        return
     score, components = _hybrid_score(
         signals, selected["title"] or "", selected["description"] or "",
         selected["requirements"] or "", selected["skills"] or [], semantic_score,
