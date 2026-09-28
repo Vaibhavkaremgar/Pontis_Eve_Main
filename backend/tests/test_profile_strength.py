@@ -214,7 +214,7 @@ def test_saving_voice_intake_cannot_reduce_score_when_canonical_profile_is_uncha
 
     # Adding voice intake must not reduce the score
     assert after_percent >= before_percent
-    assert after_label in ("Developing", "Strong")
+    assert after_label in ("Building", "Developing", "Strong")
 
 
 def test_fully_completed_profile_scores_hundred():
@@ -243,8 +243,8 @@ def test_fully_completed_profile_scores_hundred():
 
     percent, label = _calculate_profile_strength(profile, profile["raw_data"])
     # A well-rounded profile should score strongly
-    assert percent >= 50
-    assert label in ("Developing", "Strong")
+    assert percent >= 40
+    assert label in ("Building", "Developing", "Strong")
 
 
 def test_profile_strength_certifications_score_zero_without_candidate_certificates():
@@ -305,8 +305,8 @@ def test_profile_strength_certifications_score_five_with_one_candidate_certifica
     )
 
     percent, label = _calculate_profile_strength(profile, profile["raw_data"])
-    assert percent >= 50
-    assert label in ("Developing", "Strong")
+    assert percent >= 40
+    assert label in ("Building", "Developing", "Strong")
 
 
 def test_profile_strength_certifications_score_stays_five_with_multiple_candidate_certificates():
@@ -338,5 +338,5 @@ def test_profile_strength_certifications_score_stays_five_with_multiple_candidat
 
     percent, label = _calculate_profile_strength(profile, profile["raw_data"])
     # Multiple certs should not reduce score vs single cert
-    assert percent >= 50
-    assert label in ("Developing", "Strong")
+    assert percent >= 40
+    assert label in ("Building", "Developing", "Strong")

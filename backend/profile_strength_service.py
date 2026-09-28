@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 EVIDENCE_UNKNOWN = 0       # No useful information
 EVIDENCE_CLAIMED = 1       # Resume claim or candidate statement
 EVIDENCE_CORROBORATED = 2  # Multiple independent sources agree
-EVIDENCE_DEMONSTRATED = 3  # Project / assessment / interview
+EVIDENCE_DEMONSTRATED = 3  # Project / work / explicit candidate usage
 EVIDENCE_VERIFIED = 4      # External/documentary verification
 
 # ---------------------------------------------------------------------------
@@ -87,6 +87,90 @@ def _as_list(value: Any) -> list:
     if _has_text(value):
         return [value]
     return []
+
+
+def _project_key(item: dict) -> str:
+    """Return a stable identity for a persisted project record."""
+    return _clean(item.get("title") or item.get("name") or item.get("project_name")).casefold()
+
+
+def _is_self_project_experience(item: dict) -> bool:
+    """Return whether Eve's normal experience record is a Self-Project."""
+    marker = re.sub(r"[^a-z0-9]+", " ", _clean(item.get("company")).casefold()).strip()
+    return marker in {"self project", "self-project"}
+
+
+def _read_project_evidence(candidate: dict, raw: dict, parsed_resume: dict) -> list[dict]:
+    """Read genuine project records across the persisted profile shapes.
+
+    Self-Projects are persisted by some profile paths as project fields on an
+    experience record rather than in the top-level projects collection.  Only
+    records with an explicit project identity are promoted; ordinary work
+    descriptions are intentionally left as work experience.
+    """
+    sources = [raw.get("projects"), candidate.get("projects"), parsed_resume.get("projects")]
+    records: list[dict] = []
+    for source in sources:
+        for item in _as_list(source):
+            if isinstance(item, dict):
+                records.append(item)
+            elif _has_text(item):
+                # Legacy profile storage allowed a candidate-supplied project
+                # title as a string; retain that genuine project evidence.
+                title = _clean(item)
+                records.append({"title": title, "description": title})
+
+    # Self-Projects have historically lived in the work-experience payload,
+    # including parsed_resume_json/raw_data copies when the canonical column
+    # was not updated. Read all persisted copies; the final identity merge
+    # below makes this idempotent and prevents score inflation.
+    experience_sources = [
+        candidate.get("work_experience"),
+        parsed_resume.get("work_experience"),
+        raw.get("work_experience"),
+    ]
+    for experiences in experience_sources:
+        for experience in _as_list(experiences):
+            if not isinstance(experience, dict):
+                continue
+            nested = experience.get("projects")
+            if isinstance(nested, list):
+                records.extend(item for item in nested if isinstance(item, dict))
+            title = experience.get("project_title") or experience.get("projectTitle") \
+                or experience.get("project_name") or experience.get("projectName")
+            description = experience.get("project_description") or experience.get("projectDescription")
+            if _has_text(title) and _has_text(description):
+                records.append({"title": title, "description": description})
+            elif _is_self_project_experience(experience):
+                # Eve's Chat/Voice profile update persists a Self-Project using
+                # the ordinary work-experience shape: company="Self-Project",
+                # title=<project title>, description=<project description>.
+                # The explicit marker is required so normal jobs are not
+                # reclassified as projects.
+                title = experience.get("title") or experience.get("name")
+                description = experience.get("description") or experience.get("summary")
+                if _has_text(title) and _has_text(description):
+                    records.append({"title": title, "description": description})
+
+    unique: list[dict] = []
+    by_key: dict[str, dict] = {}
+    for item in records:
+        title = _clean(item.get("title") or item.get("name") or item.get("project_name"))
+        description = _clean(item.get("description") or item.get("summary"))
+        # A title alone is not enough for a genuine project evidence record.
+        if not title or not description:
+            continue
+        key = title.casefold()
+        existing = by_key.get(key)
+        if existing is None:
+            normalized = dict(item)
+            normalized["title"] = title
+            normalized["description"] = description
+            by_key[key] = normalized
+            unique.append(normalized)
+        elif len(description) > len(_clean(existing.get("description"))):
+            existing["description"] = description
+    return unique
 
 
 def _experience_has_dates(item: Any) -> bool:
@@ -422,9 +506,9 @@ def build_attribute_evidence(candidate: dict, prefs_row: Optional[dict] = None) 
         _add("certifications", "verified_by_document", EVIDENCE_VERIFIED, 0.9)
 
     # Interview scores = demonstrated
-    tech_score, comm_score, _ = _completed_assessment_scores(candidate)
-    if tech_score is not None:
-        _add("skills", "demonstrated_in_assessment", EVIDENCE_DEMONSTRATED, min(float(tech_score) / 10.0, 1.0))
+    # Eve has no technical-assessment workflow. Technical capability is
+    # demonstrated by work, projects, and explicit candidate usage evidence.
+    _, comm_score, _ = _completed_assessment_scores(candidate)
     if comm_score is not None:
         _add("communication", "demonstrated_in_assessment", EVIDENCE_DEMONSTRATED, min(float(comm_score) / 10.0, 1.0))
 
@@ -495,8 +579,7 @@ def _score_identity_background(candidate: dict, evidence: dict) -> dict:
 
 
 def _score_skills_capability(candidate: dict, evidence: dict, role_category: str) -> dict:
-    """Dimension 2: Skills & Capability — with freshness applied to evidence confidence."""
-    score = 0.0
+    """Dimension 2: skills coverage plus supported capability (20 points)."""
     signals = []
     now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -504,15 +587,14 @@ def _score_skills_capability(candidate: dict, evidence: dict, role_category: str
     if not isinstance(skills, list):
         skills = []
 
-    if len(skills) >= 1:
-        score += 20
+    components = []
+    relevant = len(skills) >= 1
+    if relevant:
+        components.append(("relevant_skills_listed", 6))
         signals.append("has_skills")
     if len(skills) >= 3:
-        score += 15
+        components.append(("role_relevant_breadth", 3))
         signals.append("multiple_skills")
-    if len(skills) >= 6:
-        score += 10
-        signals.append("broad_skills")
 
     # Evidence quality bonus — apply freshness to skill evidence
     skill_ev = evidence.get("skills", {})
@@ -523,13 +605,13 @@ def _score_skills_capability(candidate: dict, evidence: dict, role_category: str
     freshness = _freshness_factor(years_old, decay_after=3.0, floor=0.6)
 
     if ev_level >= EVIDENCE_DEMONSTRATED:
-        score += 25 * freshness
+        components.append(("skills_connected_to_work", 6))
         signals.append("skills_demonstrated")
     elif ev_level >= EVIDENCE_CORROBORATED:
-        score += 20 * freshness
+        components.append(("skills_connected_to_work", 4))
         signals.append("skills_corroborated")
     elif ev_level >= EVIDENCE_CLAIMED:
-        score += 10 * freshness
+        components.append(("skills_connected_to_work", 2))
         signals.append("skills_claimed")
 
     # For technical roles: work experience descriptions mentioning tech
@@ -540,37 +622,56 @@ def _score_skills_capability(candidate: dict, evidence: dict, role_category: str
             if isinstance(w, dict) and _has_text(w.get("description"))
         )
         if tech_descriptions > 0:
-            score += 10
+            components.append(("technical_functional_depth", 2))
             signals.append("technical_descriptions")
-
-    return {"score": min(score, 100.0), "signals": signals}
+    corroborated = evidence.get("skills", {}).get("evidence_level", 0) >= EVIDENCE_CORROBORATED
+    if corroborated:
+        components.append(("cross_source_corroboration", 3))
+    earned = sum(points for _, points in components)
+    return {"score": min(earned / 20.0 * 100.0, 100.0), "earned_points": earned,
+            "signals": signals,
+            "components": [{"name": n, "points": p, "earned": True} for n, p in components],
+            "maximum": 20}
 
 
 def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: str) -> dict:
-    """Dimension 3: Evidence"""
-    score = 0.0
+    """Dimension 3: quality and depth of distinct evidence (30 points)."""
     signals = []
+    components = []
 
     # Projects
     parsed_resume = _parse_raw(candidate.get("parsed_resume_json"))
     # Projects may arrive from resume parsing, chat/voice raw_data, or a
     # canonical profile column.  All are candidate-provided evidence; the
     # source affects provenance, not whether the section exists.
-    projects = (
-        raw.get("projects")
-        or candidate.get("projects")
-        or parsed_resume.get("projects")
-        or []
-    )
+    projects = _read_project_evidence(candidate, raw, parsed_resume)
     vi_state = get_voice_intake_state(candidate)
     has_projects = (
-        bool(_as_list(projects))
+        bool(projects)
         or _has_text(raw.get("project_summary"))
         or "responsibilities_projects" in vi_state.get("known_topics", [])
     )
     if has_projects:
-        score += 25
+        components.append(("genuine_project_or_substantive_work", 4))
         signals.append("projects")
+
+    distinct_projects = len(projects)
+    if distinct_projects >= 2:
+        components.append(("multiple_distinct_projects", 4))
+        signals.append("multiple_distinct_projects")
+
+    project_text = " ".join(_clean(p.get("description")) for p in projects)
+    work_text = " ".join(_clean(w.get("description") or w.get("summary") or w.get("responsibilities"))
+                          for w in (candidate.get("work_experience") or []) if isinstance(w, dict))
+    all_text = f"{project_text} {work_text}".lower()
+    if re.search(r"\b(built|developed|designed|implemented|solved|automated|created|improved|managed)\b", all_text):
+        components.append(("purpose_problem_solution", 5))
+    if re.search(r"\b(python|java|javascript|typescript|fastapi|react|sql|postgres|docker|aws|redis|api|framework|database)\b", all_text):
+        components.append(("technologies_tools_methods", 4))
+    if re.search(r"\b(i|we)\s+(built|developed|designed|implemented|led|owned|managed)|responsibil", all_text):
+        components.append(("candidate_responsibilities", 4))
+    if re.search(r"\b(increased|reduced|improved|achieved|delivered|scale|%|users|revenue|performance|latency)\b", all_text):
+        components.append(("outcomes_impact", 3))
 
     # A populated certification section is useful profile evidence even when
     # its documents have not been uploaded.  Uploaded documents receive the
@@ -582,31 +683,17 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
         or parsed_resume.get("certifications")
     )
     if claimed_certs:
-        score += 10
+        components.append(("certifications", 1))
         signals.append("certifications_claimed")
-
-    # Uploaded certificates
-    certs = candidate.get("candidate_certificates") or []
-    if isinstance(certs, list) and len(certs) > 0:
-        score += 20
-        signals.append("uploaded_certificates")
-
-    # Interview scores
-    tech_score, _, _ = _completed_assessment_scores(candidate)
-    if tech_score is not None:
-        score += 30
-        signals.append("technical_assessment")
 
     # Voice demonstrated capability
     if "responsibilities_projects" in vi_state.get("known_topics", []):
-        score += 15
         signals.append("voice_projects")
 
     # Work experience with descriptions (evidence of doing, not just claiming)
     work_exp = candidate.get("work_experience") or []
     described = sum(1 for w in work_exp if isinstance(w, dict) and _has_text(w.get("description") or w.get("summary")))
     if described >= 1:
-        score += 10
         signals.append("described_experience")
 
     # Credit complete, substantive employment records rather than merely a
@@ -621,17 +708,20 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
         and _has_text(w.get("description") or w.get("summary"))
     )
     if complete_roles:
-        score += min(15, 5 + complete_roles * 5)
+        components.append(("work_history_depth", 3))
         signals.append("complete_experience_records")
 
     # Non-technical roles: communication evidence counts here too
     if role_category in ("sales", "management"):
         comm_ev = evidence.get("communication", {})
         if comm_ev.get("evidence_level", 0) >= EVIDENCE_DEMONSTRATED:
-            score += 20
             signals.append("communication_assessed")
-
-    return {"score": min(score, 100.0), "signals": signals}
+    if ("projects" in signals and ("voice_projects" in signals or evidence.get("projects", {}).get("source"))):
+        components.append(("resume_profile_chat_voice_corroboration", 2))
+    earned = min(sum(points for _, points in components), 30)
+    return {"score": earned / 30.0 * 100.0, "earned_points": earned, "signals": signals,
+            "components": [{"name": n, "points": p, "earned": True} for n, p in components],
+            "maximum": 30, "projects_detected": distinct_projects}
 
 
 def _score_career_intent(candidate: dict, prefs: dict, raw: dict, vi_state: dict) -> dict:
@@ -645,7 +735,7 @@ def _score_career_intent(candidate: dict, prefs: dict, raw: dict, vi_state: dict
         preferred_roles = []
 
     if len(preferred_roles) >= 1:
-        score += 30
+        score += 5
         signals.append("target_role_stated")
         # Penalise vague "anything" intent
         vague = any(
@@ -653,36 +743,37 @@ def _score_career_intent(candidate: dict, prefs: dict, raw: dict, vi_state: dict
             for r in preferred_roles
         )
         if vague:
-            score -= 15
+            score -= 3
             ambiguity_flags.append("vague_role_preference")
     else:
         ambiguity_flags.append("no_target_role")
 
     if _has_text(candidate.get("current_role") or candidate.get("headline")):
-        score += 15
+        score += 2
         signals.append("current_role_known")
 
     # Career goals / summary
     if _has_text(candidate.get("summary")):
-        score += 15
+        score += 4
         signals.append("career_summary")
 
     # Voice-confirmed intent
     if "target_role" in vi_state.get("known_topics", []):
-        score += 20
+        score += 3
         signals.append("voice_confirmed_intent")
 
     if "career_preferences" in vi_state.get("known_topics", []):
-        score += 10
+        score += 1
         signals.append("career_preferences_known")
 
     preferred_industries = prefs.get("preferred_industries") or []
     if isinstance(preferred_industries, list) and len(preferred_industries) > 0:
-        score += 10
+        score += 1
         signals.append("target_industries")
 
     return {
-        "score": min(max(score, 0.0), 100.0),
+        "score": min(max(score, 0.0), 15.0) / 15.0 * 100.0,
+        "earned_points": min(max(score, 0.0), 15.0),
         "signals": signals,
         "ambiguity_flags": ambiguity_flags,
     }
@@ -718,17 +809,16 @@ def _score_preferences_constraints(prefs: dict, raw: dict, vi_state: dict) -> di
 
     score_ref: list[int] = []
 
-    _check("preferred_roles", "preferred_roles", 20)
-    _check("preferred_locations", "location_preferences", 15)
-    _check("remote_preference", "remote_preference", 15, freshness_decay=1.0)  # time-sensitive
-    _check("notice_period", "availability", 15, freshness_decay=0.5)           # highly time-sensitive
-    _check("expected_salary", "salary_expectation", 10)
-    _check("employment_types", "employment_types", 10)
-    _check("preferred_industries", "target_industries", 10)
+    _check("preferred_locations", "location_preferences", 2)
+    _check("remote_preference", "remote_preference", 2, freshness_decay=1.0)
+    _check("notice_period", "availability", 2, freshness_decay=0.5)
+    _check("expected_salary", "salary_expectation", 1)
+    _check("employment_types", "employment_types", 1)
+    _check("preferred_industries", "target_industries", 1)
 
     willing = prefs.get("willing_to_relocate")
     if willing is not None:
-        score_ref.append(5)
+        score_ref.append(1)
         signals.append("relocation_stated")
         known.append("relocation")
     else:
@@ -737,7 +827,8 @@ def _score_preferences_constraints(prefs: dict, raw: dict, vi_state: dict) -> di
     score = float(sum(score_ref))
 
     return {
-        "score": min(score, 100.0),
+        "score": min(score, 10.0) / 10.0 * 100.0,
+        "earned_points": min(score, 10.0),
         "signals": signals,
         "known": known,
         "unknown": unknown,
@@ -745,42 +836,42 @@ def _score_preferences_constraints(prefs: dict, raw: dict, vi_state: dict) -> di
 
 
 def _score_behaviour_communication(candidate: dict, vi_state: dict) -> dict:
-    """Dimension 6: Behaviour & Communication"""
-    score = 0.0
+    """Dimension 6: substantive communication evidence (7 points)."""
     signals = []
+    components = []
 
     # Interview communication score
     _, comm_score, culture_score = _completed_assessment_scores(candidate)
-    if comm_score is not None:
-        try:
-            normalized = float(comm_score) / 10.0
-            score += normalized * 60
-            signals.append("interview_communication_score")
-        except (TypeError, ValueError):
-            pass
+    # Assessment scores are intentionally excluded from this model.
 
-    # Voice intake: meaningful multi-turn conversation = communication evidence
     turn_count = vi_state.get("turn_count", 0)
-    if turn_count >= 3:
-        score += 30
-        signals.append("voice_multi_turn")
-    elif turn_count >= 1:
-        score += 15
-        signals.append("voice_single_turn")
+    turns = vi_state.get("completed_turns", [])
+    substantive = [t for t in turns if len(_clean(t.get("answer"))) >= 25]
+    if substantive:
+        components.append(("meaningful_participation", 2))
+        signals.append("meaningful_interaction")
+    text = " ".join(_clean(t.get("answer")) for t in substantive).lower()
+    if re.search(r"\b(built|developed|designed|implemented|led|managed|responsib|project|experience)\b", text):
+        components.append(("experience_responsibilities_explained", 2))
+        signals.append("experience_explained")
+    if turns and not any(i.get("severity") in ("high", "medium") for i in _detect_inconsistencies(candidate, vi_state)):
+        components.append(("coherent_information", 2))
+        signals.append("coherent_information")
+    if len(substantive) >= 2:
+        components.append(("useful_follow_up_detail", 1))
+        signals.append("follow_up_detail")
 
     # Culture fit score
-    if culture_score is not None:
-        try:
-            score += (float(culture_score) / 10.0) * 10
-            signals.append("culture_fit_score")
-        except (TypeError, ValueError):
-            pass
+    # No assessment or culture score is used here.
 
     # If no behavioural evidence at all, return incomplete (not fabricated)
-    if not signals:
+    if not components:
         return {"score": None, "signals": [], "incomplete": True}
 
-    return {"score": min(score, 100.0), "signals": signals, "incomplete": False}
+    earned = min(sum(p for _, p in components), 7)
+    return {"score": earned / 7.0 * 100.0, "earned_points": earned, "signals": signals,
+            "components": [{"name": n, "points": p, "earned": True} for n, p in components],
+            "maximum": 7, "incomplete": False}
 
 
 def _score_career_readiness(
@@ -795,25 +886,20 @@ def _score_career_readiness(
     evidence = dim_scores.get("evidence", {}).get("score", 0) or 0
     intent = dim_scores.get("career_intent", {}).get("score", 0) or 0
 
-    # Weighted composite — role-aware
-    if role_category == "technical":
-        weights = {"identity": 0.15, "skills": 0.35, "evidence": 0.35, "intent": 0.15}
-    elif role_category == "sales":
-        weights = {"identity": 0.20, "skills": 0.20, "evidence": 0.30, "intent": 0.30}
-    else:
-        weights = {"identity": 0.25, "skills": 0.25, "evidence": 0.25, "intent": 0.25}
-
-    score = (
-        identity * weights["identity"]
-        + skills * weights["skills"]
-        + evidence * weights["evidence"]
-        + intent * weights["intent"]
-    )
-
     signals = []
     missing_critical = []
-
-    if intent < 30:
+    components = []
+    if identity >= 70:
+        components.append(("identity_sufficient", 1))
+    if intent >= 70:
+        components.append(("target_role_clear", 2))
+    if skills >= 60:
+        components.append(("skills_relevant_supported", 2))
+    if evidence >= 60:
+        components.append(("evidence_substantive", 2))
+    if prefs and sum(bool(v) for v in prefs.values()) >= 3:
+        components.append(("key_constraints_known", 1))
+    if intent < 70:
         missing_critical.append("career_intent_unclear")
     if skills < 20:
         missing_critical.append("skills_insufficient")
@@ -824,9 +910,12 @@ def _score_career_readiness(
         signals.append("voice_intake_completed_turns")
 
     return {
-        "score": min(score, 100.0),
+        "score": sum(p for _, p in components) / 8.0 * 100.0,
+        "earned_points": sum(p for _, p in components),
         "signals": signals,
         "missing_critical": missing_critical,
+        "components": [{"name": n, "points": p, "earned": True} for n, p in components],
+        "maximum": 8,
     }
 
 
@@ -1041,12 +1130,12 @@ def _role_aware_profile_weight(role_category: str) -> dict[str, float]:
     """
     if role_category == "technical":
         return {
-            "identity_background": 0.12,
-            "skills_capability": 0.25,
-            "evidence": 0.25,
+            "identity_background": 0.10,
+            "skills_capability": 0.20,
+            "evidence": 0.30,
             "career_intent": 0.15,
             "preferences_constraints": 0.10,
-            "behaviour_communication": 0.05,
+            "behaviour_communication": 0.07,
             "career_readiness": 0.08,
         }
     if role_category == "sales":
@@ -1060,15 +1149,9 @@ def _role_aware_profile_weight(role_category: str) -> dict[str, float]:
             "career_readiness": 0.05,
         }
     # general / management / creative
-    return {
-        "identity_background": 0.15,
-        "skills_capability": 0.20,
-        "evidence": 0.20,
-        "career_intent": 0.18,
-        "preferences_constraints": 0.12,
-        "behaviour_communication": 0.08,
-        "career_readiness": 0.07,
-    }
+    return {"identity_background": 0.10, "skills_capability": 0.20, "evidence": 0.30,
+            "career_intent": 0.15, "preferences_constraints": 0.10,
+            "behaviour_communication": 0.07, "career_readiness": 0.08}
 
 
 # ---------------------------------------------------------------------------
@@ -1187,7 +1270,7 @@ def _build_explainability(dim_scores: dict, prefs: dict, evidence: dict, vi_stat
         strong.append("Skills (corroborated)")
     elif _dim_score("skills_capability") >= 40:
         needs_evidence.append("Skills (claimed but not yet evidenced)")
-        next_actions.append("Add projects or assessments that demonstrate your skills")
+        next_actions.append("Add projects or responsibilities that demonstrate your skills")
     else:
         missing.append("Skills")
         next_actions.append("Add your key skills to your profile")
@@ -1196,7 +1279,7 @@ def _build_explainability(dim_scores: dict, prefs: dict, evidence: dict, vi_stat
         strong.append("Evidence of capability")
     elif _dim_score("evidence") < 30:
         needs_evidence.append("Projects or demonstrated work")
-        next_actions.append("Add projects, assessments, or portfolio links")
+        next_actions.append("Add projects, responsibilities, or portfolio links")
 
     prefs_score = _dim_score("preferences_constraints")
     prefs_dim = dim_scores.get("preferences_constraints", {})
@@ -1232,9 +1315,9 @@ def _build_ninety_percent_guidance(percent: int, explain: dict) -> dict:
     action_sections = {
         "Tell Eve what kind of role you are targeting": ("Target role", "preferred-roles"),
         "Upload your resume or add work experience": ("Work experience", "work-experience"),
-        "Add projects or assessments that demonstrate your skills": ("Projects and skill evidence", "additional-information"),
+        "Add projects or responsibilities that demonstrate your skills": ("Projects and skill evidence", "additional-information"),
         "Add your key skills to your profile": ("Key skills", "skills"),
-        "Add projects, assessments, or portfolio links": ("Projects and portfolio", "additional-information"),
+        "Add projects, responsibilities, or portfolio links": ("Projects and portfolio", "additional-information"),
         "Share your availability / notice period": ("Availability", "additional-information"),
         "Share your preferred work mode (remote/hybrid/on-site)": ("Work preferences", "additional-information"),
         "Share your salary expectations": ("Salary expectations", "additional-information"),
@@ -1353,10 +1436,9 @@ def build_profile_strength_diagnostic(
         "intent": dimensions["career_intent"]["score"] or 0,
     }
 
-    projects = raw.get("projects") or candidate.get("projects") or parsed_resume.get("projects") or []
+    projects = _read_project_evidence(candidate, raw, parsed_resume)
     claimed_certs = _as_list(candidate.get("certifications") or raw.get("certifications") or parsed_resume.get("certifications"))
     uploaded_certs = candidate.get("candidate_certificates") or []
-    tech_assessment, _, _ = _completed_assessment_scores({**candidate, "raw_data": raw})
     skill_evidence_component = (
         {"name": "skills_demonstrated", "points": 25 * freshness}
         if evidence_level >= EVIDENCE_DEMONSTRATED else
@@ -1394,7 +1476,8 @@ def build_profile_strength_diagnostic(
             "responsibilities_projects_from_voice": "responsibilities_projects" in voice["known_topics"],
             "described_experience": technical_descriptions,
             "complete_experience_records": complete_records,
-            "technical_assessment_score": tech_assessment,
+            "technical_assessment_score": None,
+            "technical_assessment_applicable": False,
             "all_evidence_signals": evidence,
         },
         "career_readiness": {
@@ -1550,12 +1633,6 @@ def calculate_profile_strength_v2(
     else:
         raw_percent = 0.0
 
-    # Fresher adjustment: boost education/skills weight if no work history
-    if is_fresher:
-        edu = enriched.get("education") or []
-        if isinstance(edu, list) and len(edu) > 0:
-            raw_percent = min(raw_percent + 5, 100.0)
-
     # Consistency penalty
     medium_issues = sum(1 for i in inconsistencies if i.get("severity") == "medium")
     raw_percent = max(raw_percent - medium_issues * 3, 0.0)
@@ -1586,6 +1663,9 @@ def calculate_profile_strength_v2(
     # Structured dimension output for API
     def _dim_out(d: dict, key: str) -> dict:
         out: dict = {"score": d.get("score"), "signals": d.get("signals", [])}
+        for field in ("components", "maximum", "earned_points"):
+            if field in d:
+                out[field] = d[field]
         if "ambiguity_flags" in d:
             out["ambiguity_flags"] = d["ambiguity_flags"]
         if "incomplete" in d:

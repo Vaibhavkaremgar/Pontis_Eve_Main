@@ -20,6 +20,7 @@ from profile_strength_service import (
     EVIDENCE_CORROBORATED,
     EVIDENCE_DEMONSTRATED,
     EVIDENCE_VERIFIED,
+    _role_aware_profile_weight,
 )
 
 
@@ -97,6 +98,7 @@ def test_ninety_percent_guidance_is_derived_from_the_canonical_score_result():
     assert guidance["remaining_percent_to_90"] == max(0, 90 - result["percent"])
     assert guidance["items"]
     assert all({"title", "action", "section"} <= item.keys() for item in guidance["items"])
+    assert all("assessment" not in f"{item['title']} {item['action']}".lower() for item in guidance["items"])
 
 
 def test_profile_strength_diagnostic_reports_existing_calculation_without_changing_it():
@@ -110,6 +112,47 @@ def test_profile_strength_diagnostic_reports_existing_calculation_without_changi
     assert diagnostic["career_readiness"]["score"] == original["dimensions"]["career_readiness"]["score"]
     assert diagnostic["final_calculation"] == original["calculation"]
     assert diagnostic["evidence_dimension"]["responsibilities_projects_from_voice"] is True
+
+
+def test_approved_profile_strength_weights_sum_to_100_percent():
+    weights = _role_aware_profile_weight("technical")
+    assert weights == {
+        "identity_background": 0.10,
+        "skills_capability": 0.20,
+        "evidence": 0.30,
+        "career_intent": 0.15,
+        "preferences_constraints": 0.10,
+        "behaviour_communication": 0.07,
+        "career_readiness": 0.08,
+    }
+    assert round(sum(weights.values()), 12) == 1.0
+
+
+def test_dimension_breakdowns_expose_earned_maximum_components_and_score():
+    result = calculate_profile_strength_v2(_with_prefs(_with_resume(), roles=["Backend Engineer"]))
+    for key, maximum in {
+        "identity_background": 10,
+        "skills_capability": 20,
+        "evidence": 30,
+        "career_intent": 15,
+        "preferences_constraints": 10,
+        "behaviour_communication": 7,
+        "career_readiness": 8,
+    }.items():
+        dimension = result["dimensions"][key]
+        assert "score" in dimension
+        if "earned_points" in dimension:
+            assert dimension["earned_points"] <= maximum
+        if "maximum" in dimension:
+            assert dimension["maximum"] == maximum
+        assert all("name" in component for component in dimension.get("components", []))
+
+
+def test_career_readiness_is_independent_of_overall_weighted_score():
+    result = calculate_profile_strength_v2(_with_prefs(_with_resume(), roles=["Backend Engineer"]))
+    readiness = result["dimensions"]["career_readiness"]
+    assert readiness["score"] != result["percent"]
+    assert readiness["earned_points"] <= 8
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +230,7 @@ def test_existing_parsed_resume_summary_is_counted_in_ninety_percent_profile():
 
     result = calculate_profile_strength_v2(c)
 
-    assert result["percent"] == 90
+    assert result["percent"] == 79
     assert "career_summary" in result["dimensions"]["career_intent"]["signals"]
 
 
@@ -231,10 +274,9 @@ def test_complete_profile_counts_canonical_preference_keys_and_exposes_every_con
     result = calculate_profile_strength_v2(c)
     calculation = result["calculation"]
 
-    # Full persisted data produces 93. The remaining preference five points
-    # are only the deliberately optional relocation declaration.
-    assert result["percent"] == 93
-    assert result["dimensions"]["preferences_constraints"]["score"] == 95
+    # Technical interview scores are no longer part of profile strength.
+    assert result["percent"] == 70
+    assert result["dimensions"]["preferences_constraints"]["score"] == 90
     assert set(calculation["weighted_categories"]) == {
         "identity_background", "skills_capability", "evidence", "career_intent",
         "preferences_constraints", "behaviour_communication", "career_readiness",
@@ -242,8 +284,8 @@ def test_complete_profile_counts_canonical_preference_keys_and_exposes_every_con
     assert calculation["final_percent"] == result["percent"]
 
 
-def test_completed_assessments_and_voice_preferences_raise_a_complete_profile_above_90():
-    """Completed evidence and every persisted intake preference earn their real credit."""
+def test_completed_assessments_are_not_applicable_but_voice_preferences_count():
+    """Technical assessments contribute no points; voice corroboration still counts for behaviour."""
     c = _base()
     c.update({
         "name": "Assessment Candidate", "email": "assessment@example.com",
@@ -283,9 +325,16 @@ def test_completed_assessments_and_voice_preferences_raise_a_complete_profile_ab
 
     result = calculate_profile_strength_v2(c)
 
-    assert result["percent"] >= 90
-    assert "skills_demonstrated" in result["dimensions"]["skills_capability"]["signals"]
-    assert "interview_communication_score" in result["dimensions"]["behaviour_communication"]["signals"]
+    technical_only = dict(c)
+    technical_only["raw_data"] = dict(c["raw_data"])
+    technical_only["raw_data"]["assessments"] = [{"type": "technical", "status": "completed", "score": 9.0}]
+    technical_only_result = calculate_profile_strength_v2(technical_only)
+
+    assert result["dimensions"]["skills_capability"]["score"] == technical_only_result["dimensions"]["skills_capability"]["score"]
+    assert result["dimensions"]["evidence"]["score"] == technical_only_result["dimensions"]["evidence"]["score"]
+    assert "skills_demonstrated" not in result["dimensions"]["skills_capability"]["signals"]
+    assert "interview_communication_score" not in result["dimensions"]["behaviour_communication"]["signals"]
+    assert "meaningful_interaction" in result["dimensions"]["behaviour_communication"]["signals"]
     assert result["dimensions"]["preferences_constraints"]["score"] == 100
 
 
@@ -321,8 +370,8 @@ def test_complete_candidate_credits_persisted_resume_preferences_and_relocation(
     # location, remote, availability, salary, employment type, industry, and
     # relocation.  The score follows the defined weights; it is not a floor.
     assert result["dimensions"]["preferences_constraints"]["score"] == 100
-    assert result["dimensions"]["career_intent"]["score"] == 70
-    assert result["percent"] == 77
+    assert result["dimensions"]["career_intent"]["score"] == 80.0
+    assert result["percent"] == 69
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +409,72 @@ class TestCandidate2ResumeAndVoice:
 # ---------------------------------------------------------------------------
 
 class TestCandidate3StrongEvidence:
+    def test_eve_self_project_storage_shape_is_detected(self):
+        c = _with_resume()
+        # Actual Chat/Voice persistence shape: a standard work-experience
+        # record marked by company="Self-Project".
+        c["work_experience"] = [{
+            "company": "Self-Project",
+            "title": "Python Developer",
+            "description": "Developed an AI Resume Parser and Candidate Profile Builder backend using Python and FastAPI.",
+        }]
+
+        diagnostic = build_profile_strength_diagnostic(c)
+
+        assert diagnostic["evidence_dimension"]["projects_detected"] == [{
+            "title": "Python Developer",
+            "description": "Developed an AI Resume Parser and Candidate Profile Builder backend using Python and FastAPI.",
+        }]
+
+    def test_saved_self_project_is_detected_as_structured_project_evidence(self):
+        c = _with_resume()
+        c["work_experience"] = [{
+            "title": "Self-Project",
+            "project_title": "Python Developer",
+            "project_description": "Developed an AI Resume Parser and Candidate Profile Builder backend using Python and FastAPI.",
+        }]
+
+        diagnostic = build_profile_strength_diagnostic(c)
+
+        assert diagnostic["evidence_dimension"]["projects_detected"] == [{
+            "title": "Python Developer",
+            "description": "Developed an AI Resume Parser and Candidate Profile Builder backend using Python and FastAPI.",
+        }]
+        assert "projects" in diagnostic["evidence_dimension"]["signals"]
+
+    def test_saved_self_project_duplicate_does_not_inflate_evidence(self):
+        c = _with_resume()
+        project = {"title": "Python Developer", "description": "Built an AI Resume Parser backend."}
+        c["raw_data"] = {"projects": [project]}
+        c["work_experience"] = [{
+            "title": "Self-Project",
+            "project_title": "python developer",
+            "project_description": "Built an AI Resume Parser backend.",
+        }]
+
+        duplicate = calculate_profile_strength_v2(c)["dimensions"]["evidence"]["score"]
+        c["work_experience"] = []
+        unique = calculate_profile_strength_v2(c)["dimensions"]["evidence"]["score"]
+
+        assert duplicate == unique
+
+    def test_saved_self_project_in_parsed_resume_is_detected(self):
+        c = _with_resume()
+        c["parsed_resume_json"] = {
+            "work_experience": [{
+                "title": "Self-Project",
+                "projectTitle": "Python Developer",
+                "projectDescription": "Built an AI Resume Parser backend using Python and FastAPI.",
+            }]
+        }
+
+        diagnostic = build_profile_strength_diagnostic(c)
+
+        assert diagnostic["evidence_dimension"]["projects_detected"] == [{
+            "title": "Python Developer",
+            "description": "Built an AI Resume Parser backend using Python and FastAPI.",
+        }]
+
     def test_projects_increase_evidence_score(self):
         c = _with_resume()
         raw = {"projects": ["AI automation platform", "REST API service"]}
@@ -385,18 +500,26 @@ class TestCandidate3StrongEvidence:
         assert "projects" in result["dimensions"]["evidence"]["signals"]
         assert "skills_demonstrated" not in result["dimensions"]["skills_capability"]["signals"]
 
-    def test_technical_assessment_raises_evidence_level(self):
+    def test_duplicate_projects_do_not_inflate_evidence(self):
+        c = _with_resume()
+        project = {"title": "Semantic job matching", "description": "Built embedding-based search.", "technologies": ["Python"]}
+        c["raw_data"] = {"projects": [project, dict(project)]}
+        duplicate_result = calculate_profile_strength_v2(c)
+        c["raw_data"] = {"projects": [project]}
+        unique_result = calculate_profile_strength_v2(c)
+        assert duplicate_result["dimensions"]["evidence"]["score"] == unique_result["dimensions"]["evidence"]["score"]
+
+    def test_technical_assessment_is_not_applicable(self):
         c = _with_resume()
         c["interview_technical_score"] = 8.5
         evidence = build_attribute_evidence(c)
-        assert evidence.get("skills", {}).get("evidence_level", 0) >= EVIDENCE_DEMONSTRATED
+        assert evidence.get("skills", {}).get("evidence_level", 0) < EVIDENCE_DEMONSTRATED
 
     def test_strong_evidence_candidate_scores_higher(self):
         c = _with_resume()
-        c["interview_technical_score"] = 8.0
         c["raw_data"] = {"projects": ["Platform project"], "preferred_roles": ["Backend Engineer"]}
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 60
+        assert result["percent"] == 44
 
 
 # ---------------------------------------------------------------------------
@@ -692,11 +815,11 @@ class TestEvidenceQuality:
         ev = build_attribute_evidence(c)
         assert ev["certifications"]["evidence_level"] == EVIDENCE_VERIFIED
 
-    def test_interview_score_is_demonstrated(self):
+    def test_interview_technical_score_is_not_demonstrated(self):
         c = _with_resume()
         c["interview_technical_score"] = 7.5
         ev = build_attribute_evidence(c)
-        assert ev["skills"]["evidence_level"] == EVIDENCE_DEMONSTRATED
+        assert ev["skills"]["evidence_level"] < EVIDENCE_DEMONSTRATED
 
     def test_resume_only_skills_are_claimed(self):
         c = _with_resume()
@@ -1080,7 +1203,7 @@ class TestHundredPercentGate:
         })
         result = calculate_profile_strength_v2(c)
         # Should be able to reach 100 when all gates are satisfied
-        assert result["percent"] >= 75  # at minimum approaching Strong
+        assert result["percent"] == 75
 
     def test_incomplete_candidate_cannot_reach_100(self):
         c = _base()
@@ -1256,7 +1379,7 @@ class TestFinalHundredPercentGates:
         """Technical professional with all role-critical evidence can reach Strong."""
         c = self._technical_professional()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] == 75
         assert result["label"] == "Strong"
 
     def test_technical_professional_github_not_mandatory(self):
@@ -1265,14 +1388,14 @@ class TestFinalHundredPercentGates:
         # No GitHub in raw_data
         assert "github" not in str(c.get("raw_data", {})).lower()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] == 75
 
     def test_technical_professional_certificates_not_mandatory(self):
         """Certificates are not required for a technical candidate to score high."""
         c = self._technical_professional()
         assert not c.get("candidate_certificates")
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] == 73
 
     def test_fresher_can_reach_high_score_without_work_experience(self):
         """Fresher with strong education/skills/projects/assessment can reach high score."""
@@ -1309,7 +1432,7 @@ class TestFinalHundredPercentGates:
         })
         result = calculate_profile_strength_v2(c)
         assert result["is_fresher"] is True
-        assert result["percent"] >= 70
+        assert result["percent"] == 67
 
     def test_sales_professional_can_reach_high_score_without_github_or_projects(self):
         """Sales professional without GitHub/projects can reach high score."""
@@ -1661,7 +1784,7 @@ class TestFinalHundredPercentGates:
     def test_technical_professional_can_reach_strong(self):
         """Technical professional with all role-critical evidence satisfied reaches Strong or near-Strong."""
         result = calculate_profile_strength_v2(self._technical_professional())
-        assert result["percent"] >= 75
+        assert result["percent"] == 75
         assert result["label"] in ("Developing", "Strong")
 
     def test_github_not_mandatory_for_technical(self):
@@ -1669,14 +1792,14 @@ class TestFinalHundredPercentGates:
         c = self._technical_professional()
         assert "github" not in str(c.get("raw_data", {})).lower()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] == 75
 
     def test_certificates_not_mandatory_for_technical(self):
         """Certificates are not required for a technical candidate to score high."""
         c = self._technical_professional()
         assert not c.get("candidate_certificates")
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] == 75
 
     def test_fresher_can_reach_high_score_without_work_experience(self):
         """Fresher with strong education/skills/projects/assessment can reach high score."""
@@ -1713,7 +1836,7 @@ class TestFinalHundredPercentGates:
         })
         result = calculate_profile_strength_v2(c)
         assert result["is_fresher"] is True
-        assert result["percent"] >= 70
+        assert result["percent"] == 67
 
     def test_sales_professional_can_reach_high_score_without_github_or_projects(self):
         """Sales professional without GitHub/projects can reach high score."""
