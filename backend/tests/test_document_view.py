@@ -136,7 +136,7 @@ def test_application_resume_view_uses_the_authenticated_document_mechanism(tmp_p
     monkeypatch.setattr(server, "DOCS_DIR", tmp_path)
     _stub_candidate(monkeypatch)
     monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession({
-        "SELECT file_name, file_path, recommendation_id FROM candidate_application_resumes": FakeResult([("pontis_sai_vignesh.pdf", "rec-1.pdf", "rec-1")]),
+        "SELECT file_name, file_path, recommendation_id, company_name FROM candidate_application_resumes": FakeResult([("pontis_sai_vignesh.pdf", "rec-1.pdf", "rec-1", "Pontis")]),
     }))
 
     response = asyncio.run(server.view_application_resume("candidate-1", "app-1", authorization=_auth()))

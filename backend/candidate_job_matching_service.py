@@ -173,6 +173,11 @@ _EXPERIENCE_MONTHS = {
     "nov": 11, "november": 11,
     "dec": 12, "december": 12,
 }
+_EXPERIENCE_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12,
+}
 
 
 def _normalize(term: str) -> str:
@@ -493,6 +498,9 @@ def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
     if not normalized:
         return None, None
 
+    for word, number in sorted(_EXPERIENCE_NUMBER_WORDS.items(), key=lambda item: -len(item[0])):
+        normalized = re.sub(rf"\b{word}\b", str(number), normalized)
+
     min_years: float | None = None
     max_years: float | None = None
 
@@ -506,14 +514,14 @@ def _job_experience_bounds(job_text: str) -> tuple[float | None, float | None]:
             min_years = low if min_years is None else max(min_years, low)
             max_years = high if max_years is None else min(max_years, high)
 
-    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)", normalized):
+    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?:of\s*)?(?P<years>\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)", normalized):
         years = float(match.group("years"))
         min_years = years if min_years is None else max(min_years, years)
 
     # Do not re-interpret the upper end of an already parsed ``1-3 years``
     # range as a separate minimum requirement.
     range_free = re.sub(r"\d+(?:\.\d+)?\s*(?:[-\u2013\u2014]|to)\s*\d+(?:\.\d+)?\s*(?:years?|yrs?)", "", normalized)
-    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", range_free):
+    for match in re.finditer(r"(?:minimum|min\.?|at least|requires?|requiring)?\s*(?:of\s*)?(?P<years>\d+(?:\.\d+)?)\s*(?:years?|yrs?)", range_free):
         years = float(match.group("years"))
         min_years = years if min_years is None else max(min_years, years)
         # Bare "5 years" is treated as an exact stated band; phrases that
@@ -1037,6 +1045,20 @@ def _hybrid_score(
         "constraint_penalty": round(constraint_penalty, 4),
         "final_score": round(final, 4),
     }
+    required_skills = _extract_job_required_skills(job_text)
+    if not required_skills and isinstance(job_skills, list):
+        required_skills = [
+            _normalize_text(skill.get("name") or skill.get("title") or skill.get("skill"))
+            if isinstance(skill, dict) else _normalize_text(skill)
+            for skill in job_skills
+        ]
+    candidate_skills = signals.get("skills") or []
+    components["missing_required_skills"] = [
+        skill for skill in required_skills if skill and not any(
+            _normalize(skill) == _normalize(candidate_skill)
+            for candidate_skill in candidate_skills if candidate_skill
+        )
+    ]
     if incompatibilities:
         components["incompatibilities"] = incompatibilities
 

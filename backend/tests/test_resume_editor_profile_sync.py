@@ -366,6 +366,7 @@ def test_match_improvement_endpoint_extracts_competencies_from_live_failure_shap
     response = asyncio.run(server.get_job_match_improvement("candidate-live-shape", "rec-live-shape"))
 
     assert response["missing_skills"]
+    assert response["requirements"]
     assert {"Django", "ETL", "Celery", "GCP", "Kubernetes"}.issubset(response["missing_skills"])
     assert "REST APIs" not in response["missing_skills"]
     assert not any("Relational database understanding" in skill for skill in response["missing_skills"])
@@ -475,6 +476,11 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
     monkeypatch.setattr(server, "_save_resume_editor_updates", save_updates)
     monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
     monkeypatch.setattr(server, "_get_candidate_profile_payload", get_profile)
+    # Credit authorization is covered separately; this regression exercises
+    # canonical profile synchronization after an already-authorized save.
+    async def authorized(*_args):
+        return None
+    monkeypatch.setattr(server, "_validate_resume_fix_credit_claim", authorized)
     monkeypatch.setattr(server, "SessionLocal", lambda: _ScoreSession())
     monkeypatch.setattr(candidate_job_matching_service, "refresh_candidate_job_match", refresh_match)
 
