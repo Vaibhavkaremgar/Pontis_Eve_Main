@@ -56,6 +56,20 @@ export default function ResumeEditor() {
   }, [candidateId, recommendationId]);
 
   const update = (key, value) => setResume((old) => ({ ...old, [key]: value }));
+  const addSuggestedSkill = (skill) => {
+    const current = list(skillsDraftRef.current || resume?.skills);
+    if (current.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase())) return;
+    const next = [...current, skill];
+    skillsDraftRef.current = next;
+    update("skills", next);
+  };
+  const addSuggestedDetail = (detail) => {
+    const text = plain(detail).trim();
+    if (!text) return;
+    const current = plain(resume?.bio).trim();
+    if (current.toLowerCase().includes(text.toLowerCase())) return;
+    update("bio", current ? `${current}\n\n[Confirm if applicable] ${text}` : `[Confirm if applicable] ${text}`);
+  };
   const updateItem = (key, index, field, value) => update(key, list(resume[key]).map((item, i) => i === index ? (typeof item === "string" ? value : { ...item, [field]: value }) : item));
   const save = async () => {
     setSaving(true); setError("");
@@ -109,7 +123,7 @@ export default function ResumeEditor() {
         <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">EDUCATION</h2><div className="mt-3">{renderEntries("education")}</div></section>
         {list(resume.certifications).length > 0 && <section className="mt-7"><h2 className="border-b text-sm font-bold tracking-[.18em]">CERTIFICATIONS</h2><Editable value={list(resume.certifications).join(" • ")} onChange={(v) => update("certifications", v.split(/[,•\n]/).map((x) => x.trim()).filter(Boolean))} className="mt-3" multiline testId="resume-certifications" /></section>}
       </article>
-      <aside className="space-y-4"><section className="rounded-xl bg-white p-5 shadow-sm"><p className="text-xs font-bold tracking-wide text-slate-500">JOB MATCH</p><p className="mt-2 text-3xl font-bold">{oldScore == null ? "—" : `${oldScore}%`}</p><p className="mt-5 text-sm font-medium">Consider adding if you genuinely have them:</p><div className="mt-2 flex flex-wrap gap-2">{list(guidance?.missing_skills).map((skill) => <span key={skill} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs">{skill}</span>)}</div>{!guidance?.experience_requirement && <p className="mt-4 text-xs text-slate-600">No specific experience requirement provided.</p>}</section>
+      <aside className="space-y-4"><section className="rounded-xl bg-white p-5 shadow-sm"><p className="text-xs font-bold tracking-wide text-slate-500">JOB MATCH</p><p className="mt-2 text-3xl font-bold">{oldScore == null ? "—" : `${oldScore}%`}</p><p className="mt-5 text-sm font-medium">Click a suggestion to add it to the resume:</p><div className="mt-2 flex flex-wrap gap-2">{list(guidance?.missing_skills).map((skill) => <button type="button" key={skill} onClick={() => addSuggestedSkill(skill)} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs hover:bg-slate-200">+ {skill}</button>)}</div>{list(guidance?.requirements).length > 0 && <div className="mt-4"><p className="text-xs font-medium">Job details</p><div className="mt-2 space-y-2">{list(guidance.requirements).map((item, index) => <button type="button" key={`${item}-${index}`} onClick={() => addSuggestedDetail(item)} className="block w-full rounded-lg bg-slate-50 px-3 py-2 text-left text-xs hover:bg-slate-100">+ {item}</button>)}</div></div>}{guidance?.experience_requirement ? <div className="mt-4"><p className="text-xs font-medium">Experience requirement</p><button type="button" onClick={() => addSuggestedDetail(guidance.experience_requirement)} className="mt-2 block w-full rounded-lg bg-slate-50 px-3 py-2 text-left text-xs hover:bg-slate-100">+ {guidance.experience_requirement}</button></div> : <p className="mt-4 text-xs text-slate-600">No specific experience requirement provided.</p>}</section>
         {result && <section className="rounded-xl bg-emerald-50 p-5" data-testid="resume-save-result"><p className="font-semibold text-emerald-900">Resume updated ✓</p><p className="mt-3 text-sm">Previous match: {oldScore == null ? "—" : `${oldScore}%`}</p><p className="text-sm">New match: <strong><MatchOdometer from={oldScore} to={newScore} /></strong></p><p className="text-sm">Improvement: {change == null ? "—" : `${change >= 0 ? "+" : ""}${change}%`}</p><button onClick={() => window.open(`${API}${result.resume_download_url}`, "_blank", "noopener,noreferrer")} className="mt-4 w-full rounded-lg bg-white py-2 text-sm font-medium">Download Updated Resume</button><button onClick={() => { if (guidance?.job_url) window.open(guidance.job_url, "_blank", "noopener,noreferrer"); }} disabled={!guidance?.job_url} className="mt-2 w-full rounded-lg bg-slate-900 py-2 text-sm font-medium text-white disabled:opacity-50">Apply Now</button></section>}</aside>
     </div>{error && <p className="mx-auto mt-4 max-w-[1180px] text-sm text-red-700">{error}</p>}
   </main>;
