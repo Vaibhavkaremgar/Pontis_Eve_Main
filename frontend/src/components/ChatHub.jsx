@@ -186,7 +186,7 @@ export default function ChatHub({
               resizeInput();
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 e.currentTarget.form?.requestSubmit();
               }
