@@ -12,6 +12,32 @@ import candidate_job_matching_service as matcher  # noqa: E402
 VOICE_INTAKE_COMPLETED = matcher.voice_intake_completed
 
 
+def test_required_skill_extraction_ignores_responsibility_prose_and_headings():
+    jd = """
+    Essential Key Responsibilities
+    Be a trusted advisor to clients, all while making a difference.
+    Manage risk across the business.
+
+    Required Skills
+    - Python
+    - SQL, FastAPI
+    - Stakeholder communication
+    """
+
+    extracted = matcher._extract_job_required_skills(jd)
+
+    assert extracted == ["Python", "SQL", "FastAPI", "Stakeholder communication"]
+    assert "Essential Key Responsibilities" not in extracted
+    assert "Be a trusted advisor" not in extracted
+    assert "manage risk" not in [skill.lower() for skill in extracted]
+
+
+def test_required_skill_extraction_returns_empty_without_structured_skills():
+    jd = "We are a trusted advisor to customers. You will manage risk and build a team."
+
+    assert matcher._extract_job_required_skills(jd) == []
+
+
 class FixedDateTime(datetime):
     @classmethod
     def now(cls, tz=None):
