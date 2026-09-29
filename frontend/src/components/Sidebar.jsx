@@ -24,6 +24,7 @@ export default function Sidebar({
   recentActivity,
   onLogout,
   onSettings,
+  onGuidanceClick,
 }) {
   const displayName = (footerIdentity ?? userProfile).name;
   const displayEmail = (footerIdentity ?? userProfile).email;
@@ -135,14 +136,14 @@ export default function Sidebar({
               <ul className="mt-3 space-y-2">
                 {guidanceItems.map((item) => (
                   <li key={`${item.section}-${item.action}`} className="min-w-0">
-                    <a
+                    <button
+                      type="button"
                       data-testid={`profile-guidance-${item.section}`}
-                      href={`#profile-${item.section}`}
-                      onClick={() => setActiveTab("profile")}
-                      className="block break-words text-[12.5px] text-[#62578F] underline underline-offset-2 hover:text-[#4F437F]"
+                      onClick={() => onGuidanceClick?.(item)}
+                      className="block w-full break-words text-left text-[12.5px] text-[#62578F] underline underline-offset-2 hover:text-[#4F437F]"
                     >
                       {item.action}
-                    </a>
+                    </button>
                   </li>
                 ))}
               </ul>

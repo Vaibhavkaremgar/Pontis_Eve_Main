@@ -8,7 +8,7 @@ const list = (value) => Array.isArray(value) ? value : [];
 const parseSkills = (value) => plain(value).split(/[,;|\n\u2022]+/).map((item) => item.trim()).filter(Boolean);
 const score = (value) => value == null || !Number.isFinite(Number(value)) ? null : Math.round(Number(value) * (Number(value) <= 1 ? 100 : 1));
 
-const shorten = (value, max = 180) => {
+const shorten = (value, max = 120) => {
   const text = plain(value).replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
   const clipped = text.slice(0, max + 1).replace(/\s+\S*$/, "").replace(/[,:;\s]+$/, "");
@@ -17,31 +17,32 @@ const shorten = (value, max = 180) => {
 
 const conciseSummary = (value) => {
   const sentences = plain(value).replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/).filter(Boolean);
-  return shorten(sentences.slice(0, 2).join(" "), 360);
+  return shorten(sentences.slice(0, 2).join(" "), 220);
 };
 
-const bulletize = (value, limit = 4) => {
-  const points = plain(value)
+const bulletize = (value, limit = 3, maxLength = 120) => {
+  const source = Array.isArray(value) ? value.join("\n") : plain(value);
+  const points = source
     .replace(/^[•\-]\s*/gm, "")
     .split(/\n+|(?<=[.!?])\s+/)
-    .map((item) => shorten(item, 180).replace(/[.]+$/, ""))
+    .map((item) => shorten(item, maxLength).replace(/[.]+$/, ""))
     .filter(Boolean)
     .slice(0, limit);
   return points.map((item) => `• ${item}.`).join("\n");
 };
 
-const atsEntry = (item, limit) => {
-  if (typeof item === "string") return bulletize(item, limit);
+const atsEntry = (item, limit, maxLength) => {
+  if (typeof item === "string") return bulletize(item, limit, maxLength);
   if (!item || typeof item !== "object") return item;
   const detailKey = item.description != null ? "description" : item.responsibilities != null ? "responsibilities" : item.details != null ? "details" : null;
-  return detailKey ? { ...item, [detailKey]: bulletize(item[detailKey], limit) } : item;
+  return detailKey ? { ...item, [detailKey]: bulletize(item[detailKey], limit, maxLength) } : item;
 };
 
 const makeAtsDraft = (resume, sections) => ({
   ...resume,
   bio: sections.summary ? conciseSummary(resume.bio) : resume.bio,
-  work_experience: sections.experience ? list(resume.work_experience).map((item) => atsEntry(item, 4)) : resume.work_experience,
-  projects: sections.projects ? list(resume.projects).map((item) => atsEntry(item, 2)) : resume.projects,
+  work_experience: sections.experience ? list(resume.work_experience).map((item) => atsEntry(item, 3, 120)) : resume.work_experience,
+  projects: sections.projects ? list(resume.projects).map((item) => atsEntry(item, 1, 130)) : resume.projects,
 });
 
 function Editable({ value, onChange, className = "", multiline = false, testId }) {

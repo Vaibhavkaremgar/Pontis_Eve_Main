@@ -629,6 +629,27 @@ function Dashboard() {
     await _sendToEve(historyPayload, turnId);
   }, [sending, chats, _sendToEve]);
 
+  const handleProfileGuidanceClick = React.useCallback((item) => {
+    const questions = {
+      "Tell Eve what kind of role you are targeting": "What job titles or roles are you targeting?",
+      "Upload your resume or add work experience": "Tell me about your most recent work experience, including your role, company, dates, and main responsibilities.",
+      "Add projects or responsibilities that demonstrate your skills": "Describe a project or responsibility that demonstrates your strongest skills and the outcome you achieved.",
+      "Add your key skills to your profile": "What are your strongest professional and technical skills?",
+      "Add projects, responsibilities, or portfolio links": "Tell me about a relevant project, responsibility, or portfolio link you want employers to see.",
+      "Share your availability / notice period": "What is your notice period, and when can you start a new role?",
+      "Share your preferred work mode (remote/hybrid/on-site)": "Do you prefer remote, hybrid, or on-site work?",
+      "Share your salary expectations": "What salary range are you targeting?",
+    };
+    const question = questions[item?.action] || item?.action;
+    if (!question) return;
+    userChoseCenterViewRef.current = true;
+    setActiveSidebarTab("profile");
+    setRightPanelTab("profile");
+    setCenterView("chat");
+    setInputValue("");
+    handleSuggestionClick(question);
+  }, [handleSuggestionClick]);
+
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {
     setDocuments((prev) => ({ ...prev, resume: { filename } }));
     refreshProfile();
@@ -855,6 +876,7 @@ function Dashboard() {
             recentActivity={MOCK_RECENT_ACTIVITY}
             onLogout={handleLogout}
             onSettings={() => setSettingsOpen(true)}
+            onGuidanceClick={handleProfileGuidanceClick}
           />
         </Panel>
 
