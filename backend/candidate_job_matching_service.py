@@ -1343,7 +1343,8 @@ async def refresh_candidate_job_match(
     import json as _json
     async with SessionLocal() as db:
         row = await db.execute(text("""
-            SELECT cjr.match_reason, jd.title, jd.description, jd.requirements, jd.skills, jd.experience_required
+            SELECT cjr.match_reason, jd.title, jd.description, jd.requirements,
+                   jd.skills, jd.skills_required, jd.experience_required
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -1362,7 +1363,7 @@ async def refresh_candidate_job_match(
     signals = _build_candidate_signals(candidate)
     experience = experience_eligibility(
         _candidate_total_experience_years(candidate),
-        _job_text(selected["title"] or "", selected["description"] or "", selected["requirements"] or "", selected["skills"] or []),
+        _job_text(selected["title"] or "", selected["description"] or "", selected["requirements"] or "", selected["skills_required"] or selected["skills"] or []),
         selected["experience_required"],
     )
     if not experience["eligible"]:
@@ -1376,7 +1377,7 @@ async def refresh_candidate_job_match(
         return
     score, components = _hybrid_score(
         signals, selected["title"] or "", selected["description"] or "",
-        selected["requirements"] or "", selected["skills"] or [], semantic_score,
+        selected["requirements"] or "", selected["skills_required"] or selected["skills"] or [], semantic_score,
         intelligence=_get_candidate_intelligence(candidate),
         candidate_years=_candidate_total_experience_years(candidate),
     )
