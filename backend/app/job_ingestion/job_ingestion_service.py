@@ -50,9 +50,10 @@ async def upsert_ats_job(
 
     if existing:
         job_id = existing[0]
-        existing_job_url = existing[1]
-        existing_description = existing[2] or ""
-        existing_requirements = existing[3] or ""
+        # Support legacy test/session rows that predate the requirements column.
+        existing_job_url = existing[1] if len(existing) > 1 else None
+        existing_description = existing[2] if len(existing) > 2 else ""
+        existing_requirements = existing[3] if len(existing) > 3 else ""
         incoming_job_url = _valid_http_url(job.get("job_url"))
         incoming_description = str(job.get("description") or "").strip()
         # Refresh only when the newly collected JD contains strictly more
@@ -299,8 +300,11 @@ def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
     safe["company_name"] = text_value("company_name", "Unknown company")
     safe["description"] = text_value("description", "")
     safe["requirements"] = text_value("requirements") or safe["description"]
-    for key in ("department", "location", "employment_type", "remote_policy", "experience_required", "salary_range"):
+    for key in ("department", "location", "employment_type", "experience_required", "salary_range"):
         safe[key] = text_value(key)
+    # job_descriptions.remote_policy is NOT NULL, while ATS providers such as
+    # Greenhouse legitimately omit remote-work metadata.
+    safe["remote_policy"] = text_value("remote_policy", "unknown")
     safe["experience_level"] = text_value("experience_level") or safe["experience_required"] or UNKNOWN_EXPERIENCE_LEVEL
     for key in ("skills_required", "skills"):
         value = safe.get(key)
