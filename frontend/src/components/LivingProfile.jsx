@@ -567,7 +567,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
       // Keep the modal open with the recommendation's current score.
     }
   }, [candidateId, detailJob]);
-  const openResumeEditor = React.useCallback(async () => {
+  const openResumeEditor = React.useCallback(async (options = {}) => {
     if (!improvementJob) return;
     let credit;
     try {
@@ -590,7 +590,9 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
     if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
     if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
     if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
-    window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
+    if (options.selectedSkills?.length) params.set("selected_skills", JSON.stringify(options.selectedSkills));
+    if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
+    window.location.assign(`/resume-editor?${params.toString()}`);
     setImprovementJob(null);
   }, [candidateId, improvementData?.match_score, improvementJob]);
 
@@ -832,7 +834,7 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
       // Keep the modal open with the recommendation's current score.
     }
   }, [candidateId, detailJob]);
-  const openResumeEditor = React.useCallback(async () => {
+  const openResumeEditor = React.useCallback(async (options = {}) => {
     if (!improvementJob) return;
     let credit;
     try {
@@ -855,7 +857,9 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
     if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
     if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
     if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
-    window.open(`/resume-editor?${params.toString()}`, "_blank", "noopener,noreferrer");
+    if (options.selectedSkills?.length) params.set("selected_skills", JSON.stringify(options.selectedSkills));
+    if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
+    window.location.assign(`/resume-editor?${params.toString()}`);
     setImprovementJob(null);
   }, [candidateId, improvementData?.match_score, improvementJob]);
 

@@ -224,16 +224,14 @@ describe("SwipeJobDeck job details navigation", () => {
     });
     expect(renderResult.container.querySelector('[data-testid="improve-match-modal"]')).toBeTruthy();
     expect(renderResult.container.textContent).toContain("Kubernetes");
-    expect(renderResult.container.querySelector('[data-testid="match-score-gauge"]')).toBeTruthy();
-    expect(renderResult.container.querySelector('[data-testid="match-score-gauge-value"]').textContent).toBe("72%");
-    expect(renderResult.container.textContent).toContain("Needs work");
-    expect(renderResult.container.textContent).toContain("Strong match");
+    expect(renderResult.container.textContent).toContain("72%");
+    expect(renderResult.container.textContent).toContain("Customize Your Resume");
     expect(renderResult.container.textContent).not.toContain("Job requirements to confirm");
     expect(renderResult.container.textContent).not.toContain("Kubernetes experience required");
     expect(openSpy).not.toHaveBeenCalled();
   });
 
-  it("opens Fix My Resume in a new job-scoped editor tab without preliminary claims", async () => {
+  it("opens Fix My Resume as an in-page workflow before navigating to the editor", async () => {
     axios.get.mockResolvedValueOnce({ data: { match_score: 0.72, missing_skills: ["Kubernetes"], requirements: ["Kubernetes experience required"] } });
     renderResult = renderDeck({ jobs: [{ id: "job-1", title: "Senior Product Manager", company: "Acme", match_score: 0.72, job_url: "https://acme.example/jobs/1" }] });
     await act(async () => {
@@ -243,8 +241,8 @@ describe("SwipeJobDeck job details navigation", () => {
     const fix = renderResult.container.querySelector('[data-testid="fix-my-resume"]');
     expect(fix.disabled).toBe(false);
     act(() => fix.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(openSpy).toHaveBeenCalledWith(expect.stringContaining("/resume-editor?"), "_blank", "noopener,noreferrer");
-    expect(openSpy.mock.calls.at(-1)[0]).toContain("candidate_id=cand-123");
-    expect(openSpy.mock.calls.at(-1)[0]).toContain("recommendation_id=job-1");
+    expect(renderResult.container.textContent).toContain("Generate Your Custom Resume");
+    expect(renderResult.container.textContent).toContain("Improve My Resume for This Job");
+    expect(openSpy).not.toHaveBeenCalled();
   });
 });
