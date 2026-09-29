@@ -141,7 +141,9 @@ describe("Sidebar profile guidance", () => {
   });
 
   it("renders the 90% profile card directly after Billing with live guidance values", () => {
+    const onGuidanceClick = jest.fn();
     renderResult = renderSidebar({
+      onGuidanceClick,
       userProfile: {
         name: "Jane Doe",
         email: "jane@example.com",
@@ -160,6 +162,8 @@ describe("Sidebar profile guidance", () => {
     expect(guidance.textContent).toContain("Reach 90% Profile");
     expect(guidance.textContent).toContain("82% complete · 8% to go");
     expect(billing.compareDocumentPosition(guidance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(guidance.querySelector('[data-testid="profile-guidance-skills"]').getAttribute("href")).toBe("#profile-skills");
+    const suggestion = guidance.querySelector('[data-testid="profile-guidance-skills"]');
+    act(() => suggestion.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onGuidanceClick).toHaveBeenCalledWith(expect.objectContaining({ section: "skills", action: "Add your key skills" }));
   });
 });
