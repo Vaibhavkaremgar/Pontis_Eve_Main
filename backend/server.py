@@ -6927,6 +6927,7 @@ async def chat(request: ChatRequest):
                 from candidate_job_matching_service import refresh_candidate_job_matches
                 await refresh_candidate_job_matches(request.candidate_id, candidate_row, SessionLocal)
             # Fetch top recommendations joined with job details
+            from candidate_job_matching_service import stored_recommendation_experience_eligibility
             async with SessionLocal() as db:
                 rows = await db.execute(
                     text("""
@@ -6941,10 +6942,25 @@ async def chat(request: ChatRequest):
                         LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                         WHERE cjr.candidate_id = :cid
                           AND cjr.hidden_at IS NULL
+                          AND cjr.id = ANY(CAST(:eligible_ids AS uuid[]))
                         ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
                         LIMIT 10
                     """),
-                    {"cid": request.candidate_id},
+                    {"cid": request.candidate_id, "eligible_ids": [
+                        str(row[0]) for row in (await db.execute(text("""
+                            SELECT cjr.id, jd.title, jd.description, jd.requirements,
+                                   jd.skills, jd.skills_required, jd.experience_required
+                            FROM candidate_job_recommendations cjr
+                            JOIN job_descriptions jd ON jd.id = cjr.job_id
+                            WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                        """), {"cid": request.candidate_id})).fetchall()
+                        if stored_recommendation_experience_eligibility(
+                            candidate_row,
+                            {"title": row[1], "description": row[2], "requirements": row[3],
+                             "skills": row[4], "skills_required": row[5],
+                             "experience_required": row[6]},
+                        )["eligible"]
+                    ]},
                 )
                 job_rows = rows.mappings().fetchall()
             jobs = [
@@ -9611,6 +9627,29 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
             detail={"code": "profile_strength_required", "message": "Profile Strength must be at least 90% to view jobs."},
         )
 
+    from candidate_job_matching_service import stored_recommendation_experience_eligibility
+
+    async def eligible_recommendation_ids(db):
+        rows = await db.execute(text("""
+            SELECT cjr.id, jd.title, jd.description, jd.requirements,
+                   jd.skills, jd.skills_required, jd.experience_required
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+        """), {"cid": candidate_id})
+        return [str(row[0]) for row in rows.fetchall()
+                if stored_recommendation_experience_eligibility(
+                    candidate,
+                    {"title": row[1], "description": row[2], "requirements": row[3],
+                     "skills": row[4], "skills_required": row[5],
+                     "experience_required": row[6]},
+                )["eligible"]]
+
+    async with SessionLocal() as db:
+        eligible_ids = await eligible_recommendation_ids(db)
+    eligible_clause = "cjr.id = ANY(CAST(:eligible_ids AS uuid[]))"
+    eligible_params = {"eligible_ids": eligible_ids}
+
     # A free candidate only needs a new match run after exhausting every visible
     # recommendation.  Historical daily-access rows deliberately make a
     # recommendation ineligible for another free allocation, even on a later
@@ -9622,6 +9661,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
                   AND NOT EXISTS (
                     SELECT 1
@@ -9630,11 +9670,14 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                       AND access.recommendation_id = cjr.id
                   )
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         unaccessed_visible_count = available_row.scalar() or 0
 
-    if not _has_active_subscription(candidate) and unaccessed_visible_count == 0:
+    # A stale ineligible row must not cause a refresh solely because it was
+    # filtered.  Refresh remains available when there are eligible stored
+    # recommendations whose access has been exhausted.
+    if not _has_active_subscription(candidate) and unaccessed_visible_count == 0 and eligible_ids:
         try:
             from candidate_job_matching_service import refresh_candidate_job_matches
             await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
@@ -9649,9 +9692,10 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 SELECT COUNT(*)
                 FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         total_matching_jobs = total_row.scalar() or 0
 
@@ -9695,6 +9739,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
                 -- Return the complete ranked list so the client can render
                 -- locked placeholders.  The access predicate is projected
@@ -9702,7 +9747,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 -- must not receive details for rows they have not claimed.
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         results = rows.mappings().fetchall()
     if response is not None:

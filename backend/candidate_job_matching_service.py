@@ -603,6 +603,25 @@ def experience_eligibility(candidate_years: float, job_text: Any = "", experienc
     return result
 
 
+def stored_recommendation_experience_eligibility(candidate: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only experience gate for an already-persisted recommendation.
+
+    This deliberately evaluates only the hard experience boundary.  It does
+    not retrieve, embed, score, refresh, or mutate recommendation data.
+    """
+    candidate_years = _candidate_total_experience_years(candidate)
+    job_text = _job_text(
+        job.get("title", ""),
+        job.get("description", ""),
+        job.get("requirements", ""),
+        job.get("skills") or job.get("skills_required") or [],
+    )
+    # Normalize once here so retrieval uses the same stored-job interpretation
+    # as the matcher; experience_eligibility remains the authoritative decision.
+    normalize_job_experience(job_text, job.get("experience_required"))
+    return experience_eligibility(candidate_years, job_text, job.get("experience_required"))
+
+
 def _job_passes_experience(candidate_years: float, job_text: str, experience_required: Any = "") -> bool:
     return bool(experience_eligibility(candidate_years, job_text, experience_required)["eligible"])
 
