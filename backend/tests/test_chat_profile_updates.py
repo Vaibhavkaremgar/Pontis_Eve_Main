@@ -17,6 +17,59 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server
 
 
+class TestChatExperienceCompletion:
+    def test_project_at_company_with_dates_asks_for_role_before_saving(self):
+        message = "Worked on AWS services and VPC creations at Infoz IT from Feb 2024 to Sept 2024"
+        result = server._chat_profile_preflight(message, {"work_experience": []}, [{"role": "user", "content": message}])
+
+        assert result["updates"] is None
+        assert "job title or role" in result["reply"]
+
+    def test_role_followup_saves_complete_experience_with_original_dates(self):
+        original = "Worked on AWS services and VPC creations at Infoz IT from Feb 2024 to Sept 2024"
+        history = [
+            {"role": "user", "content": original},
+            {"role": "assistant", "content": "What was your job title or role?"},
+            {"role": "user", "content": "AWS Engineer"},
+        ]
+        result = server._chat_profile_preflight("AWS Engineer", {"work_experience": []}, history)
+        entry = result["updates"]["work_experience"][0]
+
+        assert entry == {
+            "title": "AWS Engineer",
+            "company": "Infoz IT",
+            "start_date": "Feb 2024",
+            "end_date": "Sept 2024",
+            "description": "AWS services and VPC creations",
+        }
+
+    def test_missing_end_date_is_not_rendered_as_present(self):
+        profile = server._normalize_for_frontend({
+            "work_experience": [{
+                "title": "AWS Engineer",
+                "company": "Infoz IT",
+                "start_date": "Feb 2024",
+                "description": "Worked on VPC creations",
+            }],
+            "raw_data": {},
+        })
+
+        assert profile["experience"][0]["dates"] == "Feb 2024"
+        assert "Present" not in profile["experience"][0]["dates"]
+
+    def test_new_incomplete_chat_experience_is_blocked(self):
+        missing = server._incomplete_new_chat_experience({
+            "work_experience": [{
+                "title": "AWS Engineer",
+                "company": "Infoz IT",
+                "description": "Worked on VPC creations",
+            }],
+        }, {"work_experience": []})
+
+        assert "start month/year" in missing
+        assert "end month/year or confirmation that it is current" in missing
+
+
 class TestProfileScalarFieldMapping:
     """Regression coverage for role/location values emitted by extractors."""
 

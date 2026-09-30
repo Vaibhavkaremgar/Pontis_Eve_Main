@@ -503,7 +503,8 @@ def _normalize_for_frontend(c: dict) -> dict:
         _sd = _truncate_date_to_month(w.get("start_date") or w.get("startDate") or "")
         _ed_raw = w.get("end_date") or w.get("endDate") or ""
         _ed = _truncate_date_to_month(_ed_raw) if _ed_raw else ""
-        dates = " — ".join(filter(None, [_sd, _ed or "Present"]))
+        _is_current = _is_open_ended_experience_value(_ed_raw)
+        dates = " — ".join(filter(None, [_sd, "Present" if _is_current else _ed]))
         experience.append({
             "id": w.get("id", f"exp-{i}"),
             "title": w.get("title", ""),
@@ -521,7 +522,8 @@ def _normalize_for_frontend(c: dict) -> dict:
         experience[i]["end_date"] = _truncate_date_to_month(w.get("end_date") or w.get("endDate") or "")
         if not experience[i].get("dates"):
             start_date = experience[i]["start_date"]
-            end_date = experience[i]["end_date"] or ("Present" if start_date else "")
+            raw_end = w.get("end_date") or w.get("endDate") or ""
+            end_date = experience[i]["end_date"] or ("Present" if _is_open_ended_experience_value(raw_end) else "")
             experience[i]["dates"] = " â€” ".join(filter(None, [start_date, end_date]))
 
     edu_raw = c.get("education") or []
@@ -4206,11 +4208,15 @@ FIELD DEFINITIONS — use exactly these keys:
   willing_to_relocate, open_to_opportunities: Boolean only when explicitly stated.
   availability / notice_period: Plain string describing when the candidate can start or their notice period.
   work_experience: List of job objects. Each object must have:
-                     {{"title": "<job title>", "company": "<company name>", "description": "<responsibilities>"}}
+                     {{"title": "<job title>", "company": "<company name>", "start_date": "<month/year>", "end_date": "<month/year or Present>", "description": "<responsibilities>"}}
                    title   = the role/position held (e.g. "Python Backend Developer")
                    company = the employer name (e.g. "ABC Technologies")
+                   start_date/end_date = the exact employment period stated by the candidate
                    description = what they did (technologies used, responsibilities)
                    Do NOT put a technology name as title. Do NOT put a company name as title.
+                   For a NEW experience, do not emit profile_updates until title, company,
+                   start date, end date/current status, and responsibilities are known.
+                   Ask one concise follow-up question listing every missing detail first.
   name, email, phone, location, bio: plain string fields.
   education      : List of {{"degree": "", "institution": "", "start_date": "", "end_date": ""}}. A degree completed/studied at a university is Education, never Certification; retain the stated degree and institution even when dates are absent.
   certifications : List of certification names only. Use this only for an explicitly stated certificate, certification, credential, licence, or certification exam -- never infer it from a university, college, degree, Master's, Bachelor's, MBA, or PhD.
@@ -4228,6 +4234,7 @@ EXAMPLE — if candidate says "I worked at ABC Technologies as a Python Backend 
 VALIDATION RULES:
   - current_role must be a human job title, never a technology or database name.
   - If the candidate mentions a company AND a role, always populate work_experience.
+  - Never assume a missing end date means Present. Use Present only when the candidate explicitly says current, ongoing, now, or present.
   - Extract skills/technologies into the skills list, not into current_role."""
 
 
@@ -5181,6 +5188,128 @@ def _pending_replacement_selection(message: str, candidate: dict, history: list[
     return None
 
 
+_CHAT_EXPERIENCE_DATE = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\s+\d{4}|\d{4}|present|current|ongoing|now"
+)
+_CHAT_EXPERIENCE_RANGE = re.compile(
+    rf"\bfrom\s+(?P<start>{_CHAT_EXPERIENCE_DATE})\s+(?:to|until|through|till)\s+"
+    rf"(?P<end>{_CHAT_EXPERIENCE_DATE})\b",
+    re.IGNORECASE,
+)
+_CHAT_PROJECT_AT_COMPANY = re.compile(
+    rf"\b(?:i\s+)?worked\s+on\s+(?P<description>.+?)\s+at\s+(?P<company>.+?)"
+    rf"(?:\s+from\s+(?P<start>{_CHAT_EXPERIENCE_DATE})\s+(?:to|until|through|till)\s+"
+    rf"(?P<end>{_CHAT_EXPERIENCE_DATE}))?[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _project_at_company_experience(value: str) -> Optional[dict]:
+    """Parse 'worked on X at Y [from A to B]' without inventing a role."""
+    match = _CHAT_PROJECT_AT_COMPANY.search(_normalize_experience_text(value))
+    if not match:
+        return None
+    result = {
+        "company": _normalize_profile_text(match.group("company")),
+        "description": _normalize_profile_text(match.group("description")),
+    }
+    if match.group("start"):
+        result["start_date"] = _normalize_profile_text(match.group("start"))
+    if match.group("end"):
+        result["end_date"] = _normalize_profile_text(match.group("end"))
+    return result if result["company"] and result["description"] else None
+
+
+def _pending_project_experience_completion(message: str, history: list[dict]) -> Optional[dict]:
+    """Complete a previously clarified project-at-company experience record."""
+    prior_users = [m.get("content", "") for m in history[:-1] if m.get("role") == "user"]
+    original = None
+    original_index = -1
+    for index in range(len(prior_users) - 1, -1, -1):
+        parsed = _project_at_company_experience(prior_users[index])
+        if parsed:
+            original, original_index = parsed, index
+            break
+    if not original:
+        return None
+
+    title = ""
+    start_date = original.get("start_date", "")
+    end_date = original.get("end_date", "")
+    followups = [*prior_users[original_index + 1:], message]
+    for answer in followups:
+        answer_text = _normalize_profile_text(answer)
+        date_match = _CHAT_EXPERIENCE_RANGE.search(answer_text)
+        if date_match:
+            start_date = _normalize_profile_text(date_match.group("start"))
+            end_date = _normalize_profile_text(date_match.group("end"))
+        elif _is_actual_job_role(answer_text):
+            title = answer_text.strip(" .")
+
+    missing = []
+    if not title:
+        missing.append("your job title or role")
+    if not start_date or not end_date:
+        missing.append("the start and end month/year")
+    if missing:
+        return {
+            "reply": f"Before I add this experience at {original['company']}, please share {' and '.join(missing)}.",
+            "updates": None,
+        }
+
+    entry = {
+        "title": title,
+        "company": original["company"],
+        "start_date": start_date,
+        "end_date": end_date,
+        "description": original["description"],
+    }
+    return {
+        "reply": f"Added your {title} experience at {original['company']} from {start_date} to {end_date}.",
+        "updates": {"work_experience": [entry]},
+    }
+
+
+def _incomplete_new_chat_experience(updates: Optional[dict], candidate: Optional[dict]) -> list[str]:
+    """Return missing fields for a new chat-created experience; edits may be partial."""
+    if not isinstance(updates, dict) or not isinstance(updates.get("work_experience"), list):
+        return []
+    existing_records = (candidate or {}).get("work_experience") or []
+    for entry in updates["work_experience"]:
+        if not isinstance(entry, dict):
+            continue
+        title = _normalize_profile_text(entry.get("title") or entry.get("role"))
+        company = _normalize_profile_text(entry.get("company") or entry.get("company_name"))
+        matches_existing = any(
+            isinstance(saved, dict)
+            and (not title or _experience_text_matches(saved.get("title") or saved.get("role"), title))
+            and (not company or _experience_text_matches(saved.get("company") or saved.get("company_name"), company))
+            for saved in existing_records
+        )
+        if matches_existing:
+            continue
+        start, end, open_ended = _parse_experience_window(entry)
+        description = _normalize_profile_text(
+            entry.get("description") or entry.get("summary") or entry.get("responsibilities")
+        )
+        missing = []
+        if not title:
+            missing.append("job title or role")
+        if not company:
+            missing.append("company")
+        if start is None:
+            missing.append("start month/year")
+        if end is None and not open_ended:
+            missing.append("end month/year or confirmation that it is current")
+        if not description:
+            missing.append("responsibilities or project details")
+        if missing:
+            return missing
+    return []
+
+
 def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
     """Resolve deterministic profile-edit safety cases before asking the LLM.
 
@@ -5193,6 +5322,18 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     pending_selection = _pending_replacement_selection(text_value, candidate, history)
     if pending_selection:
         return pending_selection
+    pending_experience = _pending_project_experience_completion(text_value, history)
+    if pending_experience:
+        return pending_experience
+    project_experience = _project_at_company_experience(text_value)
+    if project_experience:
+        missing = ["your job title or role"]
+        if not project_experience.get("start_date") or not project_experience.get("end_date"):
+            missing.append("the start and end month/year")
+        return {
+            "reply": f"Before I add this experience at {project_experience['company']}, please share {' and '.join(missing)}.",
+            "updates": None,
+        }
     # Education has an unambiguous semantic shape even when the candidate does
     # not literally say "education" (for example: "Add Masters Degree in CMR
     # University 2023-2025"). Recognize it before the generic bare-add guard.
@@ -6361,6 +6502,19 @@ async def chat(request: ChatRequest):
                     profile_updates = _merge_profile_updates(profile_updates or {}, multi_updates) or None
             except Exception as _e:
                 logger.warning("[chat-multi-field] merge failed: %s", _e)
+
+    incomplete_experience = _incomplete_new_chat_experience(profile_updates, candidate_row_for_edit)
+    if incomplete_experience:
+        profile_updates = dict(profile_updates or {})
+        profile_updates.pop("work_experience", None)
+        profile_updates = profile_updates or None
+        clean_reply = (
+            "Before I add that work experience, please share the "
+            + ", ".join(incomplete_experience[:-1])
+            + (" and " if len(incomplete_experience) > 1 else "")
+            + incomplete_experience[-1]
+            + "."
+        )
 
     # Apply profile updates to PostgreSQL
     if profile_updates and request.candidate_id:
