@@ -916,11 +916,14 @@ export default function Onboarding() {
         }
         // Upload any pending certs now that we have a candidate_id
         if (certsFiles.length > 0) {
-          certsFiles.forEach((certFile) => {
+          const uploadToken = candidate_token || loadOnboardingState().candidateToken;
+          await Promise.all(certsFiles.map((certFile) => {
             const fd2 = new FormData();
             fd2.append("file", certFile);
-            axios.post(`${API}/candidate/${candidate_id}/certificates/upload`, fd2).catch(() => {});
-          });
+            return axios.post(`${API}/candidate/${candidate_id}/certificates/upload`, fd2, {
+              headers: uploadToken ? { Authorization: `Bearer ${uploadToken}` } : {},
+            });
+          }));
         }
       }
       // Verify email + phone against parsed resume before advancing
