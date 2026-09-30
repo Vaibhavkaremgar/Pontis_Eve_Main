@@ -103,6 +103,7 @@ def _evidence_weighted_skills_score(
     candidate_skills: List[str],
     job_text: str,
     intelligence: Optional[Dict[str, Any]],
+    required_skills: Any = None,
 ) -> float:
     """
     Score skills with evidence quality weighting.
@@ -110,11 +111,36 @@ def _evidence_weighted_skills_score(
     """
     if not candidate_skills:
         return 0.0
-    text_tokens = _phrase_set(job_text)
     evidence = (intelligence or {}).get("evidence") or {}
     skill_ev = evidence.get("skills", {})
     ev_level = skill_ev.get("evidence_level", 1)  # default: claimed
     base_weight = _EVIDENCE_WEIGHT.get(ev_level, 0.6)
+
+    # When the job supplies an explicit skill list, score coverage of that
+    # list. The previous formula divided by the candidate's skill count, so a
+    # candidate with one matching skill could receive the maximum skill score
+    # while still missing ten required skills; adding those missing skills then
+    # produced no gain. This denominator now matches the gaps shown by Fix My
+    # Resume.
+    explicit_required: list[str] = []
+    if isinstance(required_skills, list):
+        for skill in required_skills:
+            value = _normalize_text(
+                skill.get("name") or skill.get("title") or skill.get("skill")
+                if isinstance(skill, dict) else skill
+            )
+            if value and _normalize(value) not in {_normalize(item) for item in explicit_required}:
+                explicit_required.append(value)
+    if explicit_required:
+        candidate_text = " ".join(candidate_skills)
+        candidate_tokens = _phrase_set(candidate_text)
+        hits = sum(
+            base_weight for required in explicit_required
+            if _term_in_text(_normalize(required), candidate_text, candidate_tokens)
+        )
+        return min(hits / len(explicit_required), 1.0)
+
+    text_tokens = _phrase_set(job_text)
     hits = sum(
         base_weight for s in candidate_skills
         if s and _term_in_text(_normalize(s), job_text, text_tokens)
@@ -817,7 +843,10 @@ def _extract_job_required_skills(job_text: str) -> List[str]:
     # intentionally ignored because it often contains sentence fragments.
     text = str(job_text or "").replace("\\n", "\n").replace("\\r", "\r")
     text = re.sub(r"<[^>]+>", "\n", text)
-    section = re.compile(r"^\s*(?:required\s+skills?|technical\s+skills?|key\s+skills?|core\s+skills?|qualifications?|requirements?|must[- ]have|what\s+you\s+(?:need|bring)|competencies)\s*:?[ \t]*$", re.I)
+    heading_text = r"(?:required\s+skills?|technical\s+skills?|key\s+skills?|core\s+skills?|qualifications?|requirements?|must[- ]have|what\s+you\s+(?:need|bring)|competencies)"
+    section = re.compile(rf"^\s*{heading_text}\s*:?[ \t]*$", re.I)
+    inline_section = re.compile(rf"^\s*{heading_text}\s*:\s*(?P<items>.+)$", re.I)
+    requires_line = re.compile(r"\brequires?\s+(?P<items>[^.!?]+)", re.I)
     stop = re.compile(r"^\s*(?:preferred|nice\s+to\s+have|benefits?|responsibilities|about\s+(?:the\s+company|us|the\s+role)|what\s+we\s+offer)\b", re.I)
     bullet = re.compile(r"^\s*(?:[-*•▪‣]|\d+[.)])\s+")
     rejected_start = re.compile(r"^(?:be|build|communicate|conduct|create|develop|ensure|help|lead|manage|maintain|provide|support|work|all|the|a|an|and|or)\b", re.I)
@@ -831,14 +860,20 @@ def _extract_job_required_skills(job_text: str) -> List[str]:
         if stop.match(line):
             collecting = False
             continue
-        if section.match(line):
+        inline = inline_section.match(line) or requires_line.search(line)
+        if inline:
+            collecting = True
+            line = inline.group("items").strip()
+            is_bullet = True
+        elif section.match(line):
             collecting = True
             continue
+        else:
+            is_bullet = bool(bullet.match(line))
         if not collecting:
             continue
-        is_bullet = bool(bullet.match(line))
         item_text = bullet.sub("", line).strip(" .:;()")
-        items = re.split(r"[,;]", item_text) if is_bullet else [item_text]
+        items = re.split(r"[,;]|\band\b", item_text, flags=re.I) if is_bullet else [item_text]
         for item in items:
             item = re.sub(r"^(?:strong|proven|demonstrated|hands[- ]on)\s+(?:experience|proficiency|knowledge|expertise|familiarity)\s+(?:with|in|of)\s+", "", item.strip(" .:;()"), flags=re.I)
             if 2 <= len(item) <= 60 and len(item.split()) <= 6 and not rejected_start.match(item) and not rejected.search(item) and not item.endswith((".", "!", "?")):
@@ -961,8 +996,10 @@ def _compute_job_specific_confidence(
                 missing_required.append(req)
         if missing_required:
             coverage = 1.0 - (len(missing_required) / len(required_skills))
-            # 0 coverage → max 40; full coverage → no cap
-            required_cap = 40.0 + coverage * 55.0
+            # 0 coverage → max 40; partial coverage may be useful, but an
+            # unresolved required skill must never be labelled high confidence
+            # (the high-confidence threshold is 70).
+            required_cap = min(40.0 + coverage * 55.0, 69.0)
             raw = min(raw, required_cap)
 
     # Hard constraint gate: near-disqualify
@@ -1056,7 +1093,10 @@ def _hybrid_score(
     job_text = _job_text(job_title, job_description, job_requirements, job_skills)
 
     tr_score = _target_role_score(signals["target_roles"], job_title, job_text)
-    sk_score = _evidence_weighted_skills_score(signals["skills"], job_text, intelligence)
+    score_required_skills = job_skills if isinstance(job_skills, list) and job_skills else _extract_job_required_skills(job_text)
+    sk_score = _evidence_weighted_skills_score(
+        signals["skills"], job_text, intelligence, score_required_skills
+    )
     history_score = _experience_score(signals["past_roles"], job_title, job_text)
     years = candidate_years if candidate_years is not None else float(signals.get("total_experience_years") or 0)
     experience_fit = _experience_fit_score(years, job_text)
@@ -1383,7 +1423,10 @@ async def refresh_candidate_job_match(
     async with SessionLocal() as db:
         row = await db.execute(text("""
             SELECT cjr.match_reason, jd.title, jd.description, jd.requirements,
-                   jd.skills, jd.skills_required, jd.experience_required
+                   jd.skills, jd.skills_required, jd.experience_required,
+                   jd.location, jd.employment_type, jd.remote, jd.remote_policy,
+                   jd.industry, jd.salary_range, jd.city, jd.state, jd.country,
+                   jd.structured_data
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.id = :rid AND cjr.candidate_id = :cid
@@ -1400,9 +1443,38 @@ async def refresh_candidate_job_match(
             reason = {}
     semantic_score = float(reason.get("semantic_score", 0.0)) if isinstance(reason, dict) else 0.0
     signals = _build_candidate_signals(candidate)
+    # Use the same normalized job inputs as the full recommendation refresh.
+    # Omitting metadata here reset preference/experience components whenever a
+    # resume was saved, which could make a genuinely added required skill look
+    # like it lowered the match.
+    job_requirements = " ".join(
+        str(value) for value in (selected["requirements"], selected["experience_required"])
+        if value
+    )
+    legacy_skills = selected["skills"] if isinstance(selected["skills"], list) else []
+    required_skills = selected["skills_required"] if isinstance(selected["skills_required"], list) else []
+    job_skills = [*legacy_skills, *required_skills] or selected["skills_required"] or selected["skills"] or []
+    job_metadata = {
+        "title": selected["title"] or "",
+        "description": selected["description"] or "",
+        "requirements": job_requirements,
+        "skills": job_skills,
+        "skills_required": selected["skills_required"] or [],
+        "experience_required": selected["experience_required"],
+        "location": selected["location"] or "",
+        "employment_type": selected["employment_type"] or "",
+        "remote": selected["remote"],
+        "remote_policy": selected["remote_policy"] or "",
+        "industry": selected["industry"] or "",
+        "salary_range": selected["salary_range"] or "",
+        "city": selected["city"] or "",
+        "state": selected["state"] or "",
+        "country": selected["country"] or "",
+        "structured_data": selected["structured_data"] or {},
+    }
     experience = experience_eligibility(
         _candidate_total_experience_years(candidate),
-        _job_text(selected["title"] or "", selected["description"] or "", selected["requirements"] or "", selected["skills_required"] or selected["skills"] or []),
+        _job_text(selected["title"] or "", selected["description"] or "", job_requirements, job_skills),
         selected["experience_required"],
     )
     if not experience["eligible"]:
@@ -1416,8 +1488,9 @@ async def refresh_candidate_job_match(
         return
     score, components = _hybrid_score(
         signals, selected["title"] or "", selected["description"] or "",
-        selected["requirements"] or "", selected["skills_required"] or selected["skills"] or [], semantic_score,
+        job_requirements, job_skills, semantic_score,
         intelligence=_get_candidate_intelligence(candidate),
+        job_metadata=job_metadata,
         candidate_years=_candidate_total_experience_years(candidate),
     )
     async with SessionLocal() as db:

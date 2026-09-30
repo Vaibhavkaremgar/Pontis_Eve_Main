@@ -38,6 +38,120 @@ def test_required_skill_extraction_returns_empty_without_structured_skills():
     assert matcher._extract_job_required_skills(jd) == []
 
 
+def test_required_skill_extraction_reads_inline_competencies_list():
+    jd = "About the role.\nCompetencies: Python, Django, ETL, GCP and Kubernetes"
+
+    assert matcher._extract_job_required_skills(jd) == [
+        "Python", "Django", "ETL", "GCP", "Kubernetes"
+    ]
+
+
+def test_adding_a_missing_required_skill_increases_skill_match_score():
+    intelligence = {"evidence": {"skills": {"evidence_level": 2}}}
+    required = ["Python", "Docker", "Kubernetes"]
+
+    before = matcher._evidence_weighted_skills_score(
+        ["Python"], "Python Docker Kubernetes", intelligence, required
+    )
+    after = matcher._evidence_weighted_skills_score(
+        ["Python", "Docker"], "Python Docker Kubernetes", intelligence, required
+    )
+
+    assert after > before
+
+
+def test_hybrid_match_increases_when_displayed_inline_jd_skill_is_added():
+    job_description = "About the role.\nCompetencies: Python, Django, ETL"
+    intelligence = {"evidence": {"skills": {"evidence_level": 2}}}
+    before_signals = {
+        "target_roles": [], "skills": ["Python"], "past_roles": [],
+        "total_experience_years": 0,
+    }
+    after_signals = {**before_signals, "skills": ["Python", "Django"]}
+
+    before, _ = matcher._hybrid_score(
+        before_signals, "Backend Engineer", job_description, "", [], 0.5,
+        intelligence=intelligence,
+    )
+    after, _ = matcher._hybrid_score(
+        after_signals, "Backend Engineer", job_description, "", [], 0.5,
+        intelligence=intelligence,
+    )
+
+    assert after > before
+
+
+def test_single_job_refresh_reuses_full_job_metadata_and_semantic_score(monkeypatch):
+    selected = {
+        "match_reason": {"semantic_score": 0.48},
+        "title": "Backend Engineer",
+        "description": "Build Python APIs",
+        "requirements": "Required skills: Python",
+        "skills": ["Python"],
+        "skills_required": ["Docker"],
+        "experience_required": "3+ years",
+        "location": "Hyderabad",
+        "employment_type": "Full-time",
+        "remote": False,
+        "remote_policy": "Hybrid",
+        "industry": "Software",
+        "salary_range": "15 LPA",
+        "city": "Hyderabad",
+        "state": "Telangana",
+        "country": "India",
+        "structured_data": {"company_type": "startup"},
+    }
+    captured = {}
+
+    class Result:
+        def mappings(self):
+            return self
+
+        def fetchone(self):
+            return selected
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, statement, params=None):
+            if "SELECT cjr.match_reason" in str(statement):
+                return Result()
+            captured["write"] = params
+            return Result()
+
+        async def commit(self):
+            pass
+
+    def score(signals, title, description, requirements, skills, semantic, **kwargs):
+        captured.update({
+            "requirements": requirements,
+            "skills": skills,
+            "semantic": semantic,
+            "job_metadata": kwargs["job_metadata"],
+        })
+        return 0.64, {"final_score": 0.64, "semantic_score": semantic}
+
+    monkeypatch.setattr(matcher, "_hybrid_score", score)
+    monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
+
+    asyncio.run(matcher.refresh_candidate_job_match(
+        "candidate-1",
+        "rec-1",
+        {"skills": ["Python", "Docker"], "experience_years": 4, "raw_data": {}},
+        lambda: Session(),
+    ))
+
+    assert captured["semantic"] == 0.48
+    assert captured["skills"] == ["Python", "Docker"]
+    assert "3+ years" in captured["requirements"]
+    assert captured["job_metadata"]["location"] == "Hyderabad"
+    assert captured["job_metadata"]["employment_type"] == "Full-time"
+
+
 class FixedDateTime(datetime):
     @classmethod
     def now(cls, tz=None):
