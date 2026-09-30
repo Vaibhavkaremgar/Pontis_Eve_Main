@@ -17,6 +17,100 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server
 
 
+class TestProfileStrengthGuidanceAnswers:
+    def test_short_industry_answer_uses_the_preceding_guidance_question(self):
+        history = [
+            {"role": "assistant", "content": "Which industries are you most interested in working in?"},
+            {"role": "user", "content": "software industry"},
+        ]
+
+        result = server._chat_profile_preflight(
+            "software industry", {"work_experience": []}, history
+        )
+
+        assert result["updates"] == {"preferred_industries": ["software industry"]}
+        assert "preferred industries" in result["reply"]
+
+    def test_short_employment_type_answer_uses_the_preceding_guidance_question(self):
+        history = [
+            {"role": "assistant", "content": "Are you looking for full-time, part-time, contract, or freelance work?"},
+            {"role": "user", "content": "full time"},
+        ]
+
+        result = server._chat_profile_preflight(
+            "full time", {"work_experience": []}, history
+        )
+
+        assert result["updates"] == {"employment_types": ["Full-time"]}
+
+    def test_short_remote_answer_uses_the_preceding_guidance_question(self):
+        history = [
+            {"role": "assistant", "content": "Do you prefer remote, hybrid, or on-site work?"},
+            {"role": "user", "content": "remote"},
+        ]
+
+        result = server._chat_profile_preflight(
+            "remote", {"work_experience": []}, history
+        )
+
+        assert result["updates"] == {"remote_preference": "Remote"}
+
+
+class TestImmediateExplicitProfileUpdates:
+    def test_add_skills_command_is_ready_for_persistence_without_llm(self):
+        message = "Add Docker and Redis to my skills"
+
+        result = server._chat_profile_preflight(
+            message, {"work_experience": []}, [{"role": "user", "content": message}]
+        )
+
+        assert result["updates"] == {"skills": ["Docker", "Redis"]}
+
+    def test_update_location_command_is_ready_for_persistence_without_llm(self):
+        message = "Update my location to Bengaluru, India"
+
+        result = server._chat_profile_preflight(
+            message, {"work_experience": []}, [{"role": "user", "content": message}]
+        )
+
+        assert result["updates"] == {"location": "Bengaluru, India"}
+
+    def test_add_certification_command_is_not_blocked_as_bare_add(self):
+        message = "Add AWS Certified Developer to my certifications"
+
+        result = server._chat_profile_preflight(
+            message, {"work_experience": []}, [{"role": "user", "content": message}]
+        )
+
+        assert result["updates"] == {"certifications": ["AWS Certified Developer"]}
+
+    def test_add_project_command_is_not_blocked_as_bare_add(self):
+        message = "Add Inventory Platform to my projects"
+
+        result = server._chat_profile_preflight(
+            message, {"work_experience": []}, [{"role": "user", "content": message}]
+        )
+
+        assert result["updates"] == {
+            "projects": [{"project_name": "Inventory Platform", "title": "Inventory Platform"}]
+        }
+
+    def test_candidate_scalar_update_is_merged_when_llm_omits_it(self):
+        reply = (
+            "I've updated your profile.\n"
+            "<<<PROFILE_UPDATES>>>\n"
+            '{"profile_updates": {"skills": ["Python"]}}\n'
+            "<<<END_UPDATES>>>"
+        )
+
+        _, updates = server._extract_profile_updates(
+            reply, candidate_message="Update my location to Bengaluru"
+        )
+
+        assert updates["location"] == "Bengaluru"
+        assert updates["skills"] == ["Python"]
+
+
 class TestChatExperienceCompletion:
     def test_project_at_company_with_dates_asks_for_role_before_saving(self):
         message = "Worked on AWS services and VPC creations at Infoz IT from Feb 2024 to Sept 2024"

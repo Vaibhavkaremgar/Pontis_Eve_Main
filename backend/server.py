@@ -4856,6 +4856,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     preferred_roles = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?(?:preferred|target) roles?(?:\s+list)?(?:[.!?;]|$)",
+            r"\b(?:set|update|change)\s+(?:my\s+)?(?:preferred|target) roles?\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:i(?:'m| am)?\s+)?(?:targeting|looking for|seeking|want(?:ing)?|interested in|open to)\s+(?P<value>.+?)(?:\s+roles?\b|\s+positions?\b|\s+opportunities\b|[.!?;]|$)",
             r"\bpreferred roles?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         ],
@@ -4868,6 +4870,9 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     skills = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?skills?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+            r"\b(?:update|set)\s+(?:my\s+)?skills?(?:\s+section|\s+list)?\s+(?:to|with|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:my\s+)?skills?\s+(?:are|include)\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bpreferably\s+with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:preferably\s+)?working with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bskills?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
@@ -4914,12 +4919,12 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         # this legacy extraction alias into the canonical expected_salary key.
         updates["salary_expectation"] = salary_expectation.strip()
 
-    remote_match = re.search(r"\b(?:prefer|want|looking for|open to)\s+(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
+    remote_match = re.search(r"\b(?:(?:prefer|want|looking for|open to)\s+|(?:set|update|change)\s+(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:to|as)\s+|(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:is|:)\s*)(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
     if remote_match:
         updates["remote_preference"] = {"remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site", "onsite": "On-site", "flexible": "Flexible"}[remote_match.group(1).lower().replace(" ", "-")]
 
     employment_match = re.search(r"\b(full[ -]?time|part[ -]?time|contract|freelance|internship)\b", text, re.IGNORECASE)
-    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to")):
+    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to", "employment type", "work type")):
         updates["employment_types"] = [_normalize_profile_text(employment_match.group(1)).title().replace("Full-Time", "Full-time").replace("Part-Time", "Part-time")]
 
     locations = _extract_first_match(text, [
@@ -4932,6 +4937,11 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         if re.search(r"\b(?:actually\s*,?\s*)?i\s+prefer\b.*\b(?:now|instead)\b", text, re.I):
             updates["replace_preferred_locations"] = True
     industries = _extract_first_match(text, [r"\b(?:preferred|target) industries?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
+    if not industries:
+        industries = _extract_first_match(text, [
+            r"\b(?:add|set|update)\s+(?:my\s+)?(?:preferred|target) industries?\s+(?:to|as|with)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bmy\s+(?:preferred|target) industries?\s+(?:is|are)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ])
     if industries:
         updates["preferred_industries"] = _split_update_list(industries)
     if re.search(r"\b(?:willing|happy|open)\s+to\s+relocate\b", text, re.IGNORECASE):
@@ -4946,6 +4956,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     current_role = _extract_first_match(
         text,
         [
+            r"\b(?:set|update|change)\s+(?:my\s+)?current\s+(?:role|title)\s+(?:to|as)\s+(?:an?\s+)?(?P<value>.+?)(?:[.!?;]|$)",
             r"\bmy current (?:role|title) is\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
             r"\b(?:i(?:'m| am)\s+currently\s+(?:working\s+as|work(?:ing)?\s+as)|currently\s+(?:working\s+as|work(?:ing)?\s+as)|i\s+work\s+as|i(?:'m| am)\s+working\s+as|working\s+as)\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
             r"\b(?:i(?:'m| am)\s+(?:a|an))\s+(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
@@ -4964,6 +4975,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     location = _extract_first_match(
         text,
         [
+            r"\b(?:set|update|change)\s+(?:my\s+)?(?:current\s+)?location\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bmy\s+(?:current\s+)?location\s+(?:is|:)\s*(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:based in|located in|live in|living in|from)\s+(?P<value>.+?)(?:[.!?;]|$)",
         ],
     )
@@ -5041,6 +5054,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     certifications = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?certifications?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+            r"\b(?:add|include)\s+(?P<value>.+?\b(?:certificate|certification|credential|licen[cs]e))\b(?:[.!?;]|$)",
             r"\bcertifications?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:hold|holding|have|earned|completed|obtained|got)\s+(?P<value>.+?)(?:\s+certifications?\b|\s+certified\b|[.!?;]|$)",
         ],
@@ -5054,6 +5069,30 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         ])
         if normalized_certs:
             updates["certifications"] = normalized_certs
+
+    bio = _extract_first_match(text, [
+        r"\b(?:set|update|change)\s+(?:my\s+)?(?:bio|summary|about me)\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        r"\bmy\s+(?:bio|professional summary)\s+(?:is|:)\s*(?P<value>.+?)(?:[.!?;]|$)",
+    ])
+    if bio:
+        updates["bio"] = bio
+
+    scalar_patterns = {
+        "name": [r"\b(?:set|update|change)\s+(?:my\s+)?name\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)"],
+        "email": [r"\b(?:set|update|change)\s+(?:my\s+)?email(?: address)?\s+(?:to|as)\s+(?P<value>[^\s,;]+)"],
+        "phone": [r"\b(?:set|update|change)\s+(?:my\s+)?(?:phone|mobile)(?: number)?\s+(?:to|as)\s+(?P<value>[+\d][\d\s()-]+)"],
+    }
+    for field, patterns in scalar_patterns.items():
+        value = _extract_first_match(text, patterns)
+        if value:
+            updates[field] = value
+
+    project = _extract_first_match(text, [
+        r"\b(?:add|include)\s+(?:my\s+)?project\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+        r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?projects?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+    ])
+    if project:
+        updates["projects"] = [project]
 
     return updates
 
@@ -5071,12 +5110,19 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
         # the institution name resembles a training provider.
         result["education"] = inferred["education"]
         result.pop("certifications", None)
-    for field in ("skills", "work_experience", "preferred_roles", "preferred_locations"):
-        if field in inferred:
-            if field in ("skills", "preferred_roles", "preferred_locations") and isinstance(result.get(field), list):
-                result[field] = _merge_profile_updates({field: result[field]}, {field: inferred[field]})[field]
-            else:
-                result[field] = inferred[field]
+    # Candidate wording is the reliable fallback when the model omits a field
+    # from its hidden update block. Previously only four fields were merged,
+    # so Eve could acknowledge location, bio, preferences, or certifications
+    # without those values ever reaching persistence.
+    for field, value in inferred.items():
+        if field == "education":
+            continue
+        if isinstance(value, list) and isinstance(result.get(field), list):
+            result[field] = _merge_profile_updates(
+                {field: result[field]}, {field: value}
+            )[field]
+        else:
+            result[field] = value
     if inferred.get("replace_preferred_locations"):
         result["replace_preferred_locations"] = True
     return _sanitize_profile_updates(result)
@@ -5310,6 +5356,121 @@ def _incomplete_new_chat_experience(updates: Optional[dict], candidate: Optional
     return []
 
 
+def _latest_profile_guidance_question(history: list[dict]) -> str:
+    """Return the assistant question immediately preceding a candidate answer."""
+    for item in reversed(history[:-1]):
+        if item.get("role") == "assistant":
+            return _normalize_profile_text(item.get("content")).lower()
+        # Ignore the hidden instruction used to request a guidance question,
+        # but do not bind an answer to an older, unrelated conversation turn.
+        if item.get("role") == "user" and not str(item.get("content") or "").startswith("[PROFILE_QUESTION]"):
+            break
+    return ""
+
+
+def _strip_guidance_answer_prefix(value: str, patterns: tuple[str, ...]) -> str:
+    cleaned = _normalize_profile_text(value).strip(" .;:")
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip(" .;:")
+    return cleaned
+
+
+def _profile_guidance_answer(message: str, history: list[dict]) -> Optional[dict]:
+    """Map a short answer to the canonical field named by sidebar guidance.
+
+    A bare answer such as ``software industry`` has no independently inferable
+    destination. The immediately preceding Eve question supplies that missing
+    context so the value reaches the same field used by the strength scorer.
+    """
+    answer = _normalize_profile_text(message).strip(" .;:")
+    question = _latest_profile_guidance_question(history)
+    if not answer or not question or answer.lower() in _CONVERSATIONAL_FILLER_WORDS:
+        return None
+
+    updates: dict[str, Any] = {}
+    reply_subject = "that detail"
+
+    if "job titles or roles are you targeting" in question or "kinds of roles are you looking for" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^(?:i(?:'m| am)?\s+)?(?:targeting|looking for|interested in)\s+",))
+        roles = _normalize_preferred_roles(_split_update_list(value))
+        if roles:
+            updates["preferred_roles"] = roles
+            reply_subject = "your target roles"
+    elif "strongest professional and technical skills" in question or "other skills do you regularly use" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^(?:my\s+)?skills?\s+(?:are|include)\s+", r"^i\s+(?:use|know|work with)\s+"))
+        skills = _merge_skills([], _split_update_list(value))
+        if skills:
+            updates["skills"] = skills
+            reply_subject = "your skills"
+    elif "industries are you most interested" in question or "industries you would especially like" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:interested in|targeting|looking for)\s+", r"^i\s+prefer\s+"))
+        industries = _normalize_preference_list(_split_update_list(value))
+        if industries:
+            updates["preferred_industries"] = industries
+            reply_subject = "your preferred industries"
+    elif "full-time, part-time, contract, or freelance" in question:
+        employment_types = []
+        labels = {
+            "full-time": "Full-time", "full time": "Full-time",
+            "part-time": "Part-time", "part time": "Part-time",
+            "contract": "Contract", "freelance": "Freelance", "internship": "Internship",
+        }
+        lower_answer = answer.lower()
+        for phrase, label in labels.items():
+            if re.search(rf"\b{re.escape(phrase)}\b", lower_answer) and label not in employment_types:
+                employment_types.append(label)
+        if employment_types:
+            updates["employment_types"] = employment_types
+            reply_subject = "your preferred employment type"
+    elif "prefer remote, hybrid, or on-site" in question or "prefer remote, hybrid, on-site, or flexible" in question:
+        work_mode = re.search(r"\b(remote|hybrid|on[ -]?site|flexible)\b", answer, re.IGNORECASE)
+        if work_mode:
+            key = work_mode.group(1).lower().replace(" ", "-")
+            updates["remote_preference"] = {
+                "remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site",
+                "onsite": "On-site", "flexible": "Flexible",
+            }[key]
+            reply_subject = "your work-mode preference"
+    elif "salary range are you targeting" in question:
+        updates["expected_salary"] = answer
+        reply_subject = "your salary expectation"
+    elif "notice period" in question and ("when can you start" in question or "when could you start" in question):
+        updates["notice_period"] = _normalize_availability_value(answer)
+        reply_subject = "your availability"
+    elif "locations are you open to working in" in question or "locations would you prefer to work in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+open to\s+", r"^i\s+prefer\s+"))
+        locations = _normalize_preference_list(_split_update_list(value))
+        if locations:
+            updates["preferred_locations"] = locations
+            reply_subject = "your preferred locations"
+    elif "willing to relocate" in question or "open to relocating" in question:
+        lower_answer = answer.lower()
+        if re.search(r"\b(?:no|not|cannot|can't|won't|unwilling)\b", lower_answer):
+            updates["willing_to_relocate"] = False
+        elif re.search(r"\b(?:yes|sure|willing|open|can|would)\b", lower_answer):
+            updates["willing_to_relocate"] = True
+        if updates:
+            reply_subject = "your relocation preference"
+    elif "total years of professional experience" in question:
+        years = re.search(r"\b(\d+(?:\.\d+)?)\b", answer)
+        if years:
+            updates["experience_years"] = float(years.group(1))
+            reply_subject = "your total experience"
+    elif "city and country are you currently based in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
+        if value:
+            updates["location"] = value
+            reply_subject = "your current location"
+    elif "what is your background and what do you want to do next" in question:
+        updates["bio"] = answer
+        reply_subject = "your career summary"
+
+    updates = _sanitize_profile_updates(updates)
+    if not updates:
+        return None
+    return {"reply": f"I've added {reply_subject} to your profile.", "updates": updates}
+
+
 def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
     """Resolve deterministic profile-edit safety cases before asking the LLM.
 
@@ -5319,6 +5480,9 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     """
     text_value = message.strip()
     lower = text_value.lower()
+    guidance_answer = _profile_guidance_answer(text_value, history)
+    if guidance_answer:
+        return guidance_answer
     pending_selection = _pending_replacement_selection(text_value, candidate, history)
     if pending_selection:
         return pending_selection
@@ -5356,7 +5520,7 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
 
     # A bare "Add X" has no durable profile destination. Do not infer Skills.
     bare_add = re.match(r"^add\s+(.+?)[.!]?$", text_value, re.I)
-    if bare_add and not re.search(r"\b(skill|skills|education|experience|project|certification|preference|master'?s|bachelor'?s|mba|university|college|degree)\b", lower):
+    if bare_add and not re.search(r"\b(skills?|education|experience|projects?|certifications?|preferences?|bio|summary|location|master'?s|bachelor'?s|mba|university|college|degree)\b", lower):
         return {"reply": f"Where would you like me to add {bare_add.group(1).strip()}?", "updates": None}
 
     # Complete an immediately preceding education/work timeline question using
@@ -5415,6 +5579,42 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
             section = sections[0]
             if section in ("Education", "Work Experience"):
                 return {"reply": f"Updated {old} to {new} in {section}.", "updates": _replacement_update(section, old, new, matches[section])}
+
+    # Explicit, fully targeted profile commands should not depend on the LLM
+    # producing a correctly formatted hidden JSON block. Apply them through the
+    # same validated persistence path and only confirm after the database write.
+    explicit_profile_edit = re.search(
+        r"\b(?:add|include|set|update|change)\b.*\b(?:profile|skills?|certifications?|"
+        r"preferred roles?|target roles?|industr(?:y|ies)|employment type|work type|"
+        r"work mode|remote preference|location|bio|summary|current role|current title|"
+        r"projects?|name|email|phone|mobile)\b",
+        text_value,
+        re.IGNORECASE,
+    )
+    if explicit_profile_edit:
+        updates = _sanitize_profile_updates(_infer_profile_updates_from_message(text_value))
+        missing_experience = _incomplete_new_chat_experience(updates, candidate)
+        if missing_experience:
+            return {
+                "reply": "Before I add that work experience, please share the "
+                + ", ".join(missing_experience[:-1])
+                + (" and " if len(missing_experience) > 1 else "")
+                + missing_experience[-1]
+                + ".",
+                "updates": None,
+            }
+        if updates:
+            labels = {
+                "preferred_roles": "target roles", "preferred_locations": "preferred locations",
+                "preferred_industries": "preferred industries", "employment_types": "employment preference",
+                "remote_preference": "work-mode preference", "current_role": "current role",
+                "experience_years": "experience", "expected_salary": "salary expectation",
+            }
+            changed = [labels.get(field, field.replace("_", " ")) for field in updates if not field.startswith("replace_")]
+            return {
+                "reply": f"I've updated your {', '.join(changed)}.",
+                "updates": updates,
+            }
     return None
 
 
