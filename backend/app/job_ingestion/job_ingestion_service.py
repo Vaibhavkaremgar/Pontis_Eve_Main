@@ -68,21 +68,21 @@ async def upsert_ats_job(
         await db.execute(
             text("""
                 UPDATE job_descriptions
-                SET job_url = CASE WHEN :is_global_provider AND :job_url IS NOT NULL THEN :job_url ELSE COALESCE(job_url, :job_url) END,
-                    description = CASE WHEN :refresh_description THEN :description ELSE description END,
-                    requirements = CASE WHEN :refresh_description OR (requirements IS NULL AND :requirements IS NOT NULL) THEN :requirements ELSE requirements END,
-                    employment_type = COALESCE(:employment_type, employment_type),
-                    remote_policy = COALESCE(:remote_policy, remote_policy),
-                    experience_level = COALESCE(:experience_level, experience_level),
-                    experience_required = COALESCE(:experience_required, experience_required),
-                    salary_range = COALESCE(:salary_range, salary_range),
-                    skills_required = CASE WHEN :skills_required IS NOT NULL THEN CAST(:skills_required AS json) ELSE skills_required END,
-                    skills = CASE WHEN :skills IS NOT NULL THEN CAST(:skills AS json) ELSE skills END,
-                    structured_data = CASE WHEN :structured_data IS NOT NULL THEN CAST(:structured_data AS json) ELSE structured_data END,
-                    created_at = COALESCE(:created_at, created_at),
+                SET job_url = CASE WHEN :is_global_provider AND CAST(:job_url AS TEXT) IS NOT NULL THEN CAST(:job_url AS TEXT) ELSE COALESCE(job_url, CAST(:job_url AS TEXT)) END,
+                    description = CASE WHEN CAST(:refresh_description AS BOOLEAN) THEN CAST(:description AS TEXT) ELSE description END,
+                    requirements = CASE WHEN CAST(:refresh_description AS BOOLEAN) OR (requirements IS NULL AND CAST(:requirements AS TEXT) IS NOT NULL) THEN CAST(:requirements AS TEXT) ELSE requirements END,
+                    employment_type = COALESCE(CAST(:employment_type AS VARCHAR), employment_type),
+                    remote_policy = COALESCE(CAST(:remote_policy AS VARCHAR), remote_policy),
+                    experience_level = COALESCE(CAST(:experience_level AS VARCHAR), experience_level),
+                    experience_required = COALESCE(CAST(:experience_required AS TEXT), experience_required),
+                    salary_range = COALESCE(CAST(:salary_range AS TEXT), salary_range),
+                    skills_required = CASE WHEN CAST(:skills_required AS json) IS NOT NULL THEN CAST(:skills_required AS json) ELSE skills_required END,
+                    skills = CASE WHEN CAST(:skills AS json) IS NOT NULL THEN CAST(:skills AS json) ELSE skills END,
+                    structured_data = CASE WHEN CAST(:structured_data AS json) IS NOT NULL THEN CAST(:structured_data AS json) ELSE structured_data END,
+                    created_at = COALESCE(CAST(:created_at AS TIMESTAMPTZ), created_at),
                     is_active = TRUE, status = 'active', job_status = 'active',
                     updated_at = NOW(), last_synced_at = NOW()
-                WHERE id = :id
+                WHERE id = CAST(:id AS UUID)
             """),
             {
                 "id": job_id, "job_url": incoming_job_url, "description": incoming_description,

@@ -241,6 +241,86 @@ async def test_upsert_ats_job_refreshes_a_historically_truncated_jd(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_existing_job_update_types_job_url_and_preserves_experience_required(monkeypatch):
+    state = {
+        "job_row": _base_existing_row(None),
+        "update_statements": [],
+        "company_registry_updated": False,
+        "insert_called": False,
+    }
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", lambda *args: None)
+
+    async with SessionFactory(state)() as db:
+        job_id = await upsert_ats_job(db, {
+            "ats_type": "greenhouse", "ats_job_id": "ats-123", "company_name": "Jumio",
+            "description": "Updated description", "requirements": "Python and SQL",
+            "job_url": "https://example.com/new", "experience_required": "5+ years",
+            "skills_required": ["Python", "SQL"], "skills": ["Python"],
+            "structured_data": {"source": "test"}, "employment_type": None,
+        })
+
+    assert job_id == "existing-job-id"
+    sql, params = state["update_statements"][0]
+    assert "CAST(:job_url AS TEXT)" in sql
+    assert "CAST(:refresh_description AS BOOLEAN)" in sql
+    assert "CAST(:requirements AS TEXT)" in sql
+    assert "CAST(:employment_type AS VARCHAR)" in sql
+    assert "CAST(:remote_policy AS VARCHAR)" in sql
+    assert "CAST(:experience_level AS VARCHAR)" in sql
+    assert "CAST(:experience_required AS TEXT)" in sql
+    assert "CAST(:salary_range AS TEXT)" in sql
+    assert "CAST(:skills_required AS json)" in sql
+    assert "CAST(:skills AS json)" in sql
+    assert "CAST(:structured_data AS json)" in sql
+    assert "CAST(:created_at AS TIMESTAMPTZ)" in sql
+    assert "CAST(:id AS UUID)" in sql
+    assert params["job_url"] == "https://example.com/new"
+    assert params["requirements"] == "Python and SQL"
+    assert params["experience_required"] == "5+ years"
+    assert params["skills_required"] == '["Python", "SQL"]'
+    assert params["skills"] == '["Python"]'
+    assert params["structured_data"] == '{"source": "test"}'
+
+
+@pytest.mark.asyncio
+async def test_existing_job_update_types_all_nullable_parameters(monkeypatch):
+    """Every nullable UPDATE bind has a server-side type when asyncpg sees NULL."""
+    state = {
+        "job_row": _base_existing_row(None),
+        "update_statements": [],
+        "company_registry_updated": False,
+        "insert_called": False,
+    }
+    state["job_row"]["ats_job_id"] = "ats-nullable"
+    state["job_row"]["ats_type"] = "lever"
+    async def no_agency(*args):
+        return None
+
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", no_agency)
+
+    async with SessionFactory(state)() as db:
+        await upsert_ats_job(db, {
+            "ats_type": "lever", "ats_job_id": "ats-nullable", "company_name": "Jumio",
+            "description": "Same length", "job_url": None,
+            "employment_type": None, "remote_policy": None,
+            "experience_required": None, "experience_level": None,
+            "salary_range": None, "requirements": None, "created_at": None,
+            "skills_required": None, "skills": None, "structured_data": None,
+        })
+
+    sql, params = state["update_statements"][0]
+    for parameter in (
+        "job_url", "requirements", "employment_type", "remote_policy",
+        "experience_level", "experience_required", "salary_range",
+        "skills_required", "skills", "structured_data", "created_at", "id",
+    ):
+        assert f":{parameter}" in sql
+    assert params["employment_type"] is None
+    assert params["experience_required"] is None
+    assert params["created_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
     state = {
         "job_row": _base_existing_row("https://example.com/existing"),
