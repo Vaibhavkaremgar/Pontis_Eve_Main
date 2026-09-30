@@ -205,18 +205,46 @@ def _jd_evidence(description: Any) -> dict[str, Any]:
     return found
 
 def _experience_from_text(description: Any) -> str | None:
-    """Find an explicit years-of-experience requirement in JD text."""
+    """Return the strongest candidate-experience requirement in a JD.
+
+    All matches are scored: explicit ``of experience`` language wins, while
+    company-history phrases (``for over N years``, ``founded N years ago``)
+    are rejected.  Ties prefer the general requirement over a specialized
+    ``including ...`` clause, making the result independent of prose order.
+    """
     text = _html_text(description)
-    # Match the complete expression before matching a single number.  In
-    # particular, ``6-8 years`` must not degrade to ``8 years``.
     pattern = re.compile(
-        r"(?<!\w)(?P<value>(?:(?:minimum|at\s+least)\s+)?"
+        r"(?<!\w)(?P<value>(?:(?:minimum(?:\s+of)?|at\s+least)\s+)?"
         r"\d+(?:\.\d+)?\s*(?:\+|[-\u2013\u2014]\s*\d+(?:\.\d+)?|to\s+\d+(?:\.\d+)?)?\s*"
-        r"(?:years?|yrs?)\b(?:\s+of\s+(?:relevant\s+)?experience)?)",
+        r"(?:years?|yrs?)\b)(?P<qualifier>\s+of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience)?",
         re.I,
     )
-    match = pattern.search(text)
-    return re.sub(r"\s+", " ", match.group("value")).strip() if match else None
+    candidates = []
+    for match in pattern.finditer(text):
+        value = re.sub(r"\s+", " ", match.group("value")).strip()
+        qualifier = re.sub(r"\s+", " ", match.group("qualifier") or "").strip()
+        context = text[max(0, match.start() - 45):match.end() + 65]
+        before = text[max(0, match.start() - 35):match.start()]
+        if re.search(r"(?:for\s+over|over)\s*$|(?:founded|established)\s*$", before, re.I):
+            continue
+        if re.search(r"(?:in business|serving clients|providing services|years ago|years of history)", context, re.I):
+            continue
+        after = text[match.end():match.end() + 90]
+        score = 0
+        if re.match(r"\s+of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience\b", after, re.I): score += 100
+        if re.search(r"\b(?:candidate|applicant|ideal candidate|looking for|you)\b", before, re.I): score += 20
+        if re.search(r"\bincluding\b", before, re.I): score -= 15
+        # Keep the historical full phrase for simple scalar requirements, but
+        # canonicalize ranges and overall requirements to the numeric form.
+        is_range = bool(re.search(r"[-\u2013\u2014]|\bto\b", value))
+        if is_range or re.search(r"\bincluding\b", after, re.I) or re.match(r"(?:minimum|at\s+least)\b", value, re.I):
+            value = value
+        elif qualifier:
+            value = f"{value} {qualifier}"
+        candidates.append((score, match.start(), value))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], -item[1]))[2]
 
 def _lever_required_skills(job: dict[str, Any], description: Any) -> list[str]:
     """Extract explicit skills from Lever's required-qualification lists."""
@@ -242,7 +270,7 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     result = {key: _first(explicit.get(key), evidence.get(key)) for key in metadata_keys}
     # Preserve an explicit years requirement even when a provider omits its
     # dedicated field. This applies uniformly to all normalized sources.
-    result["experience_required"] = _first(result["experience_required"], _experience_from_text(description))
+    result["experience_required"] = _first(_experience_from_text(description), result["experience_required"])
     # ``skills_required`` is a required JSON column.  Preserve explicitly
     # supplied ATS skills first, then the conservative labelled-JD extraction,
     # and represent a genuinely unknown skill set as an empty JSON list rather
