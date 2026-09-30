@@ -640,7 +640,7 @@ function Dashboard() {
       "Share your preferred work mode (remote/hybrid/on-site)": "Do you prefer remote, hybrid, or on-site work?",
       "Share your salary expectations": "What salary range are you targeting?",
     };
-    const question = questions[item?.action] || item?.action;
+    const question = item?.question || questions[item?.action] || item?.action;
     if (!question) return;
     userChoseCenterViewRef.current = true;
     setActiveSidebarTab("profile");

@@ -1310,23 +1310,92 @@ def _build_explainability(dim_scores: dict, prefs: dict, evidence: dict, vi_stat
     }
 
 
-def _build_ninety_percent_guidance(percent: int, explain: dict) -> dict:
+def _build_ninety_percent_guidance(percent: int, explain: dict, dimensions: Optional[dict] = None) -> dict:
     """Return UI-safe, actionable completion guidance without recalculating score."""
     action_sections = {
-        "Tell Eve what kind of role you are targeting": ("Target role", "preferred-roles"),
-        "Upload your resume or add work experience": ("Work experience", "work-experience"),
-        "Add projects or responsibilities that demonstrate your skills": ("Projects and skill evidence", "additional-information"),
-        "Add your key skills to your profile": ("Key skills", "skills"),
-        "Add projects, responsibilities, or portfolio links": ("Projects and portfolio", "additional-information"),
-        "Share your availability / notice period": ("Availability", "additional-information"),
-        "Share your preferred work mode (remote/hybrid/on-site)": ("Work preferences", "additional-information"),
-        "Share your salary expectations": ("Salary expectations", "additional-information"),
+        "Tell Eve what kind of role you are targeting": ("Target role", "preferred-roles", "What job titles or roles are you targeting?"),
+        "Upload your resume or add work experience": ("Work experience", "work-experience", "Tell me about your most recent role, company, dates, and main responsibilities."),
+        "Add projects or responsibilities that demonstrate your skills": ("Skills evidence", "additional-information", "Describe a project or responsibility that demonstrates your strongest skills."),
+        "Add your key skills to your profile": ("Key skills", "skills", "What are your strongest professional and technical skills?"),
+        "Add projects, responsibilities, or portfolio links": ("Projects and portfolio", "additional-information", "Tell me about a relevant project, your contribution, and its outcome."),
+        "Share your availability / notice period": ("Availability", "additional-information", "What is your notice period, and when can you start?"),
+        "Share your preferred work mode (remote/hybrid/on-site)": ("Work preferences", "additional-information", "Do you prefer remote, hybrid, or on-site work?"),
+        "Share your salary expectations": ("Salary expectations", "additional-information", "What salary range are you targeting?"),
     }
     items = []
+    seen_actions = set()
+
+    def add(action: str, title: str, section: str, question: str) -> None:
+        if action in seen_actions or len(items) >= 5:
+            return
+        seen_actions.add(action)
+        items.append({"title": title, "action": action, "section": section, "question": question})
+
     if percent < 90:
         for action in explain.get("next_actions", []):
-            title, section = action_sections.get(action, (action, "additional-information"))
-            items.append({"title": title, "action": action, "section": section})
+            title, section, question = action_sections.get(
+                action, (action, "additional-information", action)
+            )
+            add(action, title, section, question)
+
+        # A strong-but-not-yet-90 profile can have no fully missing sections.
+        # Surface partial gaps from the same scored dimensions so every item
+        # is tied to points the canonical calculator can award.
+        dims = dimensions or {}
+        identity = dims.get("identity_background", {})
+        identity_signals = set(identity.get("signals") or [])
+        identity_gaps = [
+            ("location", "Add your current location", "Location", "additional-information", "What city and country are you currently based in?"),
+            ("experience_years", "Add your total years of experience", "Experience length", "work-experience", "How many total years of professional experience do you have?"),
+            ("dated_history", "Add dates to your work history", "Work dates", "work-experience", "What were the start and end dates for your recent roles?"),
+            ("education", "Add your education", "Education", "education", "What is your highest qualification, institution, and graduation year?"),
+            ("education_details", "Complete your education details", "Education details", "education", "What degree did you earn and which institution awarded it?"),
+        ]
+        if float(identity.get("score") or 0) < 100:
+            for signal, action, title, section, question in identity_gaps:
+                if signal not in identity_signals:
+                    add(action, title, section, question)
+
+        skills = dims.get("skills_capability", {})
+        skill_components = {c.get("name") for c in skills.get("components", []) if isinstance(c, dict)}
+        if float(skills.get("score") or 0) < 100:
+            if "role_relevant_breadth" not in skill_components:
+                add("Add more role-relevant skills", "Role-relevant skills", "skills", "Which other skills do you regularly use in your work?")
+            if "skills_connected_to_work" not in skill_components or "technical_functional_depth" not in skill_components:
+                add("Connect your skills to real work", "Skills evidence", "work-experience", "Give one example of how you used your key skills in a project or job.")
+
+        evidence = dims.get("evidence", {})
+        evidence_components = {c.get("name") for c in evidence.get("components", []) if isinstance(c, dict)}
+        if float(evidence.get("score") or 0) < 100:
+            evidence_gaps = [
+                ("genuine_project_or_substantive_work", "Add a relevant project", "Project evidence", "Tell me about a relevant project, what you built, and your contribution."),
+                ("multiple_distinct_projects", "Add another relevant project", "More project evidence", "Tell me about another relevant project and what you contributed."),
+                ("outcomes_impact", "Add measurable outcomes", "Measured impact", "What measurable result did your work achieve, such as time saved, growth, users, or performance improvement?"),
+                ("work_history_depth", "Complete your work experience details", "Experience evidence", "For a recent role, share the company, title, dates, responsibilities, and outcomes."),
+            ]
+            for component, action, title, question in evidence_gaps:
+                if component not in evidence_components:
+                    add(action, title, "additional-information", question)
+
+        intent = dims.get("career_intent", {})
+        intent_signals = set(intent.get("signals") or [])
+        if float(intent.get("score") or 0) < 100:
+            if "target_industries" not in intent_signals:
+                add("Add your preferred industries", "Preferred industries", "additional-information", "Which industries are you most interested in working in?")
+            if "career_summary" not in intent_signals:
+                add("Add your career summary", "Career summary", "additional-information", "In two or three sentences, what is your background and what do you want to do next?")
+
+        prefs = dims.get("preferences_constraints", {})
+        pref_questions = {
+            "location_preferences": ("Add preferred locations", "Preferred locations", "Which locations are you open to working in?"),
+            "employment_types": ("Add preferred employment types", "Employment type", "Are you looking for full-time, part-time, contract, or freelance work?"),
+            "target_industries": ("Add your preferred industries", "Preferred industries", "Which industries are you most interested in working in?"),
+            "relocation": ("Confirm relocation preference", "Relocation", "Are you willing to relocate for the right role?"),
+        }
+        for key in prefs.get("unknown", []) or []:
+            if key in pref_questions:
+                action, title, question = pref_questions[key]
+                add(action, title, "additional-information", question)
 
     return {
         "current_percent": percent,
@@ -1658,7 +1727,7 @@ def calculate_profile_strength_v2(
 
     # Explainability
     explain = _build_explainability(dim_scores, prefs, evidence, vi_state)
-    ninety_percent_guidance = _build_ninety_percent_guidance(percent, explain)
+    ninety_percent_guidance = _build_ninety_percent_guidance(percent, explain, dim_scores)
 
     # Structured dimension output for API
     def _dim_out(d: dict, key: str) -> dict:

@@ -21,6 +21,7 @@ from profile_strength_service import (
     EVIDENCE_DEMONSTRATED,
     EVIDENCE_VERIFIED,
     _role_aware_profile_weight,
+    _build_ninety_percent_guidance,
 )
 
 
@@ -99,6 +100,32 @@ def test_ninety_percent_guidance_is_derived_from_the_canonical_score_result():
     assert guidance["items"]
     assert all({"title", "action", "section"} <= item.keys() for item in guidance["items"])
     assert all("assessment" not in f"{item['title']} {item['action']}".lower() for item in guidance["items"])
+
+
+def test_ninety_percent_guidance_surfaces_partial_scoring_gaps_for_strong_profiles():
+    guidance = _build_ninety_percent_guidance(
+        87,
+        {"next_actions": []},
+        {
+            "identity_background": {"score": 100, "signals": []},
+            "skills_capability": {"score": 100, "components": []},
+            "evidence": {
+                "score": 80,
+                "components": [
+                    {"name": "genuine_project_or_substantive_work"},
+                    {"name": "multiple_distinct_projects"},
+                    {"name": "work_history_depth"},
+                ],
+            },
+            "career_intent": {"score": 100, "signals": []},
+            "preferences_constraints": {"score": 100, "unknown": []},
+        },
+    )
+
+    assert guidance["current_percent"] == 87
+    assert guidance["items"]
+    assert guidance["items"][0]["action"] == "Add measurable outcomes"
+    assert guidance["items"][0]["question"]
 
 
 def test_profile_strength_diagnostic_reports_existing_calculation_without_changing_it():
