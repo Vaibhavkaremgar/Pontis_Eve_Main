@@ -225,6 +225,14 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     if (submitting) return;
 
     const persistInterruptedState = async () => {
+      // The transcript effect schedules a best-effort snapshot save.  Cancel
+      // that snapshot before the terminal save so an older progress payload
+      // cannot overwrite the answered/current-question state while we route
+      // into the dashboard.
+      if (progressTimerRef.current) {
+        clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
       if (!resolvedCandidateId || transcript.length === 0) {
         onComplete({ status: "no_interaction" });
         return;
@@ -264,6 +272,10 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     }
 
     setSubmitting(true);
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
     axios
       .post(`${API}/voice/candidate-intake`, {
         transcript: transcriptText,

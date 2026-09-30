@@ -180,6 +180,7 @@ def test_each_provider_final_insert_values_are_non_null_for_required_ats_contrac
     params = _metadata_params(safe)
     assert all(safe[key] is not None for key in ("ats_type", "ats_job_id", "title", "company_name", "description"))
     assert all(params[key] is not None for key in ("experience_level", "skills_required", "skills", "structured_data"))
+    assert params["remote_policy"] == "unknown"
 
 
 @pytest.mark.parametrize("normalizer", [normalize_ashby, normalize_lever, normalize_greenhouse, normalize_workable])

@@ -442,6 +442,13 @@ def _candidate_total_experience_years(candidate: Dict[str, Any]) -> float:
     now = datetime.now(timezone.utc)
 
     for item in work_exp if isinstance(work_exp, list) else []:
+        if not isinstance(item, dict):
+            continue
+        # Personal/self projects are not employer experience, even when an
+        # extractor placed them in the work_experience array.
+        kind = " ".join(str(item.get(key) or "") for key in ("type", "category", "employment_type", "title", "company", "project_name")).lower()
+        if item.get("is_project") or any(marker in kind for marker in ("self project", "personal project", "side project", "independent project")):
+            continue
         start, end = _parse_experience_window(item)
         if start is None:
             continue
@@ -451,12 +458,14 @@ def _candidate_total_experience_years(candidate: Dict[str, Any]) -> float:
         intervals.append((start, effective_end))
 
     if not intervals:
-        # Parsed resumes do not always retain individual date ranges.  The
-        # candidate-row total is still a real, explicit experience signal.
-        try:
-            return max(0.0, float(candidate.get("experience_years") or candidate.get("total_experience_years") or 0))
-        except (TypeError, ValueError):
-            return 0.0
+        # Only use the legacy scalar when there is no work-history collection at
+        # all. Once records exist, stale scalar totals must not override them.
+        if not work_exp:
+            try:
+                return max(0.0, float(candidate.get("experience_years") or candidate.get("total_experience_years") or 0))
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
 
     intervals.sort(key=lambda item: item[0])
     merged_days = 0.0
@@ -804,7 +813,37 @@ def _extract_job_required_skills(job_text: str) -> List[str]:
     Looks for skills listed after 'required:', 'requirements:', 'must have:',
     or in parenthetical skill lists. Falls back to all tech tokens.
     """
-    lower = job_text.lower()
+    # Only inspect explicitly structured sections; surrounding JD prose is
+    # intentionally ignored because it often contains sentence fragments.
+    text = str(job_text or "").replace("\\n", "\n").replace("\\r", "\r")
+    text = re.sub(r"<[^>]+>", "\n", text)
+    section = re.compile(r"^\s*(?:required\s+skills?|technical\s+skills?|key\s+skills?|core\s+skills?|qualifications?|requirements?|must[- ]have|what\s+you\s+(?:need|bring)|competencies)\s*:?[ \t]*$", re.I)
+    stop = re.compile(r"^\s*(?:preferred|nice\s+to\s+have|benefits?|responsibilities|about\s+(?:the\s+company|us|the\s+role)|what\s+we\s+offer)\b", re.I)
+    bullet = re.compile(r"^\s*(?:[-*•▪‣]|\d+[.)])\s+")
+    rejected_start = re.compile(r"^(?:be|build|communicate|conduct|create|develop|ensure|help|lead|manage|maintain|provide|support|work|all|the|a|an|and|or)\b", re.I)
+    rejected = re.compile(r"\b(?:location|salary|compensation|travel|clearance|citizenship|eligib|authorization|visa|degree|education|bachelor|master|phd|years?\s+of\s+experience)\b", re.I)
+    skills = []
+    collecting = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if stop.match(line):
+            collecting = False
+            continue
+        if section.match(line):
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        is_bullet = bool(bullet.match(line))
+        item_text = bullet.sub("", line).strip(" .:;()")
+        items = re.split(r"[,;]", item_text) if is_bullet else [item_text]
+        for item in items:
+            item = re.sub(r"^(?:strong|proven|demonstrated|hands[- ]on)\s+(?:experience|proficiency|knowledge|expertise|familiarity)\s+(?:with|in|of)\s+", "", item.strip(" .:;()"), flags=re.I)
+            if 2 <= len(item) <= 60 and len(item.split()) <= 6 and not rejected_start.match(item) and not rejected.search(item) and not item.endswith((".", "!", "?")):
+                skills.append(item)
+    return list(dict.fromkeys(skills))
     # Look for explicit required section
     for marker in ("required:", "requirements:", "must have:", "you must have:",
                    "requires ", "requiring "):
