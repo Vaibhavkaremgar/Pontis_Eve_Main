@@ -80,6 +80,7 @@ async def sync_jobs() -> None:
     """Fetch and upsert jobs for every active company in company_registry."""
     from app.job_ingestion.collect_jobs import JobCollector
     from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
 
     SessionLocal = _get_session_local()
     collector = JobCollector()
@@ -129,6 +130,7 @@ async def sync_jobs() -> None:
             for job in jobs:
                 job_ats_id = str(job.get("ats_job_id") or "")
                 try:
+                    job = await extract_missing_job_skills(job)
                     await upsert_ats_job(db, job)
                     inserted += 1
                     if inserted % PROGRESS_INTERVAL == 0:
@@ -214,6 +216,7 @@ async def sync_fantastic_jobs() -> dict[str, int]:
     """Sync Fantastic independently of company_registry and other ATS sources."""
     from app.job_ingestion.connectors.fantastic import FantasticClient
     from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
     if os.getenv("FANTASTIC_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
     logger.info("[fantastic] starting sync")
@@ -233,6 +236,7 @@ async def sync_fantastic_jobs() -> dict[str, int]:
                 stats["skipped"] += 1; continue
             try:
                 existing = await db.execute(text("SELECT id FROM job_descriptions WHERE ats_type='fantastic' AND ats_job_id=:ats_job_id LIMIT 1"), {"ats_job_id": job["ats_job_id"]})
+                job = await extract_missing_job_skills(job)
                 await upsert_ats_job(db, job)
                 stats["updated" if existing.first() else "inserted"] += 1
             except Exception as exc:

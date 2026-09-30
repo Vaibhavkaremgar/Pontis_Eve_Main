@@ -24,6 +24,40 @@ def _skill_list(value: Any) -> list[str]:
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
+_KNOWN_JOB_SKILLS = (
+    "AWS CDK", "CloudFormation", "GitHub Actions", "Spring Boot", "PostgreSQL",
+    "MongoDB", "Kubernetes", "Terraform", "Prometheus", "Grafana", "Docker",
+    "Python", "Java", "JavaScript", "TypeScript", "Golang", "Go", "Linux",
+    "Jenkins", "REST", "REST APIs", "gRPC", "GraphQL", "Redis", "MySQL",
+    "SQL", "Git", "Azure", "GCP", "AWS", "Kafka", "FastAPI", "Django",
+    "Flask", "React", "Node.js", "Ruby", "C#", ".NET", "PHP", "Shell scripting",
+    "Infrastructure as Code", "CI/CD",
+)
+_SKILL_ALIASES = {"postgres": "PostgreSQL", "postgresql": "PostgreSQL"}
+
+def _normalize_skill_values(values: Any) -> list[str]:
+    """Return concise, case-insensitively deduplicated professional skills."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in _skill_list(values):
+        clean = re.sub(r"\s+", " ", value).strip(" .;:-")
+        if not clean or len(clean.split()) > 5 or len(clean) > 60:
+            continue
+        clean = _SKILL_ALIASES.get(clean.casefold(), clean)
+        key = clean.casefold()
+        if key not in seen:
+            seen.add(key); result.append(clean)
+    return result
+
+def _extract_jd_skills(description: Any) -> list[str]:
+    """Extract known technical skills from labelled sections and JD prose."""
+    text = _html_text(description)
+    found: list[str] = []
+    for skill in sorted(_KNOWN_JOB_SKILLS, key=len, reverse=True):
+        if re.search(rf"(?<![\w+#.]){re.escape(skill)}(?![\w+#.])", text, re.I):
+            found.append(skill)
+    return _normalize_skill_values(found)
+
 def _ats_id(value: Any) -> str:
     """Do not turn a missing provider ID into the literal string ``'None'``."""
     return str(value).strip() if value is not None else ""
@@ -132,7 +166,11 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     # supplied ATS skills first, then the conservative labelled-JD extraction,
     # and represent a genuinely unknown skill set as an empty JSON list rather
     # than SQL NULL.  This is intentionally not a guessed skill list.
-    result["skills_required"] = _skill_list(result["skills_required"])
+    result["skills_required"] = _normalize_skill_values([
+        *_skill_list(result["skills_required"]),
+        *_skill_list(evidence.get("skills_required")),
+        *_extract_jd_skills(description),
+    ])
     result["skills"] = result.get("skills_required")
     # This column is NOT NULL.  A stated requirement (for example, "5+ years")
     # is useful evidence but is deliberately not converted into a guessed
@@ -173,7 +211,7 @@ def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, An
     # original posted/created timestamp.  It must not be treated as a posting
     # date: leaving this as None lets persistence retain an existing source
     # timestamp or use its established NOW() fallback for a new row.
-    meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), created_at=None)
+    meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), skills_required=_first(job.get("skills_required"), job.get("skills")), created_at=None)
     departments = job.get("departments") or []
     return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
 
