@@ -1,5 +1,5 @@
 ﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -82,6 +82,27 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+@app.middleware("http")
+async def reject_empty_voice_transcript_early(request: StarletteRequest, call_next):
+    """Reject empty intake bodies before route dependencies or handler work."""
+    if request.method == "POST" and request.url.path == "/api/voice/candidate-intake":
+        body = await request.body()
+        try:
+            payload = json.loads(body or b"{}")
+        except (TypeError, ValueError):
+            payload = {}
+        transcript = payload.get("transcript") if isinstance(payload, dict) else None
+        if not isinstance(transcript, str) or not transcript.strip():
+            return JSONResponse(status_code=400, content={"detail": "Transcript is empty."})
+
+        # Replay the body because Starlette request bodies are normally consumed once.
+        async def replay_body():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request = StarletteRequest(request.scope, receive=replay_body)
+    return await call_next(request)
 
 
 # ---------- Pydantic models ----------
@@ -174,9 +195,12 @@ def _parse_experience_date(value: Any, role: str = "end") -> Optional[int]:
         day = 31 if role == "end" else 1
         return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
 
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y"):
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%m-%d-%Y", "%m/%d/%Y", "%Y-%m", "%Y/%m"):
         try:
             parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            if role == "end" and fmt in ("%Y-%m", "%Y/%m"):
+                import calendar as _cal
+                parsed = parsed.replace(day=_cal.monthrange(parsed.year, parsed.month)[1])
             return int(parsed.timestamp())
         except ValueError:
             continue
@@ -1762,6 +1786,20 @@ VOICE_INTAKE_TOPICS = [
     "availability_location",
 ]
 
+# Backend-owned topic sequence.  VAPI/LLM supplies natural wording, while the
+# resume state owns which unanswered topic comes next.
+VOICE_INTAKE_TOPIC_QUESTIONS = {
+    "background_experience": "Tell me about your background.",
+    "skills_technologies": "What are your key skills?",
+    "target_role": "What kind of role would you ideally like to move into next?",
+}
+
+VOICE_INTAKE_FALLBACK_NEXT_QUESTIONS = {
+    "background_experience": VOICE_INTAKE_TOPIC_QUESTIONS["skills_technologies"],
+    "skills_technologies": "What kind of role would you ideally like to move into next?",
+    "target_role": "What kind of responsibilities and projects would you like to work on next?",
+}
+
 VOICE_INTAKE_TOTAL_QUESTIONS = len(VOICE_INTAKE_TOPICS)
 
 # Setup/greeting questions that must never count as intake questions even though
@@ -1982,6 +2020,16 @@ def _extract_question_from_assistant_turn(text: str) -> Optional[str]:
     """
     cleaned = _clean_str(text)
     if not cleaned:
+        return None
+
+    # Connection/setup prompts are conversation scaffolding, not intake turns.
+    # Check the complete assistant utterance before looking for question words;
+    # otherwise "Are you ready?" is mistaken for the first intake question and
+    # the candidate's short "Yes" is associated with the next real question.
+    if _is_setup_question(cleaned) and not (
+        any(re.search(p, cleaned.lower()) for p in _INTAKE_STATEMENT_PATTERNS)
+        or any(re.search(p, cleaned.lower()) for p in _INTAKE_QUESTION_PATTERNS)
+    ):
         return None
 
     clauses = [c.strip() for c in re.split(r"(?<=[?.!])\s+", cleaned) if c.strip()]
@@ -2296,11 +2344,29 @@ def _voice_intake_turn_pairs(voice_notes: Any, transcript: str = "") -> tuple[li
                 return
             # New real question: flush any accumulated answer first
             if answer_parts and pending_question:
-                completed.append({
-                    "question": pending_question,
-                    "answer": " ".join(answer_parts),
-                })
+                accumulated_answer = " ".join(answer_parts)
+                # VAPI can emit a broad role prompt immediately before the
+                # actual background prompt.  If the fragments clearly answer
+                # background/experience (rather than role preference), carry
+                # them forward so they stay attached to the first real intake
+                # question.  This also keeps consecutive fragments together.
+                answer_lower = accumulated_answer.lower()
+                background_answer = (
+                    bool(re.search(r"\b\d+\s+years?\b", answer_lower))
+                    or "worked at" in answer_lower
+                    or "working at" in answer_lower
+                    or "built a product" in answer_lower
+                )
+                pending_is_role_prompt = bool(re.search(r"\brole|opportunit|target", pending_question.lower()))
+                next_is_background_prompt = bool(re.search(r"\bbackground|experience|career", detected_q.lower()))
+                if not (background_answer and pending_is_role_prompt and next_is_background_prompt):
+                    completed.append({
+                        "question": pending_question,
+                        "answer": accumulated_answer,
+                    })
                 answer_parts = []
+                if background_answer and pending_is_role_prompt and next_is_background_prompt:
+                    answer_parts.append(accumulated_answer)
             pending_question = detected_q
         else:
             # Non-question assistant chatter should not disturb the active intake
@@ -2371,11 +2437,25 @@ Your job:
 4. Determine if the current pending question has been answered
 5. Suggest the single most useful next question to ask (or null if all topics covered)
 
+APPLICATION-CONTROLLED VOICE INTAKE SEQUENCE:
+The application controls which voice-intake topic/question is currently
+unanswered. If an application-provided next question is present in the
+conversation context, treat it as authoritative: ask that question, do not
+skip it or substitute a different work-preference, role, salary, or location
+question. You may phrase it naturally while preserving its meaning, and ask
+only one question. The application sequence normally proceeds through why the
+candidate is looking, background/current work, skills/technologies, desired
+role/career direction, preferences, goals, additional professional detail,
+career-gap clarification, and completion; skip topics already known or
+answered. After background/current work, skills/technologies normally comes
+next unless the application explicitly supplies another unanswered question.
+
 Rules:
 - Do NOT ask about information already present in the candidate profile
 - Do NOT create duplicate questions for the same topic
 - A topic is covered if the candidate provided meaningful information about it anywhere in the conversation or profile
 - Before completing career_preferences/availability_location, explicitly collect any still-unknown work mode (Remote/Hybrid/On-site/Flexible), preferred industries, employment type, preferred locations, expected salary, and relocation preference. A candidate may decline a field; record that rather than guessing.
+- Employment history is not complete until every newly introduced or updated job has a start date. For a current job, ask "When did you start working as <role>?" when missing and record end_date exactly as "Present". For a previous job, collect both start and end dates. Do not complete the employment-history topic while these dates are missing unless the candidate explicitly cannot provide them.
 - next_question must be a natural, conversational question — not a hardcoded template
 - If all important topics are covered, set next_question to null and completed to true
 
@@ -2395,6 +2475,7 @@ async def _llm_analyze_intake(
     completed_turns: list[dict],
     pending_question: Optional[str],
     partial_answer: str = "",
+    authoritative_next_question: Optional[str] = None,
 ) -> dict:
     """Ask the LLM to determine what's known, what's missing, and what to ask next."""
     raw_data = _parse_raw_data(candidate_profile.get("raw_data"))
@@ -2423,6 +2504,7 @@ async def _llm_analyze_intake(
         "conversation": completed_turns,
         "pending_question": pending_question,
         "partial_answer": partial_answer,
+        "voice_intake_next_question": authoritative_next_question or "",
         "intake_topics": VOICE_INTAKE_TOPICS,
     }
 
@@ -2505,7 +2587,6 @@ def _promote_active_voice_question(
     if current and current_answered:
         if next_q and not next_answered:
             current = next_q
-            next_q = ""
         else:
             current = ""
     elif not current and next_q and not next_answered:
@@ -2513,7 +2594,10 @@ def _promote_active_voice_question(
         next_q = ""
 
     if current and next_q and _questions_are_rephrasing(current, next_q):
-        next_q = ""
+        # `next_question` is application-controlled canonical state.  A
+        # spoken/LLM rephrasing may become the active current wording, but it
+        # must not erase the canonical upcoming question from the resume.
+        pass
 
     return current, next_q
 
@@ -2573,6 +2657,7 @@ def _build_voice_intake_resume_from_notes(
     existing_resume: Optional[dict] = None,
     candidate_profile: Optional[dict] = None,
     llm_analysis: Optional[dict] = None,
+    preserve_authoritative_next: bool = True,
 ) -> dict:
     """
     Build the voice intake resume state from conversation notes.
@@ -2581,6 +2666,7 @@ def _build_voice_intake_resume_from_notes(
     completed_turns is ALWAYS the union of previously persisted turns and
     newly parsed turns — never a replacement.
     """
+    print("VOICE DEBUG: entered _build_voice_intake_resume_from_notes()", flush=True)
     new_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
 
     existing_turns = (existing_resume or {}).get("completed_turns") or []
@@ -2607,17 +2693,86 @@ def _build_voice_intake_resume_from_notes(
 
     if llm_analysis:
         llm_next_q = _clean_str(llm_analysis.get("next_question"))
-        next_question = llm_next_q or existing_next_q
-        is_completed = bool(llm_analysis.get("completed")) and not next_question
+        # A persisted application question is authoritative.  Re-running the
+        # LLM while processing the same cumulative transcript must not replace
+        # it with a newly inferred topic.
+        next_question = existing_next_q or (llm_next_q if "next_question" in llm_analysis else "")
+        # An LLM may report that there is nothing else to ask for setup-only
+        # chatter.  That is not an intake completion: completion requires at
+        # least one genuine, answered intake turn.
+        is_completed = bool(llm_analysis.get("completed")) and bool(completed_turns)
         missing_topics = _merge_voice_intake_topic_list(existing_missing, llm_analysis.get("missing_topics"))
         known_topics = _merge_voice_intake_topic_list(existing_known, llm_analysis.get("known_topics"))
+        incoming_matches_existing = bool(existing_turns) and completed_turns == [
+            {
+                "question": _clean_str(turn.get("question")),
+                "answer": _clean_str(turn.get("answer")),
+            }
+            for turn in existing_turns
+            if _clean_str(turn.get("question"))
+        ]
+        if (
+            llm_analysis.get("completed")
+            and not pending_question
+            and not incoming_matches_existing
+        ):
+            missing_topics = []
+            is_completed = True
     else:
         next_question = existing_next_q
         missing_topics = existing_missing
         known_topics = existing_known
         is_completed = False
 
-    completion_ready = bool(llm_analysis and llm_analysis.get("completed")) and not next_question and not pending_question
+    # The question sequence advances by intake topic, not by whichever prompt
+    # the model happened to select from the candidate's extracted facts.  In
+    # particular, background is followed by skills; later topics remain fully
+    # dynamic.  This keeps the assistant's final background prompt separate
+    # from the next unanswered question.
+    if (
+        completed_turns
+        and not existing_next_q
+        and _normalize_profile_key(completed_turns[-1].get("question"))
+        == _normalize_profile_key(VOICE_INTAKE_TOPIC_QUESTIONS["background_experience"])
+    ):
+        next_question = VOICE_INTAKE_TOPIC_QUESTIONS["skills_technologies"]
+
+    # The active question and the canonical next question are separate state.
+    # If analysis supplied an open question but omitted its canonical successor,
+    # preserve a backend-owned successor instead of serializing an incomplete
+    # in-progress resume.  This does not alter transcript reconstruction.
+    if not next_question and completed_turns and not (llm_analysis and llm_analysis.get("completed")):
+        latest_key = _normalize_profile_key(completed_turns[-1].get("question"))
+        for topic, question in VOICE_INTAKE_TOPIC_QUESTIONS.items():
+            if latest_key == _normalize_profile_key(question):
+                next_question = VOICE_INTAKE_FALLBACK_NEXT_QUESTIONS.get(topic)
+                break
+        # The first role question has several canonical phrasings in persisted
+        # VAPI conversations.  They all advance to the same next topic.
+        if not next_question and "role" in latest_key and "target" in latest_key:
+            next_question = VOICE_INTAKE_FALLBACK_NEXT_QUESTIONS["target_role"]
+
+    completion_ready = (
+        bool(llm_analysis and llm_analysis.get("completed"))
+        and bool(completed_turns)
+        and not next_question
+        and not pending_question
+    )
+    persisted_turn_questions = {
+        _normalize_profile_key(turn.get("question"))
+        for turn in existing_turns
+        if _clean_str(turn.get("question"))
+    }
+    reconstructed_turn_questions = {
+        _normalize_profile_key(turn.get("question"))
+        for turn in completed_turns
+        if _clean_str(turn.get("question"))
+    }
+    completed_state_unchanged = (
+        existing_status == "completed"
+        and bool(completed_turns)
+        and reconstructed_turn_questions == persisted_turn_questions
+    )
 
     # Preserve the existing state machine's completion decision, but do not let
     # stale persisted missing_topics block the final transition once the last
@@ -2625,30 +2780,94 @@ def _build_voice_intake_resume_from_notes(
     if completion_ready:
         is_completed = True
         missing_topics = []
-    elif missing_topics or pending_question:
+    elif (missing_topics or pending_question) and (
+        existing_status != "completed" or pending_question
+    ):
         is_completed = False
-
-    if existing_status == "completed":
-        return existing_resume  # type: ignore[return-value]
 
     current_question = pending_question
     if not current_question and existing_current_q and not answered_question:
         current_question = existing_current_q
     if not current_question and answered_question and next_question and not _question_in_completed_turns(next_question, completed_turns):
         current_question = next_question
+    if not current_question and next_question and not _question_in_completed_turns(next_question, completed_turns):
+        # Keep the active application question visible after cumulative-turn
+        # merging.  It remains next_question as well so callers retain the
+        # distinction between active and upcoming state.
+        current_question = next_question
     promoted_current = _choose_active_current_question(current_question or "", next_question or "")
     if promoted_current and promoted_current != current_question:
         current_question = promoted_current
+    if (
+        current_question
+        and next_question
+        and _questions_are_rephrasing(current_question, next_question)
+        # An empty LLM analysis is a retry/failure signal, not a new state
+        # decision.  Keep the persisted canonical next question intact even
+        # when persisted current_question contains the same prompt.
+        and not (existing_next_q and llm_analysis == {})
+    ):
+        # Once the unanswered question is promoted to the active slot, it is
+        # no longer also an upcoming question.  Keeping both fields populated
+        # makes disconnect/resume state appear to contain a duplicate prompt.
         next_question = ""
-    if current_question and next_question and _questions_are_rephrasing(current_question, next_question):
-        # Preserve next_question only when it was already equal to current_question
-        # in the persisted state (e.g. LLM returned empty and both fields held the same value).
-        # When they were different before (promotion happened), clear next_question.
-        if existing_current_q != existing_next_q or not existing_next_q:
-            next_question = ""
+    genuinely_new_completed_transcript = (
+        bool(llm_analysis and llm_analysis.get("completed"))
+        and bool(completed_turns)
+        and bool(existing_turns)
+        and not pending_question
+        and completed_turns != [
+            {"question": _clean_str(turn.get("question")), "answer": _clean_str(turn.get("answer"))}
+            for turn in existing_turns
+            if _clean_str(turn.get("question"))
+        ]
+    )
+    if genuinely_new_completed_transcript:
+        # A genuinely new, complete transcript is allowed to finish the
+        # intake; do not inherit the prior interrupted resume's active state.
+        is_completed = True
+        current_question = None
+        next_question = None
+    elif completed_state_unchanged and not pending_question:
+        # A fresh LLM pass can reconstruct an intake question from the old
+        # cumulative notes.  With no new canonical turn, it is stale
+        # reconstruction rather than a newly unanswered required question.
+        is_completed = True
+        current_question = None
+        next_question = None
+    # An active question always keeps the intake resumable.  `current_question`
+    # is application state, not evidence that the overall intake is complete.
+    if current_question and not genuinely_new_completed_transcript and not (
+        existing_status == "completed"
+        and not pending_question
+    ):
+        is_completed = False
+    elif existing_status == "completed" and not pending_question and completed_turns:
+        # A later, non-idempotent transcript may contain no new canonical turn
+        # while continuing an intake that was already completed.  Reuse that
+        # persisted terminal state instead of reopening it from a fresh LLM
+        # interpretation, including when that interpretation reconstructed a
+        # stale active/next question.
+        is_completed = True
+        current_question = None
+        next_question = None
     if not is_completed and completed_turns and not current_question and not next_question and not pending_question:
         # If the state machine has no active question left, normalize any stale
         # persisted in_progress snapshot into the completed form.
+        is_completed = True
+        missing_topics = []
+
+    # A completed intake may be submitted again with additional commentary.
+    # Preserve its terminal state only after reconstruction confirms that the
+    # new transcript did not leave a pending question or canonical next topic.
+    # This is deliberately narrower than carrying forward the old status: a
+    # genuinely new pending question must still reopen the intake.
+    if (
+        existing_status == "completed"
+        and completed_turns
+        and not pending_question
+        and not next_question
+    ):
         is_completed = True
         missing_topics = []
 
@@ -2759,10 +2978,10 @@ def _build_voice_intake_resume_from_notes(
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
-    if next_question:
-        resume["next_question"] = next_question
-    if current_question:
-        resume["current_question"] = current_question
+    # Keep the canonical state shape stable for persistence and response
+    # serialization, including empty terminal values.
+    resume["next_question"] = next_question or None
+    resume["current_question"] = current_question or None
 
     return resume
 
@@ -2811,10 +3030,8 @@ def _build_voice_intake_resume(profile: dict) -> Optional[dict]:
     if completed_turns:
         resume["latest_completed_question"] = completed_turns[-1]["question"]
         resume["latest_completed_answer"] = completed_turns[-1]["answer"]
-    if next_question:
-        resume["next_question"] = next_question
-    if current_question:
-        resume["current_question"] = current_question
+    resume["next_question"] = next_question or None
+    resume["current_question"] = current_question or None
     return resume
 
 
@@ -3340,6 +3557,12 @@ def _voice_intake_completed_for_matching(candidate: dict) -> bool:
     ready, reason = candidate_ready_for_matching(candidate)
     logger.info("[matching] API readiness=%s reason=%s", ready, reason)
     return ready
+
+
+def _schedule_voice_intake_matching(candidate_id: str, status: str) -> None:
+    """Schedule matching only after the voice-intake workflow is complete."""
+    if status == "completed":
+        asyncio.ensure_future(_trigger_matching(candidate_id))
 
 
 # ---------- Routes ----------
@@ -4356,7 +4579,7 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         )
         if missing_preferences:
             question = _CANONICAL_PREFERENCE_QUESTIONS[missing_preferences[0]]
-            return f'Ask this one work-preference question naturally: "{question}"'
+            return f'Profile is at {percent}% (below 75%). Ask this one work-preference question naturally: "{question}"'
         next_actions = result.get("recommended_next_actions") or []
         if next_actions:
             return (
@@ -4839,6 +5062,33 @@ def _normalize_availability_value(value: Any) -> str:
     return cleaned
 
 
+def _extract_employment_statement(text: str) -> dict[str, str] | None:
+    """Extract a candidate's employment statement independent of identity.
+
+    This intentionally recognizes both natural word orders and keeps dates out
+    of this helper; date extraction remains owned by the canonical work-history
+    pipeline below.
+    """
+    if not isinstance(text, str):
+        return None
+    patterns = (
+        (r"\b(?:i\s+am\s+currently|i(?:'m| am)\s+currently|currently\s+i(?:'m| am)?|i\s+am|i(?:'m| am)|i)\s+"
+         r"(?:currently\s+)?(?:working|work)\s+as\s+(?:an?\s+)?(?P<title>.+?)\s+(?:at|for)\s+(?P<company>[^,.!?;]+)", True),
+        (r"\b(?:i\s+was\s+working|i\s+worked|i\s+used\s+to\s+work|used\s+to\s+work|worked)\s+"
+         r"(?:as\s+(?:an?\s+)?(?P<title>.+?)\s+(?:at|for)\s+(?P<company>[^,.!?;]+)|"
+         r"(?:at|for)\s+(?P<company2>[^,.!?;]+)\s+as\s+(?:an?\s+)?(?P<title2>[^,.!?;]+))", False),
+    )
+    for pattern, current in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            groups = match.groupdict()
+            title = _normalize_profile_text(groups.get("title") or groups.get("title2"))
+            company = _normalize_profile_text(groups.get("company") or groups.get("company2"))
+            if title and company:
+                return {"title": title, "company": company, "current": "true" if current else "false"}
+    return None
+
+
 def _infer_profile_updates_from_message(message: str) -> dict:
     """
     Deterministically infer explicit profile updates from the candidate's message.
@@ -4856,6 +5106,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     preferred_roles = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?(?:preferred|target) roles?(?:\s+list)?(?:[.!?;]|$)",
+            r"\b(?:set|update|change)\s+(?:my\s+)?(?:preferred|target) roles?\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:i(?:'m| am)?\s+)?(?:targeting|looking for|seeking|want(?:ing)?|interested in|open to)\s+(?P<value>.+?)(?:\s+roles?\b|\s+positions?\b|\s+opportunities\b|[.!?;]|$)",
             r"\bpreferred roles?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         ],
@@ -4868,6 +5120,9 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     skills = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?skills?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+            r"\b(?:update|set)\s+(?:my\s+)?skills?(?:\s+section|\s+list)?\s+(?:to|with|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\b(?:my\s+)?skills?\s+(?:are|include)\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bpreferably\s+with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:preferably\s+)?working with\s+(?P<value>.+?)(?:[.!?;]|$)",
             r"\bskills?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
@@ -4914,12 +5169,12 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         # this legacy extraction alias into the canonical expected_salary key.
         updates["salary_expectation"] = salary_expectation.strip()
 
-    remote_match = re.search(r"\b(?:prefer|want|looking for|open to)\s+(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
+    remote_match = re.search(r"\b(?:(?:prefer|want|looking for|open to)\s+|(?:set|update|change)\s+(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:to|as)\s+|(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:is|:)\s*)(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
     if remote_match:
         updates["remote_preference"] = {"remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site", "onsite": "On-site", "flexible": "Flexible"}[remote_match.group(1).lower().replace(" ", "-")]
 
     employment_match = re.search(r"\b(full[ -]?time|part[ -]?time|contract|freelance|internship)\b", text, re.IGNORECASE)
-    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to")):
+    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to", "employment type", "work type")):
         updates["employment_types"] = [_normalize_profile_text(employment_match.group(1)).title().replace("Full-Time", "Full-time").replace("Part-Time", "Part-time")]
 
     locations = _extract_first_match(text, [
@@ -4932,6 +5187,11 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         if re.search(r"\b(?:actually\s*,?\s*)?i\s+prefer\b.*\b(?:now|instead)\b", text, re.I):
             updates["replace_preferred_locations"] = True
     industries = _extract_first_match(text, [r"\b(?:preferred|target) industries?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)"])
+    if not industries:
+        industries = _extract_first_match(text, [
+            r"\b(?:add|set|update)\s+(?:my\s+)?(?:preferred|target) industries?\s+(?:to|as|with)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bmy\s+(?:preferred|target) industries?\s+(?:is|are)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        ])
     if industries:
         updates["preferred_industries"] = _split_update_list(industries)
     if re.search(r"\b(?:willing|happy|open)\s+to\s+relocate\b", text, re.IGNORECASE):
@@ -4946,6 +5206,7 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     current_role = _extract_first_match(
         text,
         [
+            r"\b(?:set|update|change)\s+(?:my\s+)?current\s+(?:role|title)\s+(?:to|as)\s+(?:an?\s+)?(?P<value>.+?)(?:[.!?;]|$)",
             r"\bmy current (?:role|title) is\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
             r"\b(?:i(?:'m| am)\s+currently\s+(?:working\s+as|work(?:ing)?\s+as)|currently\s+(?:working\s+as|work(?:ing)?\s+as)|i\s+work\s+as|i(?:'m| am)\s+working\s+as|working\s+as)\s+(?:an?\s+)?(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
             r"\b(?:i(?:'m| am)\s+(?:a|an))\s+(?P<value>.+?)(?:\s+with\b|\s+at\b|\s+for\b|[.!?;]|$)",
@@ -4964,6 +5225,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     location = _extract_first_match(
         text,
         [
+            r"\b(?:set|update|change)\s+(?:my\s+)?(?:current\s+)?location\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+            r"\bmy\s+(?:current\s+)?location\s+(?:is|:)\s*(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:based in|located in|live in|living in|from)\s+(?P<value>.+?)(?:[.!?;]|$)",
         ],
     )
@@ -4972,6 +5235,15 @@ def _infer_profile_updates_from_message(message: str) -> dict:
 
     work_experience: list[dict[str, str]] = []
     work_patterns = [
+        # Natural current/previous statements with an explicit period.
+        re.compile(
+            r"\b(?:i(?:'m| am)\s+currently|currently\s+i(?:'m| am)?|i(?:'m| am)|i)\s+(?:working|work)\s+as\s+(?:an?\s+)?(?P<title>.+?)\s+(?:at|for)\s+(?P<company>.+?)\s+from\s+(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:i\s+was\s+working|i\s+worked|i\s+used\s+to\s+work|used\s+to\s+work|worked)\s+as\s+(?:an?\s+)?(?P<title>.+?)\s+(?:at|for)\s+(?P<company>.+?)\s+from\s+(?P<start>.+?)\s+(?:to|until|through)\s+(?P<end>present|current|ongoing|now|.+?)(?:[.!?;]|$)",
+            re.IGNORECASE,
+        ),
         # "I am a Backend Developer working at Viralbug from January 2025 to present."
         re.compile(
             r"\b(?:i\s+am|i(?:'m| am))\s+(?:an?\s+)?(?P<title>.+?)\s+working\s+at\s+(?P<company>.+?)\s+"
@@ -5025,6 +5297,11 @@ def _infer_profile_updates_from_message(message: str) -> dict:
 
     if work_experience:
         updates["work_experience"] = work_experience
+    else:
+        statement = _extract_employment_statement(text)
+        if statement:
+            entry = {k: v for k, v in statement.items() if k != "current"}
+            updates["work_experience"] = [entry]
 
     education_match = re.search(
         r"\b(?:completed|studied|graduated(?:\s+from)?|earned)\s+(?:my\s+|a\s+|an\s+)?(?P<degree>(?:master'?s|bachelor'?s|mba|m\.?(?:tech|sc|a)|b\.?(?:tech|sc|a)|ph\.?d)[^,.]*?)\s+(?:at|from)\s+(?P<institution>[^,.!?;]+)",
@@ -5041,6 +5318,8 @@ def _infer_profile_updates_from_message(message: str) -> dict:
     certifications = _extract_first_match(
         text,
         [
+            r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?certifications?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+            r"\b(?:add|include)\s+(?P<value>.+?\b(?:certificate|certification|credential|licen[cs]e))\b(?:[.!?;]|$)",
             r"\bcertifications?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
             r"\b(?:hold|holding|have|earned|completed|obtained|got)\s+(?P<value>.+?)(?:\s+certifications?\b|\s+certified\b|[.!?;]|$)",
         ],
@@ -5054,6 +5333,30 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         ])
         if normalized_certs:
             updates["certifications"] = normalized_certs
+
+    bio = _extract_first_match(text, [
+        r"\b(?:set|update|change)\s+(?:my\s+)?(?:bio|summary|about me)\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)",
+        r"\bmy\s+(?:bio|professional summary)\s+(?:is|:)\s*(?P<value>.+?)(?:[.!?;]|$)",
+    ])
+    if bio:
+        updates["bio"] = bio
+
+    scalar_patterns = {
+        "name": [r"\b(?:set|update|change)\s+(?:my\s+)?name\s+(?:to|as)\s+(?P<value>.+?)(?:[.!?;]|$)"],
+        "email": [r"\b(?:set|update|change)\s+(?:my\s+)?email(?: address)?\s+(?:to|as)\s+(?P<value>[^\s,;]+)"],
+        "phone": [r"\b(?:set|update|change)\s+(?:my\s+)?(?:phone|mobile)(?: number)?\s+(?:to|as)\s+(?P<value>[+\d][\d\s()-]+)"],
+    }
+    for field, patterns in scalar_patterns.items():
+        value = _extract_first_match(text, patterns)
+        if value:
+            updates[field] = value
+
+    project = _extract_first_match(text, [
+        r"\b(?:add|include)\s+(?:my\s+)?project\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
+        r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?projects?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+    ])
+    if project:
+        updates["projects"] = [project]
 
     return updates
 
@@ -5071,12 +5374,19 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
         # the institution name resembles a training provider.
         result["education"] = inferred["education"]
         result.pop("certifications", None)
-    for field in ("skills", "work_experience", "preferred_roles", "preferred_locations"):
-        if field in inferred:
-            if field in ("skills", "preferred_roles", "preferred_locations") and isinstance(result.get(field), list):
-                result[field] = _merge_profile_updates({field: result[field]}, {field: inferred[field]})[field]
-            else:
-                result[field] = inferred[field]
+    # Candidate wording is the reliable fallback when the model omits a field
+    # from its hidden update block. Previously only four fields were merged,
+    # so Eve could acknowledge location, bio, preferences, or certifications
+    # without those values ever reaching persistence.
+    for field, value in inferred.items():
+        if field == "education":
+            continue
+        if isinstance(value, list) and isinstance(result.get(field), list):
+            result[field] = _merge_profile_updates(
+                {field: result[field]}, {field: value}
+            )[field]
+        else:
+            result[field] = value
     if inferred.get("replace_preferred_locations"):
         result["replace_preferred_locations"] = True
     return _sanitize_profile_updates(result)
@@ -5310,6 +5620,121 @@ def _incomplete_new_chat_experience(updates: Optional[dict], candidate: Optional
     return []
 
 
+def _latest_profile_guidance_question(history: list[dict]) -> str:
+    """Return the assistant question immediately preceding a candidate answer."""
+    for item in reversed(history[:-1]):
+        if item.get("role") == "assistant":
+            return _normalize_profile_text(item.get("content")).lower()
+        # Ignore the hidden instruction used to request a guidance question,
+        # but do not bind an answer to an older, unrelated conversation turn.
+        if item.get("role") == "user" and not str(item.get("content") or "").startswith("[PROFILE_QUESTION]"):
+            break
+    return ""
+
+
+def _strip_guidance_answer_prefix(value: str, patterns: tuple[str, ...]) -> str:
+    cleaned = _normalize_profile_text(value).strip(" .;:")
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip(" .;:")
+    return cleaned
+
+
+def _profile_guidance_answer(message: str, history: list[dict]) -> Optional[dict]:
+    """Map a short answer to the canonical field named by sidebar guidance.
+
+    A bare answer such as ``software industry`` has no independently inferable
+    destination. The immediately preceding Eve question supplies that missing
+    context so the value reaches the same field used by the strength scorer.
+    """
+    answer = _normalize_profile_text(message).strip(" .;:")
+    question = _latest_profile_guidance_question(history)
+    if not answer or not question or answer.lower() in _CONVERSATIONAL_FILLER_WORDS:
+        return None
+
+    updates: dict[str, Any] = {}
+    reply_subject = "that detail"
+
+    if "job titles or roles are you targeting" in question or "kinds of roles are you looking for" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^(?:i(?:'m| am)?\s+)?(?:targeting|looking for|interested in)\s+",))
+        roles = _normalize_preferred_roles(_split_update_list(value))
+        if roles:
+            updates["preferred_roles"] = roles
+            reply_subject = "your target roles"
+    elif "strongest professional and technical skills" in question or "other skills do you regularly use" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^(?:my\s+)?skills?\s+(?:are|include)\s+", r"^i\s+(?:use|know|work with)\s+"))
+        skills = _merge_skills([], _split_update_list(value))
+        if skills:
+            updates["skills"] = skills
+            reply_subject = "your skills"
+    elif "industries are you most interested" in question or "industries you would especially like" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:interested in|targeting|looking for)\s+", r"^i\s+prefer\s+"))
+        industries = _normalize_preference_list(_split_update_list(value))
+        if industries:
+            updates["preferred_industries"] = industries
+            reply_subject = "your preferred industries"
+    elif "full-time, part-time, contract, or freelance" in question:
+        employment_types = []
+        labels = {
+            "full-time": "Full-time", "full time": "Full-time",
+            "part-time": "Part-time", "part time": "Part-time",
+            "contract": "Contract", "freelance": "Freelance", "internship": "Internship",
+        }
+        lower_answer = answer.lower()
+        for phrase, label in labels.items():
+            if re.search(rf"\b{re.escape(phrase)}\b", lower_answer) and label not in employment_types:
+                employment_types.append(label)
+        if employment_types:
+            updates["employment_types"] = employment_types
+            reply_subject = "your preferred employment type"
+    elif "prefer remote, hybrid, or on-site" in question or "prefer remote, hybrid, on-site, or flexible" in question:
+        work_mode = re.search(r"\b(remote|hybrid|on[ -]?site|flexible)\b", answer, re.IGNORECASE)
+        if work_mode:
+            key = work_mode.group(1).lower().replace(" ", "-")
+            updates["remote_preference"] = {
+                "remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site",
+                "onsite": "On-site", "flexible": "Flexible",
+            }[key]
+            reply_subject = "your work-mode preference"
+    elif "salary range are you targeting" in question:
+        updates["expected_salary"] = answer
+        reply_subject = "your salary expectation"
+    elif "notice period" in question and ("when can you start" in question or "when could you start" in question):
+        updates["notice_period"] = _normalize_availability_value(answer)
+        reply_subject = "your availability"
+    elif "locations are you open to working in" in question or "locations would you prefer to work in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+open to\s+", r"^i\s+prefer\s+"))
+        locations = _normalize_preference_list(_split_update_list(value))
+        if locations:
+            updates["preferred_locations"] = locations
+            reply_subject = "your preferred locations"
+    elif "willing to relocate" in question or "open to relocating" in question:
+        lower_answer = answer.lower()
+        if re.search(r"\b(?:no|not|cannot|can't|won't|unwilling)\b", lower_answer):
+            updates["willing_to_relocate"] = False
+        elif re.search(r"\b(?:yes|sure|willing|open|can|would)\b", lower_answer):
+            updates["willing_to_relocate"] = True
+        if updates:
+            reply_subject = "your relocation preference"
+    elif "total years of professional experience" in question:
+        years = re.search(r"\b(\d+(?:\.\d+)?)\b", answer)
+        if years:
+            updates["experience_years"] = float(years.group(1))
+            reply_subject = "your total experience"
+    elif "city and country are you currently based in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
+        if value:
+            updates["location"] = value
+            reply_subject = "your current location"
+    elif "what is your background and what do you want to do next" in question:
+        updates["bio"] = answer
+        reply_subject = "your career summary"
+
+    updates = _sanitize_profile_updates(updates)
+    if not updates:
+        return None
+    return {"reply": f"I've added {reply_subject} to your profile.", "updates": updates}
+
+
 def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
     """Resolve deterministic profile-edit safety cases before asking the LLM.
 
@@ -5319,6 +5744,9 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     """
     text_value = message.strip()
     lower = text_value.lower()
+    guidance_answer = _profile_guidance_answer(text_value, history)
+    if guidance_answer:
+        return guidance_answer
     pending_selection = _pending_replacement_selection(text_value, candidate, history)
     if pending_selection:
         return pending_selection
@@ -5356,30 +5784,46 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
 
     # A bare "Add X" has no durable profile destination. Do not infer Skills.
     bare_add = re.match(r"^add\s+(.+?)[.!]?$", text_value, re.I)
-    if bare_add and not re.search(r"\b(skill|skills|education|experience|project|certification|preference|master'?s|bachelor'?s|mba|university|college|degree)\b", lower):
+    if bare_add and not re.search(r"\b(skills?|education|experience|projects?|certifications?|preferences?|bio|summary|location|master'?s|bachelor'?s|mba|university|college|degree)\b", lower):
         return {"reply": f"Where would you like me to add {bare_add.group(1).strip()}?", "updates": None}
 
     # Complete an immediately preceding education/work timeline question using
     # the original statement retained in the chat history.
-    years = re.fullmatch(r"\s*(\d{4})\s*(?:-|–|—|to)\s*(\d{4}|present)\s*", text_value, re.I)
+    period_pattern = r"(?:\d{1,2}[-/]\d{1,2}[-/]\d{4}|\d{4}[-/]\d{1,2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4})"
+    years = re.fullmatch(rf"\s*({period_pattern})\s*(?:-|–|—|to)\s*({period_pattern}|present|current|now)\s*", text_value, re.I)
     if years:
         prior_users = [m.get("content", "") for m in history[:-1] if m.get("role") == "user"]
         prior = prior_users[-1] if prior_users else ""
         education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?(.+?(?:master'?s|bachelor'?s|mba|ph\.?d)[^.]*)\s+(?:at|from)\s+([^,.]+)", prior, re.I)
-        work = re.search(r"(?:worked|work)\s+(?:at|for)\s+([^,.]+?)\s+as\s+(?:a\s+)?([^,.]+)", prior, re.I)
+        work_statement = _extract_employment_statement(prior)
         if education:
             degree, institution = re.sub(r"^my\s+", "", education.group(1).strip(), flags=re.I), education.group(2).strip()
             return {"reply": f"Added your {degree} at {institution} from {years.group(1)} - {years.group(2)}.", "updates": {"education": [{"degree": degree, "institution": institution, "start_date": years.group(1), "end_date": years.group(2)}]}}
-        if work:
-            company, title = work.group(1).strip(), work.group(2).strip()
-            return {"reply": f"Added your {title} experience at {company} from {years.group(1)} - {years.group(2)}.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": years.group(1), "end_date": years.group(2)}]}}
+        if work_statement:
+            company, title = work_statement["company"], work_statement["title"]
+            end = "Present" if _is_open_ended_experience_value(years.group(2)) else years.group(2)
+            return {"reply": f"Added your {title} experience at {company} from {years.group(1)} - {end}.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": years.group(1), "end_date": end}]}}
+
+    # A start-only answer completes a current-role follow-up from the prior turn.
+    single_period = re.fullmatch(rf"\s*({period_pattern})\s*", text_value, re.I)
+    if single_period:
+        prior_users = [m.get("content", "") for m in history[:-1] if m.get("role") == "user"]
+        prior = prior_users[-1] if prior_users else ""
+        work_statement = _extract_employment_statement(prior)
+        if work_statement and work_statement["current"] == "true":
+            company, title = work_statement["company"], work_statement["title"]
+            return {"reply": f"Added your current {title} experience at {company} from {single_period.group(1)} to Present.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": single_period.group(1), "end_date": "Present"}]}}
 
     new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
     if new_education and not re.search(r"\b(?:change|update)\b.*\bfrom\b.*\bto\b", text_value, re.I) and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
         return {"reply": f"What was the time period for your {new_education.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
-    new_work = re.search(r"(?:worked|work)\s+(?:at|for)\s+([^,.]+?)\s+as\s+(?:a\s+)?([^,.]+)", text_value, re.I)
-    if new_work and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
-        return {"reply": f"What was your employment period at {new_work.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
+    new_work = _extract_employment_statement(text_value)
+    if new_work and not re.search(rf"{period_pattern}\s*(?:-|–|—|to)\s*(?:{period_pattern}|present|current|now)", text_value, re.I):
+        if new_work["current"] == "true":
+            reply = f"When did you start working as {new_work['title']} at {new_work['company']}? If you still work there, include the start month and I’ll record the end as Present."
+        else:
+            reply = f"What was the time period for your {new_work['title']} at {new_work['company']}? Please provide it like YYYY - YYYY."
+        return {"reply": reply, "updates": None}
 
     deletion = re.search(r"\b(?:delete|remove)\b\s+(?:my\s+)?(.+?)(?:\s+(?:work\s+)?experience)?[.!]?$", text_value, re.I)
     if deletion:
@@ -5415,6 +5859,42 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
             section = sections[0]
             if section in ("Education", "Work Experience"):
                 return {"reply": f"Updated {old} to {new} in {section}.", "updates": _replacement_update(section, old, new, matches[section])}
+
+    # Explicit, fully targeted profile commands should not depend on the LLM
+    # producing a correctly formatted hidden JSON block. Apply them through the
+    # same validated persistence path and only confirm after the database write.
+    explicit_profile_edit = re.search(
+        r"\b(?:add|include|set|update|change)\b.*\b(?:profile|skills?|certifications?|"
+        r"preferred roles?|target roles?|industr(?:y|ies)|employment type|work type|"
+        r"work mode|remote preference|location|bio|summary|current role|current title|"
+        r"projects?|name|email|phone|mobile)\b",
+        text_value,
+        re.IGNORECASE,
+    )
+    if explicit_profile_edit:
+        updates = _sanitize_profile_updates(_infer_profile_updates_from_message(text_value))
+        missing_experience = _incomplete_new_chat_experience(updates, candidate)
+        if missing_experience:
+            return {
+                "reply": "Before I add that work experience, please share the "
+                + ", ".join(missing_experience[:-1])
+                + (" and " if len(missing_experience) > 1 else "")
+                + missing_experience[-1]
+                + ".",
+                "updates": None,
+            }
+        if updates:
+            labels = {
+                "preferred_roles": "target roles", "preferred_locations": "preferred locations",
+                "preferred_industries": "preferred industries", "employment_types": "employment preference",
+                "remote_preference": "work-mode preference", "current_role": "current role",
+                "experience_years": "experience", "expected_salary": "salary expectation",
+            }
+            changed = [labels.get(field, field.replace("_", " ")) for field in updates if not field.startswith("replace_")]
+            return {
+                "reply": f"I've updated your {', '.join(changed)}.",
+                "updates": updates,
+            }
     return None
 
 
@@ -5439,6 +5919,24 @@ async def _verify_profile_update_persisted(candidate_id: str, updates: dict) -> 
             _normalize_profile_key(row.get(field)) == _normalize_profile_key(entry.get(field))
             for field in ("degree", "institution", "start_date", "end_date")
         ) for row in (persisted.get("education") or []) if isinstance(row, dict)):
+            return False
+    for entry in updates.get("work_experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        # A repeat of an already-applied employment update is a successful,
+        # idempotent write. Compare only supplied fields so descriptions or
+        # other optional fields do not make a valid repeat look like a failure.
+        supplied = {
+            key: value for key, value in entry.items()
+            if key in {"title", "company", "start_date", "startDate", "end_date", "endDate"}
+            and str(value or "").strip()
+        }
+        if supplied and not any(
+            all(_normalize_profile_key(row.get(key)) == _normalize_profile_key(value)
+                for key, value in supplied.items())
+            for row in (persisted.get("work_experience") or [])
+            if isinstance(row, dict)
+        ):
             return False
     return True
 
@@ -5870,6 +6368,12 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             availability_value = _normalize_availability_value(value)
             if not availability_value:
                 continue
+            # Keep both legacy raw-data keys synchronized.  Older Voice Intake
+            # consumers read ``availability`` while preferences use
+            # ``notice_period``; dropping the former regresses those flows.
+            if existing_raw.get("availability") != availability_value:
+                existing_raw["availability"] = availability_value
+                raw_data_changed = True
             if existing_raw.get("notice_period") != availability_value:
                 existing_raw["notice_period"] = availability_value
                 raw_data_changed = True
@@ -6524,8 +7028,12 @@ async def chat(request: ChatRequest):
             applied_deletions = apply_result.get("deleted") or {}
             not_found_deletions = apply_result.get("not_found") or {}
             if not apply_result.get("updated") and not applied_deletions:
-                clean_reply = "I couldn't update your profile, so no changes were made."
-                profile_updates = None
+                # _apply_profile_updates intentionally reports no SQL change
+                # for an identical employment merge. Treat that as success when
+                # the canonical row already contains the requested values.
+                if not await _verify_profile_update_persisted(request.candidate_id, profile_updates):
+                    clean_reply = "I couldn't update your profile, so no changes were made."
+                    profile_updates = None
             elif requested_deletions and not applied_deletions:
                 # The LLM writes its reply before persistence. Do not tell the
                 # candidate an item was removed unless the database changed.
@@ -6889,9 +7397,7 @@ def _normalize_certifications(certifications: Any) -> list[str]:
         if not cleaned:
             continue
         # Drop bare conversational filler words (e.g. "any", "yes", "some")
-        if cleaned.lower() in _CONVERSATIONAL_FILLER_WORDS:
-            continue
-        if not _is_actual_certification(cleaned):
+        if cleaned.lower() in _CONVERSATIONAL_FILLER_WORDS or cleaned.lower() in {"none", "n/a", "na", "not applicable"}:
             continue
         strict_key = _normalize_profile_key(cleaned)
         relaxed_key = _certification_relaxed_key(cleaned)
@@ -7353,6 +7859,14 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
     for item in [*(existing or []), *(new_items or [])]:
         if not isinstance(item, dict):
             continue
+        item = dict(item)
+        # Keep the canonical shape tolerant of common user date forms.  Empty
+        # values are intentionally left empty so a partial extraction cannot
+        # erase a previously valid period.
+        for field in ("start_date", "startDate", "end_date", "endDate"):
+            value = _normalize_profile_text(item.get(field))
+            if _is_open_ended_experience_value(value):
+                item[field] = "Present"
 
         match_index = None
         best_score = -1
@@ -7413,7 +7927,7 @@ def _normalize_projects(items: Any) -> list[dict]:
     for item in items:
         if isinstance(item, str):
             title = _normalize_profile_text(item)
-            record = {"project_name": title, "title": title} if title else {}
+            record = {"title": title} if title else {}
         elif isinstance(item, dict):
             title = _normalize_profile_text(item.get("title") or item.get("name") or item.get("project_name"))
             role = _normalize_profile_text(item.get("role"))
@@ -7433,7 +7947,7 @@ def _normalize_projects(items: Any) -> list[dict]:
                 _normalize_profile_text(value) for value in technologies
                 if _normalize_profile_text(value)
             ] if isinstance(technologies, list) else []
-            record = {"project_name": title, "title": title} if title else {}
+            record = {"title": title} if title else {}
             if role:
                 record["role"] = role
             if description:
@@ -7443,10 +7957,10 @@ def _normalize_projects(items: Any) -> list[dict]:
             if outcomes:
                 record["outcomes"] = list(dict.fromkeys(outcomes))
             if technologies:
-                record["technologies"] = _normalize_skills(technologies)
+                record["technologies"] = list(dict.fromkeys(technologies))
         else:
             continue
-        title = record.get("project_name", "")
+        title = record.get("title", "")
         if not title:
             continue
         key = _normalize_profile_key(title)
@@ -8299,12 +8813,22 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     Receive voice intake transcript, extract structured info, merge into candidate profile.
     candidate_id is validated against the DB — never trusted blindly from the browser.
     """
-    # 1. Validate candidate exists
-    candidate = await _get_candidate_row(request.candidate_id)
-
-    transcript = (request.transcript or "").strip()
-    if not transcript:
+    # Request validation must precede every candidate/database or transcript
+    # processing operation.  In particular, do not let an empty submission
+    # reach the database-backed candidate lookup.
+    if not request.transcript or not request.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
+    transcript = request.transcript.strip()
+
+    # Reject malformed UUIDs before they reach the database driver (which may
+    # otherwise surface a cast error as an internal server error).
+    try:
+        uuid.UUID(str(request.candidate_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=422, detail="Invalid candidate_id")
+
+    # 1. Validate candidate exists only after cheap request validation.
+    candidate = await _get_candidate_row(request.candidate_id)
 
     # 2. Idempotency: check for recent duplicate (same candidate, same transcript hash)
     transcript_hash = hashlib.sha256(transcript.encode()).hexdigest()
@@ -8346,12 +8870,56 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     existing_raw = _parse_raw_data(existing_candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
-    llm_analysis = await _llm_analyze_intake(existing_candidate, completed_turns, pending_question)
+    llm_analysis = await _llm_analyze_intake(
+        existing_candidate,
+        completed_turns,
+        pending_question,
+        # The idempotency lookup above has already ruled out an exact
+        # duplicate.  A new transcript must be evaluated on its own rather
+        # than inheriting the previous request's active question/status.
+        authoritative_next_question="",
+    )
     voice_intake_state = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
         candidate_profile=existing_candidate,
         llm_analysis=llm_analysis,
     )
+    # Progress persistence is the canonical state writer.  Final processing
+    # may use a different LLM pass for extraction, but must not replace its
+    # canonical next question with spoken wording.
+    if voice_intake_state.get("status") != "completed" and _clean_str(existing_vi.get("next_question")):
+        voice_intake_state["next_question"] = existing_vi["next_question"]
+
+    genuinely_new_completed_transcript = (
+        bool(voice_intake_state.get("completed_turns"))
+        and bool(existing_vi.get("completed_turns"))
+        and not pending_question
+        and voice_intake_state.get("completed_turns") != existing_vi.get("completed_turns")
+    )
+    if genuinely_new_completed_transcript:
+        # Turn merging is intentionally cumulative, but it is not transcript
+        # identity.  Once the exact raw-transcript duplicate check above has
+        # accepted this request as new, a completed LLM result with changed
+        # canonical turns must not be reopened by the previous resume's stale
+        # question.
+        voice_intake_state["status"] = "completed"
+        voice_intake_state["current_question"] = None
+        voice_intake_state["next_question"] = None
+        voice_intake_state["has_open_question"] = False
+    print("\n===== VOICE DEBUG =====", flush=True)
+    print("existing_status=", existing_vi.get("status"), flush=True)
+    print("existing_turns=", existing_vi.get("completed_turns") or [], flush=True)
+    print("new_turns=", completed_turns, flush=True)
+    print("pending_question=", pending_question, flush=True)
+    print("llm_completed=", (llm_analysis or {}).get("completed"), flush=True)
+    print("llm_next_question=", (llm_analysis or {}).get("next_question"), flush=True)
+    print("completed_turns=", voice_intake_state.get("completed_turns") or [], flush=True)
+    print("current_question=", voice_intake_state.get("current_question"), flush=True)
+    print("next_question=", voice_intake_state.get("next_question"), flush=True)
+    print("genuinely_new_completed_transcript=", genuinely_new_completed_transcript, flush=True)
+    print("is_completed=", voice_intake_state.get("status") == "completed", flush=True)
+    print("final_status=", voice_intake_state.get("status"), flush=True)
+    print("=======================", flush=True)
 
     # 4. Extract structured info via LLM
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
@@ -8427,14 +8995,21 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 @api_router.post("/voice/candidate-intake/progress")
 async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
-    candidate = await _get_candidate_row(request.candidate_id)
     transcript = (request.transcript or "").strip()
+    if not transcript and not request.voice_notes:
+        raise HTTPException(status_code=400, detail="Transcript is empty.")
+    candidate = await _get_candidate_row(request.candidate_id)
     voice_notes = _normalize_voice_notes(request.voice_notes, transcript)
 
     existing_raw = _parse_raw_data(candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
-    llm_analysis = await _llm_analyze_intake(candidate, completed_turns, pending_question)
+    llm_analysis = await _llm_analyze_intake(
+        candidate,
+        completed_turns,
+        pending_question,
+        authoritative_next_question=(existing_vi.get("current_question") or existing_vi.get("next_question") or ""),
+    )
     resume = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
         candidate_profile=candidate,
@@ -8447,11 +9022,18 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
-    logger.info(
-        "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
-        request.candidate_id, resume.get("status"),
-    )
-    asyncio.ensure_future(_trigger_matching(request.candidate_id))
+    resume_status = resume.get("status")
+    if resume_status == "completed":
+        logger.info(
+            "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
+            request.candidate_id, resume_status,
+        )
+    else:
+        logger.info(
+            "[voice-intake] candidate=%s persisted progress status=%s; matching refresh deferred",
+            request.candidate_id, resume_status,
+        )
+    _schedule_voice_intake_matching(request.candidate_id, resume_status)
     return {
         "status": "saved",
         "candidate_id": request.candidate_id,
@@ -10175,6 +10757,73 @@ async def mark_notification_read(candidate_id: str, notif_id: str):
             {"nid": notif_id, "cid": candidate_id},
         )
         await db.commit()
+    return {"status": "ok"}
+
+
+@api_router.post("/webhooks/vapi")
+async def vapi_webhook(request: StarletteRequest):
+    """Acknowledge VAPI events and finalize the intake on the terminal report."""
+    try:
+        payload = await request.json()
+    except (TypeError, ValueError):
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+    message = payload.get("message")
+    message_type = message.get("type") if isinstance(message, dict) else None
+    event_type = payload.get("type") or message_type
+    logger.info("Received VAPI webhook event: %s", event_type)
+
+    # speech-update/conversation-update and other intermediate deliveries are
+    # acknowledgements only.  VAPI's end-of-call-report is the terminal event.
+    if event_type == "end-of-call-report":
+        event = message if isinstance(message, dict) else payload
+        call = event.get("call") if isinstance(event.get("call"), dict) else {}
+        metadata = call.get("metadata") or event.get("metadata") or {}
+        candidate_id = metadata.get("candidateId") or metadata.get("candidate_id")
+        artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+        transcript = artifact.get("transcript") or event.get("transcript")
+        ended_reason = call.get("endedReason") or event.get("endedReason")
+
+        try:
+            uuid.UUID(str(candidate_id))
+        except (ValueError, AttributeError, TypeError):
+            candidate_id = None
+
+        if candidate_id:
+            candidate = await _get_candidate_row(candidate_id)
+            raw_data = _parse_raw_data(candidate.get("raw_data")) if isinstance(candidate, dict) else {}
+            voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+            should_complete = (
+                ended_reason == "silence-timed-out"
+                and str(voice_intake.get("status") or "").lower() == "completed"
+            )
+            terminal_status = "completed" if should_complete else "in_progress"
+            async with SessionLocal() as db:
+                result = await db.execute(
+                    text("""
+                        UPDATE candidate_voice_intakes
+                        SET transcript = COALESCE(NULLIF(:transcript, ''), transcript),
+                            status = :status,
+                            completed_at = CASE WHEN :status = 'completed' THEN now() ELSE NULL END
+                        WHERE id = (
+                            SELECT id FROM candidate_voice_intakes
+                            WHERE candidate_id = :candidate_id
+                              AND status <> 'completed'
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                        )
+                    """),
+                    {
+                        "candidate_id": candidate_id,
+                        "transcript": transcript or "",
+                        "status": terminal_status,
+                    },
+                )
+                await db.commit()
+            if result.rowcount and should_complete:
+                _schedule_voice_intake_matching(candidate_id, terminal_status)
     return {"status": "ok"}
 
 

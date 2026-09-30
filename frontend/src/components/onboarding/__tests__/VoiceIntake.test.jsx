@@ -1,7 +1,22 @@
 import {
   buildVoiceIntakeAssistantOverrides,
+  canPersistVoiceProgress,
   resolveVoiceIntakeCandidateId,
 } from "../VoiceIntake";
+
+describe("VoiceIntake progress terminal guard", () => {
+  it("allows the current generation during normal progress saving", () => {
+    expect(canPersistVoiceProgress({ terminal: false, generation: 3, currentGeneration: 3 })).toBe(true);
+  });
+
+  it("rejects a pending callback after terminal state", () => {
+    expect(canPersistVoiceProgress({ terminal: true, generation: 3, currentGeneration: 3 })).toBe(false);
+  });
+
+  it("rejects an obsolete callback after the generation advances", () => {
+    expect(canPersistVoiceProgress({ terminal: false, generation: 2, currentGeneration: 3 })).toBe(false);
+  });
+});
 
 describe("new-candidate identity handoff", () => {
   it("uses the candidate ID returned with the newly parsed profile when prop state is not ready", () => {

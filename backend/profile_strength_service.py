@@ -791,7 +791,15 @@ def _score_preferences_constraints(prefs: dict, raw: dict, vi_state: dict) -> di
         val = prefs.get(key)
         if val is None:
             val = raw.get(key)
-        has = (isinstance(val, list) and len(val) > 0) or _has_text(val) or val is True
+        # Do not pass collections through _has_text: ``str([])`` is ``"[]"``
+        # and previously made empty preference lists look complete. This also
+        # meant a real answer could be persisted without increasing the score.
+        if isinstance(val, (list, tuple, set, dict)):
+            has = len(val) > 0
+        elif isinstance(val, bool):
+            has = val
+        else:
+            has = _has_text(val)
         if has:
             pts = points
             if freshness_decay is not None:

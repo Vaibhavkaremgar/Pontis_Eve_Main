@@ -128,6 +128,55 @@ def test_ninety_percent_guidance_surfaces_partial_scoring_gaps_for_strong_profil
     assert guidance["items"][0]["question"]
 
 
+def test_empty_preference_lists_are_missing_not_completed():
+    candidate = _with_resume()
+    candidate["raw_data"] = {
+        "preferred_locations": [],
+        "preferred_industries": [],
+        "employment_types": [],
+    }
+
+    result = calculate_profile_strength_v2(candidate)
+    preferences = result["dimensions"]["preferences_constraints"]
+
+    assert "location_preferences" in preferences["unknown"]
+    assert "employment_types" in preferences["unknown"]
+    assert "target_industries" in preferences["unknown"]
+    assert preferences["earned_points"] == 0
+
+
+def test_saving_each_missing_preference_suggestion_increases_strength():
+    candidate = _with_resume()
+    candidate.update({
+        "location": "Hyderabad, India",
+        "experience_years": 3,
+        "summary": "Backend engineer seeking API platform roles.",
+        "education": [{"degree": "B.Tech", "institution": "CMR University"}],
+        "work_experience": [{
+            "title": "Backend Engineer",
+            "company": "Acme",
+            "start_date": "2022",
+            "end_date": "2025",
+            "description": "Built Python APIs and improved performance by 20%.",
+        }],
+    })
+    baseline = calculate_profile_strength_v2(candidate)["percent"]
+    suggested_answers = [
+        {"preferred_locations": ["Hyderabad"]},
+        {"preferred_industries": ["Software"]},
+        {"employment_types": ["Full-time"]},
+        {"remote_preference": "Remote"},
+        {"notice_period": "Immediately"},
+        {"expected_salary": "10-12 LPA"},
+        {"willing_to_relocate": False},
+    ]
+
+    for raw_data in suggested_answers:
+        updated = dict(candidate)
+        updated["raw_data"] = raw_data
+        assert calculate_profile_strength_v2(updated)["percent"] > baseline, raw_data
+
+
 def test_profile_strength_diagnostic_reports_existing_calculation_without_changing_it():
     candidate = _with_prefs(_with_voice(_with_resume(), topics=["skills_technologies", "responsibilities_projects"]), roles=["Backend Engineer"])
     original = calculate_profile_strength_v2(candidate)
@@ -257,7 +306,7 @@ def test_existing_parsed_resume_summary_is_counted_in_ninety_percent_profile():
 
     result = calculate_profile_strength_v2(c)
 
-    assert result["percent"] == 79
+    assert result["percent"] == 75
     assert "career_summary" in result["dimensions"]["career_intent"]["signals"]
 
 
@@ -546,7 +595,7 @@ class TestCandidate3StrongEvidence:
         c = _with_resume()
         c["raw_data"] = {"projects": ["Platform project"], "preferred_roles": ["Backend Engineer"]}
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] == 44
+        assert result["percent"] == 40
 
 
 # ---------------------------------------------------------------------------
@@ -726,7 +775,7 @@ class TestCandidate9Fresher:
         result = calculate_profile_strength_v2(c)
         assert result["is_fresher"] is True
         # Should score meaningfully despite no work experience
-        assert result["percent"] >= 40
+        assert result["percent"] >= 35
 
     def test_fresher_education_and_projects_matter(self):
         c = _base()
@@ -798,7 +847,7 @@ class TestCandidate10ExperiencedProfessional:
             },
         })
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 40
+        assert result["percent"] >= 39
 
 
 # ---------------------------------------------------------------------------
@@ -1230,7 +1279,7 @@ class TestHundredPercentGate:
         })
         result = calculate_profile_strength_v2(c)
         # Should be able to reach 100 when all gates are satisfied
-        assert result["percent"] == 75
+        assert result["percent"] == 73
 
     def test_incomplete_candidate_cannot_reach_100(self):
         c = _base()
@@ -1406,7 +1455,7 @@ class TestFinalHundredPercentGates:
         """Technical professional with all role-critical evidence can reach Strong."""
         c = self._technical_professional()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] == 75
+        assert result["percent"] == 73
         assert result["label"] == "Strong"
 
     def test_technical_professional_github_not_mandatory(self):
@@ -1415,7 +1464,7 @@ class TestFinalHundredPercentGates:
         # No GitHub in raw_data
         assert "github" not in str(c.get("raw_data", {})).lower()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] == 75
+        assert result["percent"] == 73
 
     def test_technical_professional_certificates_not_mandatory(self):
         """Certificates are not required for a technical candidate to score high."""
@@ -1811,7 +1860,7 @@ class TestFinalHundredPercentGates:
     def test_technical_professional_can_reach_strong(self):
         """Technical professional with all role-critical evidence satisfied reaches Strong or near-Strong."""
         result = calculate_profile_strength_v2(self._technical_professional())
-        assert result["percent"] == 75
+        assert result["percent"] == 73
         assert result["label"] in ("Developing", "Strong")
 
     def test_github_not_mandatory_for_technical(self):
@@ -1819,14 +1868,14 @@ class TestFinalHundredPercentGates:
         c = self._technical_professional()
         assert "github" not in str(c.get("raw_data", {})).lower()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] == 75
+        assert result["percent"] == 73
 
     def test_certificates_not_mandatory_for_technical(self):
         """Certificates are not required for a technical candidate to score high."""
         c = self._technical_professional()
         assert not c.get("candidate_certificates")
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] == 75
+        assert result["percent"] == 73
 
     def test_fresher_can_reach_high_score_without_work_experience(self):
         """Fresher with strong education/skills/projects/assessment can reach high score."""
@@ -1863,7 +1912,7 @@ class TestFinalHundredPercentGates:
         })
         result = calculate_profile_strength_v2(c)
         assert result["is_fresher"] is True
-        assert result["percent"] == 67
+        assert result["percent"] == 65
 
     def test_sales_professional_can_reach_high_score_without_github_or_projects(self):
         """Sales professional without GitHub/projects can reach high score."""
