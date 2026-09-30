@@ -2,10 +2,12 @@
 
 import os
 import sys
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import server
 from server import app
 
 
@@ -39,3 +41,72 @@ def test_vapi_webhook_acknowledges_non_object_json_without_500():
     response = client.post("/api/webhooks/vapi", json=["unrelated", "payload"])
 
     assert 200 <= response.status_code < 300
+
+
+class _FakeDb:
+    def __init__(self, rowcount=1):
+        self.execute = AsyncMock(return_value=type("Result", (), {"rowcount": rowcount})())
+        self.commit = AsyncMock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+
+def _terminal_payload(transcript="complete transcript"):
+    return {
+        "type": "end-of-call-report",
+        "call": {
+            "id": "call-from-vapi",
+            "metadata": {"candidateId": "9ef2e4f9-90a6-43f8-ba94-98af39c86fc4"},
+        },
+        "artifact": {"transcript": transcript},
+    }
+
+
+def test_intermediate_vapi_event_does_not_complete_intake(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(server, "SessionLocal", lambda: db)
+
+    response = client.post(
+        "/api/webhooks/vapi",
+        json={"type": "conversation-update", "call": {"metadata": {"candidateId": "bad"}}},
+    )
+
+    assert response.status_code == 200
+    db.execute.assert_not_awaited()
+
+
+def test_final_vapi_event_completes_correct_intake_and_preserves_transcript(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    matching = AsyncMock()
+    monkeypatch.setattr(server, "_trigger_matching", matching)
+
+    response = client.post("/api/webhooks/vapi", json=_terminal_payload())
+
+    assert response.status_code == 200
+    db.execute.assert_awaited_once()
+    params = db.execute.await_args.args[1]
+    assert params["candidate_id"] == "9ef2e4f9-90a6-43f8-ba94-98af39c86fc4"
+    assert params["transcript"] == "complete transcript"
+    sql = str(db.execute.await_args.args[0])
+    assert "status = 'completed'" in sql
+    assert "completed_at = now()" in sql
+    awaitable_commit = db.commit.assert_awaited_once()
+    assert awaitable_commit is None
+    matching.assert_awaited_once_with("9ef2e4f9-90a6-43f8-ba94-98af39c86fc4")
+
+
+def test_duplicate_final_vapi_event_does_not_schedule_matching(monkeypatch):
+    db = _FakeDb(rowcount=0)
+    monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    matching = AsyncMock()
+    monkeypatch.setattr(server, "_trigger_matching", matching)
+
+    response = client.post("/api/webhooks/vapi", json=_terminal_payload())
+
+    assert response.status_code == 200
+    matching.assert_not_awaited()

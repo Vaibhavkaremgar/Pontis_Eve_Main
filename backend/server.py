@@ -3559,6 +3559,12 @@ def _voice_intake_completed_for_matching(candidate: dict) -> bool:
     return ready
 
 
+def _schedule_voice_intake_matching(candidate_id: str, status: str) -> None:
+    """Schedule matching only after the voice-intake workflow is complete."""
+    if status == "completed":
+        asyncio.ensure_future(_trigger_matching(candidate_id))
+
+
 # ---------- Routes ----------
 
 @api_router.get("/")
@@ -9016,11 +9022,18 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
-    logger.info(
-        "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
-        request.candidate_id, resume.get("status"),
-    )
-    asyncio.ensure_future(_trigger_matching(request.candidate_id))
+    resume_status = resume.get("status")
+    if resume_status == "completed":
+        logger.info(
+            "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
+            request.candidate_id, resume_status,
+        )
+    else:
+        logger.info(
+            "[voice-intake] candidate=%s persisted progress status=%s; matching refresh deferred",
+            request.candidate_id, resume_status,
+        )
+    _schedule_voice_intake_matching(request.candidate_id, resume_status)
     return {
         "status": "saved",
         "candidate_id": request.candidate_id,
@@ -10749,13 +10762,7 @@ async def mark_notification_read(candidate_id: str, notif_id: str):
 
 @api_router.post("/webhooks/vapi")
 async def vapi_webhook(request: StarletteRequest):
-    """Acknowledge VAPI webhook deliveries.
-
-    VAPI sends several event shapes to the configured webhook URL.  This
-    endpoint intentionally acknowledges the payload without assuming an event
-    type or requiring candidate/call identifiers; voice-intake processing
-    remains owned by the existing candidate-intake endpoints.
-    """
+    """Acknowledge VAPI events and finalize the intake on the terminal report."""
     try:
         payload = await request.json()
     except (TypeError, ValueError):
@@ -10765,7 +10772,44 @@ async def vapi_webhook(request: StarletteRequest):
         payload = {}
     message = payload.get("message")
     message_type = message.get("type") if isinstance(message, dict) else None
-    logger.info("Received VAPI webhook event: %s", payload.get("type") or message_type)
+    event_type = payload.get("type") or message_type
+    logger.info("Received VAPI webhook event: %s", event_type)
+
+    # speech-update/conversation-update and other intermediate deliveries are
+    # acknowledgements only.  VAPI's end-of-call-report is the terminal event.
+    if event_type == "end-of-call-report":
+        event = message if isinstance(message, dict) else payload
+        call = event.get("call") if isinstance(event.get("call"), dict) else {}
+        metadata = call.get("metadata") or event.get("metadata") or {}
+        candidate_id = metadata.get("candidateId") or metadata.get("candidate_id")
+        artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
+        transcript = artifact.get("transcript") or event.get("transcript")
+
+        try:
+            uuid.UUID(str(candidate_id))
+        except (ValueError, AttributeError, TypeError):
+            candidate_id = None
+
+        if candidate_id:
+            async with SessionLocal() as db:
+                result = await db.execute(
+                    text("""
+                        UPDATE candidate_voice_intakes
+                        SET transcript = COALESCE(NULLIF(:transcript, ''), transcript),
+                            status = 'completed', completed_at = now()
+                        WHERE id = (
+                            SELECT id FROM candidate_voice_intakes
+                            WHERE candidate_id = :candidate_id
+                              AND status <> 'completed'
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                        )
+                    """),
+                    {"candidate_id": candidate_id, "transcript": transcript or ""},
+                )
+                await db.commit()
+            if result.rowcount:
+                _schedule_voice_intake_matching(candidate_id, "completed")
     return {"status": "ok"}
 
 

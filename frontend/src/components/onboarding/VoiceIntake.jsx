@@ -24,6 +24,10 @@ export function resolveVoiceIntakeCandidateId(candidateId, candidateProfile) {
   return candidateId || candidateProfile?.candidate_id || candidateProfile?.candidateId || candidateProfile?.id || "";
 }
 
+export function canPersistVoiceProgress({ terminal, generation, currentGeneration }) {
+  return !terminal && generation === currentGeneration;
+}
+
 export function buildVoiceIntakeAssistantOverrides({ firstName, candidateId, candidateProfile }) {
   const p = candidateProfile || {};
   const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, p);
@@ -156,6 +160,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
   const progressTimerRef = React.useRef(null);
+  const progressGenerationRef = React.useRef(0);
+  const terminalRef = React.useRef(false);
   const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, candidateProfile);
 
   // Debug: confirm candidateProfile is populated at mount time
@@ -191,6 +197,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
   // Persist progress whenever transcript grows
   React.useEffect(() => {
+    if (terminalRef.current) return undefined;
     if (transcript.length > 0) persistProgress(transcript);
     if (!resolvedCandidateId || transcript.length === 0) return undefined;
 
@@ -208,7 +215,13 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       candidate_id: resolvedCandidateId,
     };
 
+    const generation = progressGenerationRef.current;
     progressTimerRef.current = setTimeout(() => {
+      if (!canPersistVoiceProgress({
+        terminal: terminalRef.current,
+        generation,
+        currentGeneration: progressGenerationRef.current,
+      })) return;
       axios.post(`${API}/voice/candidate-intake/progress`, payload).catch(() => {});
     }, 900);
 
@@ -223,6 +236,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   React.useEffect(() => {
     if (callState !== VAPI_STATES.PROCESSING) return;
     if (submitting) return;
+
+    // Invalidate both pending timers and callbacks that were already queued
+    // before the terminal VAPI state was observed.
+    terminalRef.current = true;
+    progressGenerationRef.current += 1;
 
     const persistInterruptedState = async () => {
       // The transcript effect schedules a best-effort snapshot save.  Cancel
