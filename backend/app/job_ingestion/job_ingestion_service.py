@@ -71,6 +71,8 @@ async def upsert_ats_job(
                 SET job_url = CASE WHEN :is_global_provider AND CAST(:job_url AS TEXT) IS NOT NULL THEN CAST(:job_url AS TEXT) ELSE COALESCE(job_url, CAST(:job_url AS TEXT)) END,
                     description = CASE WHEN CAST(:refresh_description AS BOOLEAN) THEN CAST(:description AS TEXT) ELSE description END,
                     requirements = CASE WHEN CAST(:refresh_description AS BOOLEAN) OR (requirements IS NULL AND CAST(:requirements AS TEXT) IS NOT NULL) THEN CAST(:requirements AS TEXT) ELSE requirements END,
+                    department = COALESCE(CAST(:department AS VARCHAR), department), location = COALESCE(CAST(:location AS VARCHAR), location),
+                    responsibilities = COALESCE(CAST(:responsibilities AS TEXT), responsibilities), city = COALESCE(CAST(:city AS VARCHAR), city), state = COALESCE(CAST(:state AS VARCHAR), state), country = COALESCE(CAST(:country AS VARCHAR), country), remote = COALESCE(CAST(:remote AS BOOLEAN), remote), company_website_url = COALESCE(CAST(:company_website_url AS VARCHAR), company_website_url), company_logo_url = COALESCE(CAST(:company_logo_url AS VARCHAR), company_logo_url), industry = COALESCE(CAST(:industry AS VARCHAR), industry), valid_through = COALESCE(CAST(:valid_through AS TIMESTAMPTZ), valid_through),
                     employment_type = COALESCE(CAST(:employment_type AS VARCHAR), employment_type),
                     remote_policy = COALESCE(CAST(:remote_policy AS VARCHAR), remote_policy),
                     experience_level = COALESCE(CAST(:experience_level AS VARCHAR), experience_level),
@@ -155,6 +157,9 @@ async def upsert_ats_job(
                 company_name,
                 department,
                 location,
+                responsibilities,
+                city, state, country, remote,
+                company_website_url, company_logo_url, industry, valid_through,
                 employment_type,
                 experience_required,
                 salary_range,
@@ -187,6 +192,9 @@ async def upsert_ats_job(
                 :company_name,
                 :department,
                 :location,
+                :responsibilities,
+                :city, :state, :country, :remote,
+                :company_website_url, :company_logo_url, :industry, :valid_through,
                 :employment_type,
                 :experience_required,
                 :salary_range,
@@ -221,6 +229,9 @@ async def upsert_ats_job(
             "company_name": job["company_name"],
             "department": job.get("department"),
             "location": job.get("location"),
+            "responsibilities": job.get("responsibilities"),
+            "city": job.get("city"), "state": job.get("state"), "country": job.get("country"), "remote": job.get("remote"),
+            "company_website_url": _valid_http_url(job.get("company_website_url")), "company_logo_url": _valid_http_url(job.get("company_logo_url")), "industry": job.get("industry"), "valid_through": parse_ats_datetime(job.get("valid_through")),
             "employment_type": job.get("employment_type"),
             "salary_range": job.get("salary_range"),
             "description": job["description"],
@@ -260,6 +271,9 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
     safe = _persistence_safe_job(job)
     return {
         "employment_type": safe.get("employment_type"),
+        "department": safe.get("department"), "location": safe.get("location"), "responsibilities": safe.get("responsibilities"),
+        "city": safe.get("city"), "state": safe.get("state"), "country": safe.get("country"), "remote": safe.get("remote"),
+        "company_website_url": _valid_http_url(safe.get("company_website_url")), "company_logo_url": _valid_http_url(safe.get("company_logo_url")), "industry": safe.get("industry"), "valid_through": parse_ats_datetime(safe.get("valid_through")),
         "remote_policy": safe.get("remote_policy"),
         "experience_level": safe["experience_level"],
         "experience_required": safe.get("experience_required"),
@@ -299,8 +313,8 @@ def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
     safe["title"] = text_value("title", "Untitled ATS job")
     safe["company_name"] = text_value("company_name", "Unknown company")
     safe["description"] = text_value("description", "")
-    safe["requirements"] = text_value("requirements") or safe["description"]
-    for key in ("department", "location", "employment_type", "experience_required", "salary_range"):
+    safe["requirements"] = text_value("requirements")
+    for key in ("department", "location", "employment_type", "experience_required", "salary_range", "responsibilities", "city", "state", "country", "company_website_url", "company_logo_url", "industry"):
         safe[key] = text_value(key)
     # job_descriptions.remote_policy is NOT NULL, while ATS providers such as
     # Greenhouse legitimately omit remote-work metadata.
@@ -322,5 +336,6 @@ def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"ATS structured_data is not JSON-compatible: {exc}") from exc
     safe["structured_data"] = structured
     safe["created_at"] = parse_ats_datetime(safe.get("created_at"))
+    safe["valid_through"] = parse_ats_datetime(safe.get("valid_through"))
     safe["job_url"] = _valid_http_url(safe.get("job_url"))
     return safe

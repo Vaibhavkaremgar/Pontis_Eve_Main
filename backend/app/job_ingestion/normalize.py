@@ -16,6 +16,15 @@ def _text(value: Any) -> str | None:
 
 UNKNOWN_EXPERIENCE_LEVEL = "Not specified"
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
 def _skill_list(value: Any) -> list[str]:
     """Return JSON-safe skill strings without treating arbitrary objects as skills."""
     if isinstance(value, str):
@@ -26,11 +35,12 @@ def _skill_list(value: Any) -> list[str]:
 
 _KNOWN_JOB_SKILLS = (
     "AWS CDK", "CloudFormation", "GitHub Actions", "Spring Boot", "PostgreSQL",
-    "MongoDB", "Kubernetes", "Terraform", "Prometheus", "Grafana", "Docker",
+    "MongoDB", "Postgres", "Kubernetes", "Terraform", "Prometheus", "Grafana", "Docker",
     "Python", "Java", "JavaScript", "TypeScript", "Golang", "Go", "Linux",
     "Jenkins", "REST", "REST APIs", "gRPC", "GraphQL", "Redis", "MySQL",
     "SQL", "Git", "Azure", "GCP", "AWS", "Kafka", "FastAPI", "Django",
     "Flask", "React", "Node.js", "Ruby", "C#", ".NET", "PHP", "Shell scripting",
+    "Salesforce", "Workday", "Excel",
     "Infrastructure as Code", "CI/CD",
 )
 _SKILL_ALIASES = {"postgres": "PostgreSQL", "postgresql": "PostgreSQL"}
@@ -54,9 +64,38 @@ def _extract_jd_skills(description: Any) -> list[str]:
     text = _html_text(description)
     found: list[str] = []
     for skill in sorted(_KNOWN_JOB_SKILLS, key=len, reverse=True):
-        if re.search(rf"(?<![\w+#.]){re.escape(skill)}(?![\w+#.])", text, re.I):
+        if skill == "Go" and not _mentions_go_language(text):
+            continue
+        # The newly added business tools use ordinary whole-word boundaries so
+        # punctuation such as ``Excel.`` is accepted while variants such as
+        # ``excelled`` are rejected.  Keep the established stricter pattern
+        # for the pre-existing vocabulary (notably C#/.NET handling).
+        pattern = r"\bGo\b" if skill == "Go" else (
+            rf"(?<!\w){re.escape(skill)}(?!\w)"
+            if skill in {"Salesforce", "Workday", "Excel"}
+            else rf"(?<![\w+#.]){re.escape(skill)}(?![\w+#.])"
+        )
+        if re.search(pattern, text, re.I):
             found.append(skill)
     return _normalize_skill_values(found)
+
+
+_GO_LANGUAGE_CONTEXT = re.compile(
+    r"(?:"
+    r"\bgo\s*/\s*golang\b|"
+    r"\bgo\s+(?:programming|language|development|developer|services|applications)\b|"
+    r"\b(?:written|write|writing)\s+(?:in\s+)?go\b|"
+    r"\b(?:experience|proficiency)\s+(?:with|in)\s+go\b|"
+    r"\bgo\s*(?:,|and|or)\s*(?:golang|python|java|javascript|typescript|ruby|c#|php)\b|"
+    r"\b(?:golang|python|java|javascript|typescript|ruby|c#|php)\s*(?:,|and|or)\s*go\b"
+    r")",
+    re.I,
+)
+
+
+def _mentions_go_language(text: str) -> bool:
+    """Return whether ``Go`` is used as the programming language, not a verb."""
+    return bool(_GO_LANGUAGE_CONTEXT.search(text))
 
 def _ats_id(value: Any) -> str:
     """Do not turn a missing provider ID into the literal string ``'None'``."""
@@ -105,6 +144,48 @@ def _html_text(value: Any) -> str:
     text = html.unescape(str(value or ""))
     text = re.sub(r"</?(?:p|li|ul|ol|h[1-6]|br)\b[^>]*>", "\n", text, flags=re.I)
     return re.sub(r"<[^>]+>", "", text)
+
+def _location_parts(value: Any) -> dict[str, Any]:
+    """Extract reliable location components while retaining the raw value."""
+    raw = value
+    if isinstance(value, dict):
+        raw = _first(value.get("name"), value.get("location"), value.get("city"), value.get("raw"))
+        city, state, country = value.get("city"), value.get("state"), value.get("country")
+    else:
+        city = state = country = None
+    text = str(raw).strip() if raw not in (None, "") else None
+    parts = [p.strip() for p in text.split(",")] if text else []
+    if text and not city and len(parts) >= 2: city = parts[0]
+    if text and not state and len(parts) >= 3: state = parts[-2]
+    if text and not country and len(parts) >= 2: country = parts[-1]
+    return {"location": text, "city": city, "state": state, "country": country,
+            "raw": raw}
+
+def _section_fields(description: Any) -> tuple[str | None, str | None]:
+    text = _html_text(description).strip()
+    labels = r"Requirements|Required Qualifications|Qualifications|Skills|Required Skills|What You Bring|Must Have|Responsibilities|What You'll Do|Duties|Key Responsibilities|Your Responsibilities"
+    matches = list(re.finditer(rf"(?im)^\s*(?P<label>{labels})\s*:?[ \t]*$", text))
+    values = {"requirements": [], "responsibilities": []}
+    req = {"requirements", "required qualifications", "qualifications", "skills", "required skills", "what you bring", "must have"}
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[match.end():end].strip(" \n:-")
+        key = "requirements" if match.group("label").casefold() in req else "responsibilities"
+        if body: values[key].append(body)
+    return ("\n\n".join(values["requirements"]) or None, "\n\n".join(values["responsibilities"]) or None)
+
+def _experience_evidence(description: Any) -> list[dict[str, Any]]:
+    text = _html_text(description)
+    pattern = re.compile(r"(?<!\w)(?P<value>(?:(?:minimum|at\s+least)\s+)?\d+(?:\.\d+)?\s*(?:\+|[-\u2013\u2014]\s*\d+(?:\.\d+)?|to\s+\d+(?:\.\d+)?)?\s*(?:years?|yrs?)\b)", re.I)
+    result = []
+    for match in pattern.finditer(text):
+        value = re.sub(r"\s+", " ", match.group("value")).strip()
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", value)]
+        result.append({"text": value, "minimum_years": nums[0] if nums else None,
+                       "maximum_years": nums[1] if len(nums) > 1 else None,
+                       "section": text[max(0, text.rfind("\n", 0, match.start()) + 1):match.start()].strip() or None,
+                       "source": text[max(0, match.start()-80):match.end()+80]})
+    return result
 
 def _jd_evidence(description: Any) -> dict[str, Any]:
     """Extract only values stated under an explicit label in the JD."""
@@ -188,7 +269,9 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
         "location_details": job.get("location") if isinstance(job.get("location"), dict) else None,
         "workable_code": _first(job.get("shortcode"), job.get("code")),
     }.items() if v not in (None, "", [], {})}
-    result["structured_data"] = {"source": source, **source_data}
+    result["structured_data"] = {"source": source, "raw_source": {"provider": source, "schema_version": 1, "payload": _json_safe(job)},
+                                  "experience_requirements": _experience_evidence(description), **source_data}
+    result["requirements"], result["responsibilities"] = _section_fields(description)
     return result
 
 def extract_lever_job_url(job: dict[str, Any]) -> str | None:
@@ -213,14 +296,16 @@ def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, An
     # timestamp or use its established NOW() fallback for a new row.
     meta = _metadata(job, "greenhouse", description=description, experience_level=_first(job.get("experience_level"), job.get("seniority")), experience_required=job.get("experience_required"), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), skills_required=_first(job.get("skills_required"), job.get("skills")), created_at=None)
     departments = job.get("departments") or []
-    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": departments[0].get("name") if departments and isinstance(departments[0], dict) else None, "location": (job.get("location") or {}).get("name") if isinstance(job.get("location"), dict) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
+    loc = _location_parts(job.get("location")); meta["locations"] = [loc] if loc.get("location") else []
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": ", ".join(d.get("name") for d in departments if isinstance(d, dict) and d.get("name")) or None, **loc, "remote": bool(job.get("remote")) if isinstance(job.get("remote"), bool) else None, "employment_type": meta.get("employment_type"), "salary_range": meta.get("salary_range"), "job_url": job.get("absolute_url"), "ats_type": "greenhouse", **meta}
 
 def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = _lever_description(job); categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
     experience = _first(job.get("experience_required"), _jd_evidence(description).get("experience_required"), _experience_from_text(description))
     skills = _first(job.get("skills"), job.get("skillsRequired"), _lever_required_skills(job, description))
     meta = _metadata(job, "lever", description=description, employment_type=categories.get("commitment"), experience_level=_first(job.get("experience_level"), job.get("seniority"), categories.get("seniority")), experience_required=experience, remote_policy=_first(job.get("workplaceType"), categories.get("workplace")), created_at=parse_ats_datetime(_first(job.get("createdAt"), job.get("created_at"))), skills_required=skills)
-    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "requirements": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
+    loc = _location_parts(categories.get("location")); meta["locations"] = [_location_parts(v) for v in categories.get("allLocations", [])] if isinstance(categories.get("allLocations"), list) else ([loc] if loc.get("location") else [])
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, **loc, "remote": _first(job.get("isRemote"), str(meta.get("remote_policy", "")).casefold() == "remote"), "department": categories.get("team"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = _first(job.get("descriptionHtml"), job.get("description")); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
@@ -230,7 +315,11 @@ def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     # other lifecycle timestamps when it is absent or malformed.
     meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), experience_level=_first(job.get("experienceLevel"), job.get("experience_level"), job.get("seniority")), experience_required=job.get("experienceRequired"), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(job.get("publishedAt")), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     department = job.get("department") if isinstance(job.get("department"), dict) else {}
-    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, "department": department.get("name"), "location": job.get("location") if isinstance(job.get("location"), str) else None, "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
+    raw_locations = job.get("locations") or job.get("location")
+    loc_values = raw_locations if isinstance(raw_locations, list) else [raw_locations]
+    loc = _location_parts(loc_values[0] if loc_values else None); meta["locations"] = [_location_parts(v) for v in loc_values if v not in (None, "", {})]
+    meta["salary"] = compensation
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, **loc, "remote": job.get("isRemote") if isinstance(job.get("isRemote"), bool) else None, "department": department.get("name"), "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
 
 def normalize_workable(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("description"); location = job.get("location")
@@ -263,7 +352,10 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
               "ai_requirements_summary", "ai_work_arrangement", "ai_key_skills")
     meta["structured_data"].update({key: job[key] for key in useful if job.get(key) not in (None, "", [], {})})
     meta["structured_data"]["fantastic"] = {key: value for key, value in job.items() if key not in {"description_text", "description"}}
+    meta["valid_through"] = parse_ats_datetime(job.get("date_valid_through"))
+    meta["locations"] = [_location_parts(v) for v in (job.get("locations_derived") or job.get("locations_alt") or [])] if isinstance((job.get("locations_derived") or job.get("locations_alt")), list) else []
+    loc = _location_parts(locations)
     return {"ats_job_id": _ats_id(job.get("id")), "ats_type": "fantastic",
             "company_name": _text(job.get("organization")) or _text(job.get("organization_name")) or "Unknown organization",
             "title": _text(job.get("title")), "description": description, "department": _text(job.get("department")),
-            "location": locations, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
+            **loc, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
