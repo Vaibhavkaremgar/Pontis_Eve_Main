@@ -10784,6 +10784,7 @@ async def vapi_webhook(request: StarletteRequest):
         candidate_id = metadata.get("candidateId") or metadata.get("candidate_id")
         artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
         transcript = artifact.get("transcript") or event.get("transcript")
+        ended_reason = call.get("endedReason") or event.get("endedReason")
 
         try:
             uuid.UUID(str(candidate_id))
@@ -10791,12 +10792,21 @@ async def vapi_webhook(request: StarletteRequest):
             candidate_id = None
 
         if candidate_id:
+            candidate = await _get_candidate_row(candidate_id)
+            raw_data = _parse_raw_data(candidate.get("raw_data")) if isinstance(candidate, dict) else {}
+            voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
+            should_complete = (
+                ended_reason == "silence-timed-out"
+                and str(voice_intake.get("status") or "").lower() == "completed"
+            )
+            terminal_status = "completed" if should_complete else "in_progress"
             async with SessionLocal() as db:
                 result = await db.execute(
                     text("""
                         UPDATE candidate_voice_intakes
                         SET transcript = COALESCE(NULLIF(:transcript, ''), transcript),
-                            status = 'completed', completed_at = now()
+                            status = :status,
+                            completed_at = CASE WHEN :status = 'completed' THEN now() ELSE NULL END
                         WHERE id = (
                             SELECT id FROM candidate_voice_intakes
                             WHERE candidate_id = :candidate_id
@@ -10805,11 +10815,15 @@ async def vapi_webhook(request: StarletteRequest):
                             LIMIT 1
                         )
                     """),
-                    {"candidate_id": candidate_id, "transcript": transcript or ""},
+                    {
+                        "candidate_id": candidate_id,
+                        "transcript": transcript or "",
+                        "status": terminal_status,
+                    },
                 )
                 await db.commit()
-            if result.rowcount:
-                _schedule_voice_intake_matching(candidate_id, "completed")
+            if result.rowcount and should_complete:
+                _schedule_voice_intake_matching(candidate_id, terminal_status)
     return {"status": "ok"}
 
 

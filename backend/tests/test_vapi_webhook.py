@@ -61,6 +61,7 @@ def _terminal_payload(transcript="complete transcript"):
         "call": {
             "id": "call-from-vapi",
             "metadata": {"candidateId": "9ef2e4f9-90a6-43f8-ba94-98af39c86fc4"},
+            "endedReason": "silence-timed-out",
         },
         "artifact": {"transcript": transcript},
     }
@@ -82,6 +83,11 @@ def test_intermediate_vapi_event_does_not_complete_intake(monkeypatch):
 def test_final_vapi_event_completes_correct_intake_and_preserves_transcript(monkeypatch):
     db = _FakeDb()
     monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_get_candidate_row",
+        AsyncMock(return_value={"raw_data": {"voice_intake": {"status": "completed"}}}),
+    )
     matching = AsyncMock()
     monkeypatch.setattr(server, "_trigger_matching", matching)
 
@@ -94,7 +100,8 @@ def test_final_vapi_event_completes_correct_intake_and_preserves_transcript(monk
     assert params["transcript"] == "complete transcript"
     sql = str(db.execute.await_args.args[0])
     assert "status = 'completed'" in sql
-    assert "completed_at = now()" in sql
+    assert "completed_at = CASE WHEN :status = 'completed' THEN now()" in sql
+    assert params["status"] == "completed"
     awaitable_commit = db.commit.assert_awaited_once()
     assert awaitable_commit is None
     matching.assert_awaited_once_with("9ef2e4f9-90a6-43f8-ba94-98af39c86fc4")
@@ -103,6 +110,11 @@ def test_final_vapi_event_completes_correct_intake_and_preserves_transcript(monk
 def test_duplicate_final_vapi_event_does_not_schedule_matching(monkeypatch):
     db = _FakeDb(rowcount=0)
     monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_get_candidate_row",
+        AsyncMock(return_value={"raw_data": {"voice_intake": {"status": "completed"}}}),
+    )
     matching = AsyncMock()
     monkeypatch.setattr(server, "_trigger_matching", matching)
 
@@ -110,3 +122,43 @@ def test_duplicate_final_vapi_event_does_not_schedule_matching(monkeypatch):
 
     assert response.status_code == 200
     matching.assert_not_awaited()
+
+
+def test_incomplete_vapi_end_call_preserves_resumable_progress(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_get_candidate_row",
+        AsyncMock(return_value={"raw_data": {"voice_intake": {
+            "status": "in_progress",
+            "current_question": "What are your key skills?",
+        }}}),
+    )
+    matching = AsyncMock()
+    monkeypatch.setattr(server, "_trigger_matching", matching)
+
+    response = client.post("/api/webhooks/vapi", json=_terminal_payload("partial transcript"))
+
+    assert response.status_code == 200
+    params = db.execute.await_args.args[1]
+    assert params["status"] == "in_progress"
+    assert params["transcript"] == "partial transcript"
+    matching.assert_not_awaited()
+
+
+def test_manual_end_after_all_questions_does_not_complete(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(server, "SessionLocal", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_get_candidate_row",
+        AsyncMock(return_value={"raw_data": {"voice_intake": {"status": "completed"}}}),
+    )
+    payload = _terminal_payload()
+    payload["call"]["endedReason"] = "customer-ended-call"
+
+    response = client.post("/api/webhooks/vapi", json=payload)
+
+    assert response.status_code == 200
+    assert db.execute.await_args.args[1]["status"] == "in_progress"
