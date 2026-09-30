@@ -92,8 +92,16 @@ def _jd_evidence(description: Any) -> dict[str, Any]:
 def _experience_from_text(description: Any) -> str | None:
     """Find an explicit years-of-experience requirement in JD text."""
     text = _html_text(description)
-    match = re.search(r"\b(\d+\s*\+?\s*(?:years?|yrs?)(?:\s+of\s+experience)?)\b", text, re.I)
-    return match.group(1).strip() if match else None
+    # Match the complete expression before matching a single number.  In
+    # particular, ``6-8 years`` must not degrade to ``8 years``.
+    pattern = re.compile(
+        r"(?<!\w)(?P<value>(?:(?:minimum|at\s+least)\s+)?"
+        r"\d+(?:\.\d+)?\s*(?:\+|[-\u2013\u2014]\s*\d+(?:\.\d+)?|to\s+\d+(?:\.\d+)?)?\s*"
+        r"(?:years?|yrs?)\b(?:\s+of\s+(?:relevant\s+)?experience)?)",
+        re.I,
+    )
+    match = pattern.search(text)
+    return re.sub(r"\s+", " ", match.group("value")).strip() if match else None
 
 def _lever_required_skills(job: dict[str, Any], description: Any) -> list[str]:
     """Extract explicit skills from Lever's required-qualification lists."""
@@ -153,10 +161,11 @@ def extract_ashby_job_url(job: dict[str, Any]) -> str | None:
     return next((url for value in (job.get("jobUrl"), job.get("applyUrl")) if (url := _valid_http_url(value))), None)
 
 def _lever_description(job: dict[str, Any]) -> str | None:
-    parts = [_text(job.get("descriptionPlain")) or ""]
+    parts = [_text(job.get(key)) for key in ("descriptionPlain", "description", "descriptionHtml")]
     for section in job.get("lists") or []:
         if isinstance(section, dict): parts.extend(filter(None, [_text(section.get("text")), _text(_html_text(section.get("content")))]))
-    return "\n".join(parts) or None
+    unique = list(dict.fromkeys(part for part in parts if part))
+    return "\n".join(unique) or None
 
 def normalize_greenhouse(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("content")
@@ -176,7 +185,7 @@ def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, "requirements": description, "department": categories.get("team"), "location": categories.get("location"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
-    description = job.get("descriptionHtml"); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
+    description = _first(job.get("descriptionHtml"), job.get("description")); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
     salary = _first(job.get("salaryRange"), job.get("salary_range"), compensation.get("summary"))
     if not salary and compensation.get("minValue") is not None and compensation.get("maxValue") is not None: salary = f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
     # ``publishedAt`` is Ashby's public posting timestamp.  Do not substitute
@@ -200,7 +209,10 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
         skills = [part.strip() for part in re.split(r"[,;/|]", skills) if part.strip()]
     salary = _first(job.get("salary_range"), job.get("salary"), job.get("ai_salary_range"))
     description = _first(job.get("description_text"), job.get("description"))
-    meta = _metadata(job, "fantastic", description=description,
+    extraction_text = "\n".join(dict.fromkeys(filter(None, (
+        description, job.get("ai_requirements_summary"), job.get("requirements"),
+    )))) or None
+    meta = _metadata(job, "fantastic", description=extraction_text,
         employment_type=_first(job.get("employment_type"), job.get("ai_employment_type")),
         experience_level=job.get("ai_experience_level"), experience_required=job.get("ai_requirements_summary"),
         remote_policy=job.get("ai_work_arrangement"), salary_range=salary, skills_required=skills,
