@@ -107,7 +107,11 @@ export default function ResumeEditor() {
         const draft = makeAtsDraft({ ...data.resume, skills: mergedSkills }, selectedSections);
         skillsDraftRef.current = mergedSkills;
         setResume(draft);
-        setGuidance({ ...data, missing_skills: selectedSections.skills ? list(data.missing_skills).filter((skill) => !selectedSkills.includes(skill)) : list(data.missing_skills) });
+        const jdSkills = list(data.required_skills);
+        const missingSkills = list(data.missing_skills).length
+          ? list(data.missing_skills)
+          : jdSkills.filter((skill) => !mergedSkills.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase()));
+        setGuidance({ ...data, required_skills: jdSkills, missing_skills: selectedSections.skills ? missingSkills.filter((skill) => !selectedSkills.includes(skill)) : missingSkills });
         if (params.get("selected_sections") || params.get("selected_skills")) {
           window.setTimeout(() => setGenerating(false), 900);
         } else {

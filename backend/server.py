@@ -10101,10 +10101,15 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
         skills_required=row.get("skills_required"), description=row.get("description"),
         structured_data=row.get("structured_data"), job_fields=row,
     )
+    required_skills = _job_required_skills(
+        row.get("skills"), row.get("skills_required"), row.get("description"),
+        row.get("requirements"), row.get("structured_data"), row,
+    )
     response_payload = {
         "match_score": float(row["match_score"]) if row["match_score"] is not None else None,
         "resume": _resume_editor_payload(candidate),
         "job_url": row.get("job_url") or None,
+        "required_skills": required_skills,
         **gaps,
     }
     # This trace deliberately follows the UI request boundary.  It lets a
@@ -10124,10 +10129,7 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
             "requirements": row.get("requirements"),
             "description": row.get("description"),
         },
-        "extracted_required_skills": _job_required_skills(
-            row.get("skills"), row.get("skills_required"), row.get("description"),
-            row.get("requirements"), row.get("structured_data"), row,
-        ),
+        "extracted_required_skills": required_skills,
         "candidate_skills": _candidate_profile_skills(candidate),
         "missing_skills": gaps["missing_skills"],
         "api_response": response_payload,
@@ -10186,6 +10188,11 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "remaining_missing_skills": remaining["missing_skills"],
         "remaining_requirements": remaining["requirements"],
         "experience_requirement": remaining["experience_requirement"],
+        "required_skills": _job_required_skills(
+            job_context.get("skills"), job_context.get("skills_required"),
+            job_context.get("description"), job_context.get("requirements"),
+            job_context.get("structured_data"), job_context,
+        ),
         "profile": profile,
         # API is already included by the frontend client base URL.  Returning
         # an API-prefixed path here produced /api/api/... and a 404.
