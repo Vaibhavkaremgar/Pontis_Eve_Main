@@ -5375,13 +5375,17 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
         result["education"] = inferred["education"]
         result.pop("certifications", None)
     # Candidate wording is the reliable fallback when the model omits a field
-    # from its hidden update block. Previously only four fields were merged,
-    # so Eve could acknowledge location, bio, preferences, or certifications
-    # without those values ever reaching persistence.
+    # from its hidden update block. Keep list-valued deterministic fields
+    # additive so an inferred project cannot replace existing projects.
+    deterministic_fields = {
+        "preferred_roles", "skills", "work_experience", "education",
+        "certifications", "projects", "preferred_locations",
+        "preferred_industries", "employment_types",
+    }
     for field, value in inferred.items():
         if field == "education":
             continue
-        if isinstance(value, list) and isinstance(result.get(field), list):
+        if field in deterministic_fields and isinstance(value, list) and isinstance(result.get(field), list):
             result[field] = _merge_profile_updates(
                 {field: result[field]}, {field: value}
             )[field]

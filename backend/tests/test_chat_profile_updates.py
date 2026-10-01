@@ -92,7 +92,7 @@ class TestImmediateExplicitProfileUpdates:
         )
 
         assert result["updates"] == {
-            "projects": [{"project_name": "Inventory Platform", "title": "Inventory Platform"}]
+            "projects": [{"title": "Inventory Platform"}]
         }
 
     def test_candidate_scalar_update_is_merged_when_llm_omits_it(self):

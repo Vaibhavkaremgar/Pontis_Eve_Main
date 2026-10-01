@@ -204,6 +204,22 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     }
 
 
+def test_chat_project_addition_preserves_existing_project_in_raw_data():
+    state = _make_candidate(raw_data={"projects": [{"title": "Existing Platform"}]})
+    message = "Add Inventory Platform to my projects"
+
+    _, updates = server._extract_profile_updates(
+        '<<<PROFILE_UPDATES>>>\n{"profile_updates": {}}\n<<<END_UPDATES>>>',
+        message,
+    )
+    _run_apply(state, updates)
+
+    projects = state["raw_data"]["projects"]
+    assert {project["title"] for project in projects} == {
+        "Existing Platform", "Inventory Platform"
+    }
+
+
 def test_conversational_profile_categories_creation_and_correction():
     """Direct statements are classified by meaning and retained in schema fields."""
     _, education = server._extract_profile_updates("", "I completed my Master's at CMR University")
