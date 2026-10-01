@@ -220,6 +220,23 @@ def test_chat_project_addition_preserves_existing_project_in_raw_data():
     }
 
 
+def test_structured_chat_project_update_also_preserves_existing_projects():
+    state = _make_candidate(raw_data={"projects": [{"title": "Existing Platform"}]})
+    _, updates = server._extract_profile_updates(
+        '<<<PROFILE_UPDATES>>>\n'
+        '{"profile_updates": {"projects": [{"title": "Inventory Platform", "description": "Built APIs", "technologies": ["Python"]}]}}\n'
+        '<<<END_UPDATES>>>',
+        "I added a project called Inventory Platform",
+    )
+    _run_apply(state, updates)
+
+    projects = state["raw_data"]["projects"]
+    assert projects == [
+        {"title": "Existing Platform"},
+        {"title": "Inventory Platform", "description": "Built APIs", "technologies": ["Python"]},
+    ]
+
+
 def test_conversational_profile_categories_creation_and_correction():
     """Direct statements are classified by meaning and retained in schema fields."""
     _, education = server._extract_profile_updates("", "I completed my Master's at CMR University")

@@ -6081,6 +6081,9 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
     for field, value in extra.items():
         if field == "profile_deletions":
             continue
+        if field == "projects":
+            result[field] = _merge_projects(result.get(field), value)
+            continue
         if field in ("availability", "notice_period"):
             if not isinstance(value, str):
                 continue
