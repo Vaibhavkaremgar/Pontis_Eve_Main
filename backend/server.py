@@ -6411,13 +6411,17 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                 params["education"] = json.dumps(merged)
         elif field in ("headline", "current_role"):
             existing_role = (existing.get("current_role") or existing.get("headline") or "")
-            new_role = str(value)
+            new_role = str(value).strip()
+            if not new_role:
+                continue
             if not current_role_set and new_role != existing_role:
                 set_clauses.append('"current_role" = :current_role')
                 params["current_role"] = new_role
                 current_role_set = True
         elif field == "bio":
-            new_bio = str(value)
+            new_bio = str(value).strip()
+            if not new_bio:
+                continue
             if new_bio != (existing.get("summary") or ""):
                 set_clauses.append("summary = :bio")
                 params["bio"] = new_bio
@@ -6521,7 +6525,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             # Handled separately below; must not be added to SQL SET clauses.
             continue
         else:
-            new_value = str(value)
+            new_value = str(value).strip()
+            # Partial LLM/frontend payloads are not deletion commands. Empty
+            # scalar values must not erase a previously confirmed field.
+            if not new_value:
+                continue
             if field == "location":
                 existing_value = existing.get("location") or ""
             else:
@@ -8107,8 +8115,6 @@ def _normalize_projects(items: Any) -> list[dict]:
                 if record.get(field):
                     existing[field] = list(dict.fromkeys([*(existing.get(field) or []), *record[field]]))
             continue
-        record.setdefault("description", "")
-        record.setdefault("technologies", [])
         seen.add(key)
         normalized.append(record)
     return normalized
@@ -8119,17 +8125,20 @@ def _merge_projects(existing: Any, incoming: Any) -> list[dict]:
     current = _normalize_projects(existing)
     incoming_records = _normalize_projects(incoming)
     merged = _normalize_projects([*current, *incoming_records])
-    # _normalize_projects intentionally preserves the first duplicate record.
-    # For an explicit project update, however, supplied description text is a
-    # replacement and supplied technologies are additive; unrelated fields stay
-    # untouched.
+    # _normalize_projects preserves the first duplicate record. Merge incoming
+    # non-empty fields without allowing a partial/empty object to erase fields
+    # already present on the canonical project.
     by_title = {_normalize_profile_key(item.get("title")): item for item in merged}
     for item in incoming_records:
         target = by_title.get(_normalize_profile_key(item.get("title")))
         if not target:
             continue
-        if _normalize_profile_text(item.get("description")):
-            target["description"] = _normalize_profile_text(item["description"])
+        incoming_description = _normalize_profile_text(item.get("description"))
+        existing_description = _normalize_profile_text(target.get("description"))
+        if incoming_description and not existing_description:
+            target["description"] = incoming_description
+        elif incoming_description and incoming_description.casefold() not in existing_description.casefold():
+            target["description"] = f"{existing_description} {incoming_description}" if existing_description else incoming_description
         if item.get("technologies"):
             target["technologies"] = list(dict.fromkeys([*(target.get("technologies") or []), *item["technologies"]]))
     return merged
@@ -10185,7 +10194,24 @@ def _resume_editor_payload(candidate: dict) -> dict:
     parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
     raw = _parse_raw_data(candidate.get("raw_data"))
     def value(resume_key: str, candidate_key: str, default=""):
-        return parsed.get(resume_key) if parsed.get(resume_key) not in (None, "") else candidate.get(candidate_key, default)
+        return candidate.get(candidate_key) if candidate.get(candidate_key) not in (None, "") else parsed.get(resume_key, default)
+    skills = _merge_skills(
+        _merge_skills(candidate.get("skills") or [], raw.get("skills") or []),
+        parsed.get("skills") or [],
+    )
+    work_experience = _merge_work_experience(
+        _merge_work_experience(candidate.get("work_experience") or [], raw.get("work_experience") or []),
+        parsed.get("work_experience") or [],
+    )
+    education = _merge_education(
+        _merge_education(candidate.get("education") or [], raw.get("education") or []),
+        parsed.get("education") or [],
+    )
+    certifications = _candidate_certification_sources(candidate)
+    projects = _merge_projects(
+        _merge_projects(candidate.get("projects") or [], raw.get("projects") or []),
+        parsed.get("projects") or [],
+    )
     return {
         "name": value("name", "name"), "email": value("email", "email"),
         "phone": value("phone", "phone"), "location": value("location", "location"),
@@ -10194,11 +10220,11 @@ def _resume_editor_payload(candidate: dict) -> dict:
         # Skills have historically been enriched after the resume was parsed
         # (chat, voice intake, etc.).  The editable document must therefore
         # start with the union, not let an old parse hide canonical skills.
-        "skills": _merge_skills(candidate.get("skills") or [], parsed.get("skills") or []),
-        "work_experience": parsed.get("work_experience") if isinstance(parsed.get("work_experience"), list) else (candidate.get("work_experience") or []),
-        "education": parsed.get("education") if isinstance(parsed.get("education"), list) else (candidate.get("education") or []),
-        "certifications": parsed.get("certifications") if isinstance(parsed.get("certifications"), list) else (raw.get("certifications") or []),
-        "projects": parsed.get("projects") if isinstance(parsed.get("projects"), list) else (raw.get("projects") or []),
+        "skills": skills,
+        "work_experience": work_experience,
+        "education": education,
+        "certifications": certifications,
+        "projects": projects,
         "experience_years": value("experience_years", "experience_years", None),
     }
 
@@ -10219,15 +10245,31 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         raise HTTPException(status_code=422, detail="No resume changes were provided.")
     parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
     raw = _parse_raw_data(candidate.get("raw_data"))
-    next_values = _resume_editor_payload(candidate)
+    existing_values = _resume_editor_payload(candidate)
+    next_values = dict(existing_values)
     next_values.update(supplied)
     for field in ("name", "email", "phone", "location", "headline", "bio"):
         next_values[field] = str(next_values.get(field) or "").strip()
     for field in ("skills", "work_experience", "education", "certifications", "projects"):
         if not isinstance(next_values.get(field), list):
             raise HTTPException(status_code=422, detail=f"{field} must be a list.")
-    # The editor sends the complete skills document. Do not merge stale
-    # canonical values back into it; that was preserving legacy concatenations.
+    # Resume Editor payloads are partial or stale snapshots by design. Empty
+    # collections are not deletion commands, and all supplied collections are
+    # additive merges with the complete current canonical profile.
+    for field, merger in (
+        ("skills", _merge_skills),
+        ("work_experience", _merge_work_experience),
+        ("education", _merge_education),
+        ("projects", _merge_projects),
+    ):
+        if field in supplied and supplied[field]:
+            next_values[field] = merger(existing_values[field], supplied[field])
+        else:
+            next_values[field] = existing_values[field]
+    if "certifications" in supplied and supplied["certifications"]:
+        next_values["certifications"] = _merge_certifications(existing_values["certifications"], supplied["certifications"])
+    else:
+        next_values["certifications"] = existing_values["certifications"]
     next_values["skills"] = _normalize_skills(
         next_values["skills"], certifications=next_values["certifications"]
     )
@@ -10245,8 +10287,13 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         "certifications": next_values["certifications"], "projects": next_values["projects"],
         "experience_years": next_values["experience_years"],
     })
-    raw["certifications"] = next_values["certifications"]
-    raw["projects"] = next_values["projects"]
+    raw["certifications"] = _merge_certifications(raw.get("certifications"), next_values["certifications"])
+    raw["projects"] = _merge_projects(raw.get("projects"), next_values["projects"])
+    raw["skills"] = _normalize_skills(
+        [raw.get("skills") or [], next_values["skills"]], certifications=raw["certifications"]
+    )
+    raw["work_experience"] = _merge_work_experience(raw.get("work_experience"), next_values["work_experience"])
+    raw["education"] = _merge_education(raw.get("education"), next_values["education"])
     # The download button serves this exact artifact, rather than rebuilding a
     # document from a later profile read.  It is generated from the same
     # canonical values that are about to be written to candidates.skills.
@@ -10255,7 +10302,8 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     pdf_bytes = _build_candidate_profile_pdf(_resume_editor_pdf_profile(next_values, raw))
     updated_resume_path.write_bytes(pdf_bytes)
     raw["updated_resume_file_path"] = str(updated_resume_path)
-    changed = [key for key in supplied if next_values.get(key) != _resume_editor_payload(candidate).get(key)]
+    changed = [key for key in supplied if next_values.get(key) != existing_values.get(key)]
+    logger.info("[profile-integrity] candidate=%s source=resume_editor changed=%s added_only=true", candidate_id, changed)
     async with SessionLocal() as db:
         await db.execute(text("""
             UPDATE candidates SET name=:name, email=:email, phone=:phone, location=:location,
