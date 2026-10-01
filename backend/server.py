@@ -5362,6 +5362,37 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         # a bare project-name string.
         updates["projects"] = [{"title": project, "description": "", "technologies": []}]
 
+    # Project intent is authoritative over generic technology/skill extraction.
+    # Keep this deterministic so an LLM skills-only block cannot swallow a
+    # project update containing Java, databases, or framework names.
+    project_intent = re.search(
+        r"\b(?:update|modify|change)\s+(?:my|the)?\s*(?P<title>.+?)\s+project\b|"
+        r"\badd\s+(?:details|technologies)\s+to\s+(?:my|the)?\s*(?P<title2>.+?)\s+project\b|"
+        r"\badd\s+(?P<tech_before>.+?)\s+to\s+(?:my|the)?\s*(?P<title3>.+?)\s+project\b|"
+        r"\bupdate\s+project\s+description\b|\bupdate\s+my\s+project\b",
+        text, re.I,
+    )
+    if project_intent:
+        title = _normalize_profile_text(project_intent.group("title") or project_intent.group("title2") or project_intent.group("title3") or "")
+        title = re.sub(r"\s+(?:with|by|to)\s+(?:this\s+)?(?:description|technologies).*$", "", title, flags=re.I).strip(" .,:;")
+        if not title:
+            # A title-less update is still project intent; preflight/LLM can
+            # resolve it from the surrounding project wording.
+            title = ""
+        description = _extract_first_match(text, [
+            r"\bdescription\s*:\s*(?P<value>.+?)(?=\s+(?:also\s+)?add\s+(?:the\s+)?technologies?\s*:|\s+technologies?\s*:|$)",
+            r"\bwith\s+(?:this\s+)?description\s*:\s*(?P<value>.+?)(?=\s+(?:also\s+)?add\s+(?:the\s+)?technologies?\s*:|$)",
+        ])
+        technology_text = project_intent.group("tech_before") or _extract_first_match(text, [
+            r"\btechnologies?\s*:\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\badd\s+(?:the\s+)?technologies?\s*:\s*(?P<value>.+?)(?:[.!?;]|$)",
+        ])
+        technologies = _merge_skills([], _split_update_list(technology_text)) if technology_text else []
+        if title or description or technologies:
+            updates["projects"] = [{"title": title, "description": description or "", "technologies": technologies}]
+        if not re.search(r"\b(?:my|candidate|profile)\s+skills?\b", text, re.I):
+            updates.pop("skills", None)
+
     return updates
 
 
@@ -8085,7 +8116,23 @@ def _normalize_projects(items: Any) -> list[dict]:
 
 def _merge_projects(existing: Any, incoming: Any) -> list[dict]:
     """Merge candidate-provided project records without duplicating titles."""
-    return _normalize_projects([*_normalize_projects(existing), *_normalize_projects(incoming)])
+    current = _normalize_projects(existing)
+    incoming_records = _normalize_projects(incoming)
+    merged = _normalize_projects([*current, *incoming_records])
+    # _normalize_projects intentionally preserves the first duplicate record.
+    # For an explicit project update, however, supplied description text is a
+    # replacement and supplied technologies are additive; unrelated fields stay
+    # untouched.
+    by_title = {_normalize_profile_key(item.get("title")): item for item in merged}
+    for item in incoming_records:
+        target = by_title.get(_normalize_profile_key(item.get("title")))
+        if not target:
+            continue
+        if _normalize_profile_text(item.get("description")):
+            target["description"] = _normalize_profile_text(item["description"])
+        if item.get("technologies"):
+            target["technologies"] = list(dict.fromkeys([*(target.get("technologies") or []), *item["technologies"]]))
+    return merged
 
 
 def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
