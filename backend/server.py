@@ -5352,11 +5352,15 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             updates[field] = value
 
     project = _extract_first_match(text, [
+        r"\b(?:add|include)\s+(?:a\s+)?project\s+(?:called|named)\s+(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?:my\s+)?project\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?projects?(?:\s+section|\s+list)?(?:[.!?;]|$)",
     ])
     if project:
-        updates["projects"] = [project]
+        # Keep deterministic extraction in the same shape as structured
+        # extraction.  The rest of the pipeline accepts lists of records, not
+        # a bare project-name string.
+        updates["projects"] = [{"title": project, "description": "", "technologies": []}]
 
     return updates
 
@@ -5941,6 +5945,21 @@ async def _verify_profile_update_persisted(candidate_id: str, updates: dict) -> 
             for row in (persisted.get("work_experience") or [])
             if isinstance(row, dict)
         ):
+            return False
+    if updates.get("projects"):
+        persisted_raw = _parse_raw_data(persisted.get("raw_data"))
+        persisted_projects = _normalize_projects(persisted_raw.get("projects"))
+        persisted_titles = {
+            _normalize_profile_key(project.get("title"))
+            for project in persisted_projects
+            if isinstance(project, dict) and project.get("title")
+        }
+        expected_titles = {
+            _normalize_profile_key(project.get("title"))
+            for project in _normalize_projects(updates.get("projects"))
+            if isinstance(project, dict) and project.get("title")
+        }
+        if not expected_titles.issubset(persisted_titles):
             return False
     return True
 
@@ -7950,7 +7969,7 @@ def _normalize_projects(items: Any) -> list[dict]:
     for item in items:
         if isinstance(item, str):
             title = _normalize_profile_text(item)
-            record = {"title": title} if title else {}
+            record = {"title": title, "description": "", "technologies": []} if title else {}
         elif isinstance(item, dict):
             title = _normalize_profile_text(item.get("title") or item.get("name") or item.get("project_name"))
             role = _normalize_profile_text(item.get("role"))
@@ -7996,6 +8015,8 @@ def _normalize_projects(items: Any) -> list[dict]:
                 if record.get(field):
                     existing[field] = list(dict.fromkeys([*(existing.get(field) or []), *record[field]]))
             continue
+        record.setdefault("description", "")
+        record.setdefault("technologies", [])
         seen.add(key)
         normalized.append(record)
     return normalized
