@@ -20,7 +20,7 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("skills_required") or job.get("skills"):
         return job
     jd = _html_text("\n".join(str(job.get(key) or "") for key in ("title", "description", "requirements")))
-    if not jd.strip() or not any(os.environ.get(key, "").strip() for key in ("GROQ_API_KEY_1", "GROQ_API_KEY")):
+    if not jd.strip():
         return job
     try:
         from groq_client import GroqClientPool
