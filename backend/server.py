@@ -5621,11 +5621,69 @@ def _incomplete_new_chat_experience(updates: Optional[dict], candidate: Optional
             missing.append("start month/year")
         if end is None and not open_ended:
             missing.append("end month/year or confirmation that it is current")
-        if not description:
-            missing.append("responsibilities or project details")
         if missing:
             return missing
     return []
+
+
+def _pending_chat_work_experience_completion(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
+    """Collect a new employment record across chat turns before persisting it."""
+    user_messages = [m.get("content", "") for m in history if m.get("role") == "user"]
+    if not user_messages:
+        user_messages = [message]
+    source = " ".join(str(item) for item in user_messages)
+    if re.search(r"\bproject\b", source, re.I) or not re.search(r"\b(?:job|work(?:ing)?|employment|role|position|employed|started)\b", source, re.I):
+        return None
+
+    company = ""
+    company_match = re.search(r"\b(?:at|for|with)\s+(?P<company>[A-Z][A-Za-z0-9&.' -]+?)(?=\s+(?:as|from|since|in|on)\b|[,.!?;]|$)", source)
+    if company_match:
+        company = _normalize_profile_text(company_match.group("company"))
+    title = ""
+    statement = _extract_employment_statement(source)
+    if statement:
+        title, company = statement["title"], statement["company"] or company
+    title_match = re.search(r"\b(?:as|role(?:d)?\s+as|position(?:ed)?\s+as)\s+(?:an?\s+)?(?P<title>[A-Za-z][A-Za-z0-9 /&+'-]+?)(?=\s+(?:at|for|with|from|since)\b|[,.!?;]|$)", source, re.I)
+    if not title and title_match:
+        title = _normalize_profile_text(title_match.group("title"))
+    latest = _normalize_profile_text(user_messages[-1])
+    if not title:
+        for answer in user_messages:
+            answer = _normalize_profile_text(answer)
+            if _is_actual_job_role(answer):
+                title = answer.strip(" .")
+                break
+
+    start = end = ""
+    range_match = _CHAT_EXPERIENCE_RANGE.search(source)
+    if range_match:
+        start, end = range_match.group("start"), range_match.group("end")
+    else:
+        start_match = re.search(r"\b(?:from|since|starting(?:\s+in)?|started\s+in)\s+(" + _CHAT_EXPERIENCE_DATE + r")\b", source, re.I)
+        if start_match:
+            start = start_match.group(1)
+        if re.search(r"\b(?:present|currently|ongoing|now|today)\b", source, re.I):
+            end = "Present"
+        else:
+            end_match = re.search(r"\b(?:to|until|through|till|ended\s+in)\s+(" + _CHAT_EXPERIENCE_DATE + r")\b", source, re.I)
+            if end_match:
+                end = end_match.group(1)
+    for answer in user_messages:
+        answer = _normalize_profile_text(answer)
+        if not re.fullmatch(rf"\s*({_CHAT_EXPERIENCE_DATE})\s*", answer, re.I):
+            continue
+        if not start and not _is_open_ended_experience_value(answer):
+            start = answer
+        elif not end:
+            end = "Present" if _is_open_ended_experience_value(answer) else answer
+
+    if not (title or company or start or end):
+        return None
+    entry = {k: v for k, v in {"title": title, "company": company, "start_date": start, "end_date": end}.items() if v}
+    missing = _incomplete_new_chat_experience({"work_experience": [entry]}, candidate)
+    if missing:
+        return {"reply": "Before I add that work experience, please share the " + ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1] + ".", "updates": None}
+    return {"reply": f"Added your {title} experience at {company} from {start} to {end}.", "updates": {"work_experience": [entry]}}
 
 
 def _latest_profile_guidance_question(history: list[dict]) -> str:
@@ -5761,6 +5819,9 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     pending_experience = _pending_project_experience_completion(text_value, history)
     if pending_experience:
         return pending_experience
+    pending_work_experience = _pending_chat_work_experience_completion(text_value, candidate, history)
+    if pending_work_experience:
+        return pending_work_experience
     project_experience = _project_at_company_experience(text_value)
     if project_experience:
         missing = ["your job title or role"]
