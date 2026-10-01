@@ -213,9 +213,10 @@ def _experience_from_text(description: Any) -> str | None:
     ``including ...`` clause, making the result independent of prose order.
     """
     text = _html_text(description)
+    written_number = r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten)"
     pattern = re.compile(
         r"(?<!\w)(?P<value>(?:(?:minimum(?:\s+of)?|at\s+least)\s+)?"
-        r"\d+(?:\.\d+)?\s*(?:\+|[-\u2013\u2014]\s*\d+(?:\.\d+)?|to\s+\d+(?:\.\d+)?)?\s*"
+        rf"(?:\d+(?:\.\d+)?|{written_number})\s*(?:\+|[-\u2013\u2014]\s*(?:\d+(?:\.\d+)?|{written_number})|to\s+(?:\d+(?:\.\d+)?|{written_number}))?\s*"
         r"(?:years?|yrs?)\b)(?P<qualifier>\s+of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience)?",
         re.I,
     )
@@ -369,7 +370,8 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
     )))) or None
     meta = _metadata(job, "fantastic", description=extraction_text,
         employment_type=_first(job.get("employment_type"), job.get("ai_employment_type")),
-        experience_level=job.get("ai_experience_level"), experience_required=job.get("ai_requirements_summary"),
+        experience_level=job.get("ai_experience_level"),
+        experience_required=_experience_from_text(extraction_text),
         remote_policy=job.get("ai_work_arrangement"), salary_range=salary, skills_required=skills,
         # Fantastic preserves the source job's original publication time in
         # ``date_posted``.  ``date_created`` is the Fantastic record's own

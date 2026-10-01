@@ -100,6 +100,33 @@ def test_fantastic_uses_requirements_summary_for_experience_extraction():
     assert job["experience_required"] == "At least 6 years"
 
 
+@pytest.mark.parametrize("summary,expected", [
+    ("Applicants should have 0-2 years of experience...", "0-2 years"),
+    ("At least eight years of manufacturing quality assurance experience...", "At least eight years"),
+    ("Candidates must possess ... 2 to 5 years of relevant experience...", "2 to 5 years"),
+    ("At least one year of relevant industry experience", "At least one year"),
+])
+def test_fantastic_extracts_numeric_requirement_from_requirements_summary(summary, expected):
+    job = normalize_fantastic({
+        "id": "fantastic-numeric-summary", "title": "Engineer", "organization": "Acme",
+        "description_text": "Build services.", "ai_requirements_summary": summary,
+    })
+    assert job["experience_required"] == expected
+
+
+@pytest.mark.parametrize("summary", [
+    "Candidates must be current full-time students. Applicants should possess strong communication skills and proficiency in Microsoft Office.",
+    "The role requires experience in originating and underwriting credit proposals to assess financial risks.",
+    "The role requires experience with Java backend development.",
+])
+def test_fantastic_requirements_summary_without_numeric_experience_is_none(summary):
+    job = normalize_fantastic({
+        "id": "fantastic-no-experience", "title": "Engineer", "organization": "Acme",
+        "description_text": "Build services.", "ai_requirements_summary": summary,
+    })
+    assert job["experience_required"] is None
+
+
 def test_persistence_parameters_carry_extracted_experience_value():
     job = normalize_lever({
         "id": "lever-upsert", "text": "Engineer",
