@@ -204,6 +204,33 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     }
 
 
+def test_chat_profile_category_routing_keeps_typed_facts_out_of_additional_information():
+    message = (
+        "I have an AWS certification. I built the Billing Portal project using Python. "
+        "I worked at Acme as a Backend Engineer. My skills are Python and SQL. "
+        "I am targeting Platform Engineer roles."
+    )
+    _, updates = server._extract_profile_updates("", message)
+
+    assert updates["certifications"] == ["AWS"]
+    assert updates["projects"][0]["title"] == "Billing Portal"
+    assert "Python" in updates["projects"][0]["technologies"]
+    assert updates["work_experience"][0]["company"] == "Acme"
+    assert updates["work_experience"][0]["title"] == "Backend Engineer"
+    assert set(updates["skills"]) >= {"Python", "SQL"}
+    assert updates["preferred_roles"] == ["Platform Engineer"]
+    assert "additional_information" not in updates
+
+
+def test_chat_profile_category_correction_preserves_explicit_additional_information():
+    corrected = server._correct_profile_categories(
+        {"skills": ["Python"], "additional_information": "Career changer"},
+        "My skills are Python. Additional information: I am a career changer.",
+    )
+    assert corrected["skills"] == ["Python"]
+    assert corrected["additional_information"] == "Career changer"
+
+
 def test_chat_project_addition_preserves_existing_project_in_raw_data():
     state = _make_candidate(raw_data={"projects": [{"title": "Existing Platform"}]})
     message = "Add Inventory Platform to my projects"

@@ -5274,6 +5274,9 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             continue
         company = _normalize_profile_text(match.groupdict().get("company"))
         title = _normalize_profile_text(match.groupdict().get("title"))
+        # A mixed answer often continues with another section after the job
+        # clause. Keep that continuation out of the work record.
+        title = re.split(r"\s*,?\s+and\s+(?:my\s+|i\s+|the\s+)|\s+and\s+(?:my\s+|i\s+)", title, maxsplit=1, flags=re.I)[0].strip(" ,.;:")
         title = re.sub(r"\s+for\s+\d+(?:\.\d+)?\s*years?\s*$", "", title, flags=re.I).strip()
         if not company or not title:
             continue
@@ -5355,12 +5358,18 @@ def _infer_profile_updates_from_message(message: str) -> dict:
         r"\b(?:add|include)\s+(?:a\s+)?project\s+(?:called|named)\s+(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?:my\s+)?project\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?projects?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+        r"\b(?:built|developed|created|worked\s+on)\s+(?:the\s+)?(?P<value>[A-Z][\w .'-]+?)\s+project(?:\s+(?:using|with)\s+(?P<tech>[^.!?;]+))?(?:[.!?;]|$)",
     ])
     if project:
         # Keep deterministic extraction in the same shape as structured
         # extraction.  The rest of the pipeline accepts lists of records, not
         # a bare project-name string.
-        updates["projects"] = [{"title": project, "description": "", "technologies": []}]
+        project_match = re.search(
+            r"\b(?:built|developed|created|worked\s+on)\s+(?:the\s+)?(?P<title>[A-Z][\w .'-]+?)\s+project(?:\s+(?:using|with)\s+(?P<tech>[^.!?;]+))?",
+            text, re.I,
+        )
+        technologies = _merge_skills([], _split_update_list(project_match.group("tech"))) if project_match and project_match.group("tech") else []
+        updates["projects"] = [{"title": project.strip(), "description": "", "technologies": technologies}]
 
     # Project intent is authoritative over generic technology/skill extraction.
     # Keep this deterministic so an LLM skills-only block cannot swallow a
@@ -5428,6 +5437,19 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
             result[field] = value
     if inferred.get("replace_preferred_locations"):
         result["replace_preferred_locations"] = True
+    # This is a typed profile extractor.  Additional Information is reserved
+    # for content the candidate explicitly labels as such; it must not become
+    # a fallback bucket when a model is uncertain about a typed section.
+    typed_fields = {
+        "certifications", "projects", "work_experience", "education", "skills",
+        "preferred_roles", "preferred_locations", "preferred_industries",
+        "employment_types", "current_role", "experience_years", "location",
+    }
+    if not re.search(
+        r"\b(?:additional information|additional info|about me|other information)\b",
+        candidate_message or "", re.IGNORECASE,
+    ) and any(field in result for field in typed_fields):
+        result.pop("additional_information", None)
     return _sanitize_profile_updates(result)
 
 
@@ -6129,6 +6151,9 @@ Return ONLY valid JSON with the exact keys below (omit keys where nothing was fo
   "location": "",
   "bio": "",
   "experience_years": null,
+  "work_experience": [],
+  "education": [],
+  "projects": [],
   "skills": [],
   "preferred_roles": [],
   "preferred_locations": [],
@@ -6146,6 +6171,9 @@ Rules:
 - Only include a field if the candidate explicitly provided that information.
 - Do NOT invent or hallucinate.
 - skills and certifications must be plain name strings, not sentences.
+- work_experience must contain only explicit jobs with a title and company;
+  projects only explicitly named projects/products; education only explicit
+  degrees and institutions.
 - preferred_roles must be job title strings.
 - preferred_locations, preferred_industries, and employment_types must be lists of explicit preferences.
 - remote_preference must be Remote, Hybrid, On-site, or Flexible only when explicitly stated.
@@ -6178,7 +6206,7 @@ async def _extract_multi_field_updates_from_answer(
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
-        return _sanitize_profile_updates(raw)
+        return _correct_profile_categories(_sanitize_profile_updates(raw), candidate_message)
     except Exception as e:
         logger.warning("[chat-multi-field] extraction failed: %s", e)
         return {}
