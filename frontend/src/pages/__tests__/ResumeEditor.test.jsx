@@ -104,6 +104,34 @@ describe("ResumeEditor profile refresh", () => {
     postMessage.mockRestore();
   });
 
+  it("renders the freshly recalculated match score returned after save", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume, match_score: 42, missing_skills: [] } });
+    axios.post.mockResolvedValue({ data: { previous_match_score: 42, match_score: 87, profile: { candidate_id: "candidate-1" } } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes").click(); });
+    expect(container.querySelector('[data-testid="resume-save-result"]').textContent).toContain("87%");
+    await act(async () => { root.unmount(); });
+  });
+
+  it("returns to the previous Align Your Resume step without replacing browser history", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
+    const history = { back: jest.fn() };
+    Object.defineProperty(window, "history", { configurable: true, value: history });
+    const back = history.back;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { container.querySelector('[data-testid="resume-editor-back"]').click(); });
+    expect(back).toHaveBeenCalledTimes(1);
+    await act(async () => { root.unmount(); });
+  });
+
   it("downloads the persisted updated-resume endpoint without duplicating the API prefix", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
