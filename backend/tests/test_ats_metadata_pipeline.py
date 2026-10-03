@@ -8,10 +8,35 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unused:unused@localhost/unused")
 
-from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable, parse_ats_datetime
+from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_theirstack, normalize_workable, parse_ats_datetime
 from app.job_ingestion.job_ingestion_service import _metadata_params, _persistence_safe_job, upsert_ats_job
 import server
 import candidate_job_matching_service
+
+
+def test_theirstack_company_string_and_company_metadata_are_preserved():
+    job = normalize_theirstack({
+        "id": "ts-company", "title": "Engineer", "company": "Larsen & Toubro",
+        "company_domain": "larsentoubro.com",
+        "company_object": {"name": "Larsen & Toubro", "domain": "larsentoubro.com", "country": "India", "country_code": "IN"},
+    })
+
+    assert job["company_name"] == "Larsen & Toubro"
+    structured = job["structured_data"]
+    assert structured["company"] == "Larsen & Toubro"
+    assert structured["company_domain"] == "larsentoubro.com"
+    assert structured["company_object"]["name"] == "Larsen & Toubro"
+    assert structured["company_object"]["country"] == "India"
+    assert structured["company_object"]["country_code"] == "IN"
+
+
+def test_theirstack_company_object_name_is_fallback():
+    job = normalize_theirstack({
+        "id": "ts-company-object", "title": "Engineer",
+        "company_object": {"name": "Larsen & Toubro"},
+    })
+
+    assert job["company_name"] == "Larsen & Toubro"
 
 
 def test_representative_public_ats_payloads_preserve_explicit_metadata():

@@ -400,7 +400,16 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
             **loc, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
 
 def normalize_theirstack(job: dict[str, Any]) -> dict[str, Any]:
+    company_object = job.get("company_object") if isinstance(job.get("company_object"), dict) else {}
     company = job.get("company") if isinstance(job.get("company"), dict) else {}
+    company_name = _text(_first(
+        job.get("company"),
+        job.get("company_name"),
+        company_object.get("name"),
+        company.get("name"),
+        job.get("employer"),
+        job.get("organization"),
+    )) or "Unknown company"
     location = _first(job.get("location"), job.get("job_location"), job.get("locations"))
     if isinstance(location, list): location = location[0] if location else None
     description = _first(job.get("description"), job.get("description_text"), job.get("job_description"))
@@ -409,7 +418,13 @@ def normalize_theirstack(job: dict[str, Any]) -> dict[str, Any]:
     meta["structured_data"]["theirstack"] = _json_safe(job)
     meta["structured_data"]["source"] = _first(job.get("source"), job.get("source_domain"), job.get("job_board"))
     meta["structured_data"]["source_domain"] = _first(job.get("source_domain"), job.get("domain"))
+    for key in ("company", "company_domain", "company_object"):
+        if job.get(key) not in (None, "", [], {}):
+            meta["structured_data"][key] = _json_safe(job[key])
+    for key in ("name", "country", "country_code", "linkedin_url"):
+        if company_object.get(key) not in (None, "", [], {}):
+            meta["structured_data"].setdefault("company_object", {})[key] = _json_safe(company_object[key])
     loc = _location_parts(location)
     if not loc.get("country"):
         loc["country"] = _first(job.get("job_country_code"), job.get("country_code"), job.get("job_country"))
-    return {"ats_job_id": _ats_id(_first(job.get("id"), job.get("job_id"))), "ats_type": "theirstack", "company_name": _text(_first(job.get("company_name"), company.get("name"))) or "Unknown company", "title": _first(job.get("job_title"), job.get("title")), "description": description, **loc, "job_url": _valid_http_url(_first(job.get("final_url"), job.get("url"), job.get("job_url"))), "salary_range": salary, **meta}
+    return {"ats_job_id": _ats_id(_first(job.get("id"), job.get("job_id"))), "ats_type": "theirstack", "company_name": company_name, "title": _first(job.get("job_title"), job.get("title")), "description": description, **loc, "job_url": _valid_http_url(_first(job.get("final_url"), job.get("url"), job.get("job_url"))), "salary_range": salary, **meta}
