@@ -9786,16 +9786,25 @@ async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, 
             "code": "resume_fix_credits_insufficient",
             "message": "Upgrade your plan to keep using Fix My Resume.",
         })
+    recommendation_validation = ""
+    if rec_id:
+        recommendation_validation = """
+              AND EXISTS (
+                SELECT 1
+                FROM candidate_resume_fix_entitlements AS e
+                INNER JOIN candidate_job_recommendations AS cjr
+                    ON cjr.id = :rec_id
+                WHERE e.id = c.entitlement_id
+                  AND e.candidate_id = :cid
+                  AND e.job_id = cjr.job_id
+                  AND cjr.candidate_id = :cid
+              )
+        """
     async with SessionLocal() as db:
-        result = await db.execute(text("""
+        result = await db.execute(text(f"""
             UPDATE candidate_resume_fix_credit_claims c SET consumed_at = now()
             WHERE c.id = :claim_id AND c.candidate_id = :cid AND c.consumed_at IS NULL
-              AND (:rec_id IS NULL OR EXISTS (
-                SELECT 1 FROM candidate_resume_fix_entitlements e
-                JOIN candidate_job_recommendations cjr ON cjr.id = :rec_id
-                WHERE e.id = c.entitlement_id AND e.candidate_id = :cid
-                  AND e.job_id = cjr.job_id AND cjr.candidate_id = :cid
-              ))
+              {recommendation_validation}
             RETURNING id
         """), {"claim_id": claim_id, "cid": candidate_id, "rec_id": rec_id})
         if result.scalar() is None:
