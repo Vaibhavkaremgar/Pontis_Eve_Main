@@ -7362,6 +7362,33 @@ ALTER TABLE candidate_resume_fix_credit_claims
 ADD COLUMN IF NOT EXISTS credit_source TEXT NOT NULL DEFAULT 'daily'
 """
 
+CREATE_RESUME_FIX_ENTITLEMENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_resume_fix_entitlements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    job_id UUID NOT NULL REFERENCES job_descriptions(id) ON DELETE CASCADE,
+    recommendation_id UUID REFERENCES candidate_job_recommendations(id) ON DELETE SET NULL,
+    first_claim_id UUID REFERENCES candidate_resume_fix_credit_claims(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, job_id)
+)
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_ENTITLEMENT = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS entitlement_id UUID REFERENCES candidate_resume_fix_entitlements(id) ON DELETE SET NULL
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_KIND = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS claim_kind TEXT NOT NULL DEFAULT 'charged'
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_COST = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS credit_cost INTEGER NOT NULL DEFAULT 3
+"""
+
 CREATE_RESUME_FIX_CREDITS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_crfcc_candidate_date
 ON candidate_resume_fix_credit_claims (candidate_id, usage_date)
@@ -7405,6 +7432,10 @@ async def _ensure_schema():
         await db.execute(text(CREATE_RESUME_FIX_CREDIT_BALANCES_TABLE))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_SOURCE))
+        await db.execute(text(CREATE_RESUME_FIX_ENTITLEMENTS_TABLE))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_ENTITLEMENT))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_KIND))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_COST))
         await db.execute(text(CREATE_RESUME_FIX_CREDITS_INDEX))
         await db.execute(text(CREATE_APPLICATION_RESUMES_TABLE))
         await db.execute(text(CREATE_APPLICATION_RESUMES_INDEX))
@@ -9700,35 +9731,167 @@ async def _get_resume_fix_credit_balance(candidate_id: str, candidate: dict, usa
     }
 
 
-async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, claim_id: Optional[str]) -> None:
+async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, claim_id: Optional[str], rec_id: Optional[str] = None) -> None:
     """Ensure free-plan saves came from a charged Fix My Resume click."""
     if _has_active_subscription(candidate):
         return
-    if not claim_id:
+    claim_present = bool(claim_id)
+    claim_format_valid = False
+    candidate_match = False
+    already_consumed = False
+
+    if claim_present:
+        try:
+            uuid.UUID(str(claim_id))
+            claim_format_valid = True
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    if claim_format_valid:
+        async with SessionLocal() as db:
+            if rec_id:
+                inspected = await db.execute(text("""
+                    SELECT c.claim_id, c.candidate_id, c.consumed_at,
+                           c.entitlement_id, e.candidate_id AS entitlement_candidate_id,
+                           e.job_id, cjr.job_id AS canonical_job_id
+                    FROM candidate_resume_fix_credit_claims c
+                    JOIN candidate_resume_fix_entitlements e ON e.id = c.entitlement_id
+                    JOIN candidate_job_recommendations cjr ON cjr.id = :rid
+                    WHERE c.id = :claim_id
+                """), {"claim_id": claim_id, "rid": rec_id})
+            else:
+                inspected = await db.execute(text("""
+                    SELECT candidate_id, consumed_at
+                    FROM candidate_resume_fix_credit_claims
+                    WHERE id = :claim_id
+                """), {"claim_id": claim_id})
+            row = inspected.first()
+            if row is not None:
+                row_candidate_id = row[0] if not rec_id else row[1]
+                consumed_at = row[1] if not rec_id else row[2]
+                candidate_match = str(row_candidate_id) == str(candidate_id)
+                already_consumed = consumed_at is not None
+
+    def log_diagnostic(result: str) -> None:
+        logger.info(
+            "resume_fix_claim_diagnostic candidate_id=%s claim_present=%s claim_format_valid=%s "
+            "candidate_match=%s already_consumed=%s validation_result=%s",
+            candidate_id, str(claim_present).lower(), str(claim_format_valid).lower(),
+            str(candidate_match).lower(), str(already_consumed).lower(), result,
+        )
+
+    if not claim_format_valid:
+        log_diagnostic("failure")
         raise HTTPException(status_code=403, detail={
             "code": "resume_fix_credits_insufficient",
             "message": "Upgrade your plan to keep using Fix My Resume.",
         })
     async with SessionLocal() as db:
         result = await db.execute(text("""
-            UPDATE candidate_resume_fix_credit_claims SET consumed_at = now()
-            WHERE id = :claim_id AND candidate_id = :cid AND consumed_at IS NULL
+            UPDATE candidate_resume_fix_credit_claims c SET consumed_at = now()
+            WHERE c.id = :claim_id AND c.candidate_id = :cid AND c.consumed_at IS NULL
+              AND (:rec_id IS NULL OR EXISTS (
+                SELECT 1 FROM candidate_resume_fix_entitlements e
+                JOIN candidate_job_recommendations cjr ON cjr.id = :rec_id
+                WHERE e.id = c.entitlement_id AND e.candidate_id = :cid
+                  AND e.job_id = cjr.job_id AND cjr.candidate_id = :cid
+              ))
             RETURNING id
-        """), {"claim_id": claim_id, "cid": candidate_id})
+        """), {"claim_id": claim_id, "cid": candidate_id, "rec_id": rec_id})
         if result.scalar() is None:
+            log_diagnostic("failure")
             raise HTTPException(status_code=403, detail={
                 "code": "resume_fix_credits_insufficient",
                 "message": "Upgrade your plan to keep using Fix My Resume.",
             })
         await db.commit()
+    log_diagnostic("success")
+
+
+async def _claim_resume_fix_entitlement(candidate_id: str, candidate: dict, rec_id: str, usage_date=None) -> dict:
+    """Authorize one editor for the canonical job, charging only its first use."""
+    if _has_active_subscription(candidate):
+        return {"claim_id": None, "remaining_credits": None, "is_subscribed": True}
+    usage_date = usage_date or _product_current_date()
+    async with SessionLocal() as db:
+        canonical = await db.execute(text("""
+            SELECT cjr.id AS recommendation_id, cjr.job_id
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.id = :rid AND cjr.candidate_id = :cid
+            LIMIT 1
+        """), {"rid": rec_id, "cid": candidate_id})
+        job = canonical.mappings().first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Recommendation not found.")
+        job_id, recommendation_id = job["job_id"], job["recommendation_id"]
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
+            "lock_key": f"resume-fix-entitlement:{candidate_id}:{job_id}"
+        })
+        entitlement = (await db.execute(text("""
+            SELECT id FROM candidate_resume_fix_entitlements
+            WHERE candidate_id = :cid AND job_id = :jid
+            FOR UPDATE
+        """), {"cid": candidate_id, "jid": job_id})).scalar()
+        if entitlement:
+            unused = (await db.execute(text("""
+                SELECT id FROM candidate_resume_fix_credit_claims
+                WHERE entitlement_id = :eid AND candidate_id = :cid AND consumed_at IS NULL
+                ORDER BY created_at LIMIT 1
+            """), {"eid": entitlement, "cid": candidate_id})).scalar()
+            if unused:
+                await db.commit()
+                return {"claim_id": str(unused), "remaining_credits": None, "is_subscribed": False}
+            inserted = await db.execute(text("""
+                INSERT INTO candidate_resume_fix_credit_claims
+                    (candidate_id, usage_date, credit_source, entitlement_id, claim_kind, credit_cost)
+                VALUES (:cid, :usage_date, 'entitlement_repeat', :eid, 'editor_repeat', 0)
+                RETURNING id
+            """), {"cid": candidate_id, "usage_date": usage_date, "eid": entitlement})
+            claim_id = inserted.scalar()
+            await db.commit()
+            return {"claim_id": str(claim_id), "remaining_credits": None, "is_subscribed": False}
+
+        # Keep the existing candidate-level balance semantics, inside this same transaction.
+        await db.execute(text("""
+            INSERT INTO candidate_resume_fix_credit_balances (candidate_id, starter_credits_remaining)
+            VALUES (:cid, :starter) ON CONFLICT (candidate_id) DO NOTHING
+        """), {"cid": candidate_id, "starter": INITIAL_RESUME_FIX_CREDITS})
+        starter = (await db.execute(text("""SELECT starter_credits_remaining
+            FROM candidate_resume_fix_credit_balances WHERE candidate_id = :cid FOR UPDATE"""), {"cid": candidate_id})).scalar() or 0
+        source = "starter"
+        remaining = starter
+        if starter >= RESUME_FIX_CREDIT_COST:
+            remaining = (await db.execute(text("""UPDATE candidate_resume_fix_credit_balances
+                SET starter_credits_remaining = starter_credits_remaining - :cost
+                WHERE candidate_id = :cid AND starter_credits_remaining >= :cost
+                RETURNING starter_credits_remaining"""), {"cid": candidate_id, "cost": RESUME_FIX_CREDIT_COST})).scalar()
+        else:
+            used = (await db.execute(text("""SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
+                WHERE candidate_id = :cid AND usage_date = :usage_date AND credit_source = 'daily'"""), {"cid": candidate_id, "usage_date": usage_date})).scalar() or 0
+            remaining = FREE_DAILY_RESUME_FIX_CREDITS - used * RESUME_FIX_CREDIT_COST
+            if remaining < RESUME_FIX_CREDIT_COST:
+                raise HTTPException(status_code=403, detail={"code": "resume_fix_credits_insufficient", "message": "Upgrade your plan to keep using Fix My Resume.", "remaining_credits": max(0, remaining)})
+            source = "daily"
+        if remaining is None:
+            raise HTTPException(status_code=403, detail={"code": "resume_fix_credits_insufficient", "message": "Upgrade your plan to keep using Fix My Resume.", "remaining_credits": 0})
+        entitlement = (await db.execute(text("""INSERT INTO candidate_resume_fix_entitlements
+            (candidate_id, job_id, recommendation_id) VALUES (:cid, :jid, :rid) RETURNING id"""),
+            {"cid": candidate_id, "jid": job_id, "rid": recommendation_id})).scalar()
+        claim_id = (await db.execute(text("""INSERT INTO candidate_resume_fix_credit_claims
+            (candidate_id, usage_date, credit_source, entitlement_id, claim_kind, credit_cost)
+            VALUES (:cid, :usage_date, :source, :eid, 'charged', 3) RETURNING id"""),
+            {"cid": candidate_id, "usage_date": usage_date, "source": source, "eid": entitlement})).scalar()
+        await db.execute(text("UPDATE candidate_resume_fix_entitlements SET first_claim_id = :claim WHERE id = :eid"), {"claim": claim_id, "eid": entitlement})
+        await db.commit()
+    return {"claim_id": str(claim_id), "remaining_credits": remaining - RESUME_FIX_CREDIT_COST if source == "daily" else remaining, "credit_phase": source, "is_subscribed": False}
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/resume-fix-credit-claim")
 async def claim_resume_fix_credits(candidate_id: str, rec_id: str):
     """Charge a free candidate before opening a job-scoped resume editor."""
     candidate = await _get_candidate_row(candidate_id)
-    await _get_job_match_improvement_row(candidate_id, rec_id)  # ownership check
-    return await _claim_resume_fix_credits(candidate_id, candidate)
+    return await _claim_resume_fix_entitlement(candidate_id, candidate, rec_id)
 
 
 @api_router.get("/candidate/{candidate_id}/resume-fix-credits")
@@ -10412,7 +10575,7 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
-    await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id)
+    await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id, rec_id)
     # Save the complete, candidate-edited uploaded-resume representation into
     # both its parsed snapshot and the canonical candidate profile.
     profile_updates = request.profile_updates
