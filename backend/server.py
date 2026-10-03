@@ -7601,7 +7601,9 @@ def _candidate_certification_sources(candidate: dict, extra: Any = None) -> list
 
 def _merge_certifications(existing: Any, new_items: Any) -> list[str]:
     """Merge certification lists with normalized de-duplication."""
-    return _normalize_certifications([*(existing or []), *(new_items or [])])
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
+    return _normalize_certifications([*existing_items, *new_values])
 
 
 def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
@@ -8025,8 +8027,10 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
     # same matcher.  Previously this copied ``existing`` verbatim and only
     # deduplicated against ``new_items``; once a duplicate reached storage, later
     # Voice Intake/profile saves preserved it forever.
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
     merged: list[dict] = []
-    for item in [*(existing or []), *(new_items or [])]:
+    for item in [*existing_items, *new_values]:
         if not isinstance(item, dict):
             continue
         item = dict(item)
@@ -8203,8 +8207,10 @@ def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
 
 def _merge_education(existing: Any, new_items: Any) -> list:
     """Merge education lists, deduplicating by normalized degree + institution."""
-    if not new_items:
-        return [dict(e) for e in (existing or []) if isinstance(e, dict)]
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
+    if not new_values:
+        return [dict(e) for e in existing_items if isinstance(e, dict)]
 
     def _education_key(entry: dict) -> str:
         degree = _normalize_profile_key(entry.get("degree") or entry.get("field_of_study") or "")
@@ -8220,12 +8226,12 @@ def _merge_education(existing: Any, new_items: Any) -> list:
                 merged_entry[field] = new_value
         return merged_entry
 
-    merged = [dict(e) for e in (existing or []) if isinstance(e, dict)]
+    merged = [dict(e) for e in existing_items if isinstance(e, dict)]
     index_by_key: dict[str, int] = {}
     for idx, entry in enumerate(merged):
         index_by_key[_education_key(entry)] = idx
 
-    for item in new_items:
+    for item in new_values:
         if not isinstance(item, dict):
             continue
         key = _education_key(item)

@@ -66,6 +66,17 @@ def test_education_merge_adds_valid_incoming_entry_when_existing_is_none():
     assert server._merge_education(None, incoming) == incoming
 
 
+def test_resume_collection_merges_ignore_none_and_invalid_values():
+    assert server._merge_education(None, None) == []
+    assert server._merge_education({"degree": "invalid"}, None) == []
+    assert server._merge_work_experience(None, [{"title": "Engineer"}]) == [{"title": "Engineer"}]
+    assert server._merge_work_experience(42, None) == []
+    assert server._merge_projects(None, [{"title": "Resume Parser"}]) == [{"title": "Resume Parser"}]
+    assert server._merge_projects(42, None) == []
+    assert server._merge_certifications(None, ["AWS"]) == ["AWS"]
+    assert server._merge_certifications(42, None) == []
+
+
 def test_project_merge_preserves_partial_and_null_fields():
     existing = {
         "name": "Resume Parser",
