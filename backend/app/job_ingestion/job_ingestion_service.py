@@ -115,7 +115,7 @@ async def upsert_ats_job(
     # company_registry row nor a company-scoped ATS agency.  In particular,
     # do not delegate it to get_or_create_ats_agency(), whose allow-list is
     # intentionally limited to the company-scoped ATS integrations.
-    is_global_provider = ats_type == "fantastic"
+    is_global_provider = ats_type in {"fantastic", "theirstack"}
     agency_id = None
     if not is_global_provider:
         # Get the default system agency for this company-scoped ATS.

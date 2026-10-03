@@ -246,6 +246,36 @@ async def sync_fantastic_jobs() -> dict[str, int]:
     logger.info("[fantastic] sync completed fetched=%(fetched)d inserted=%(inserted)d updated=%(updated)d skipped=%(skipped)d failed=%(failed)d embedding=%(inserted)d", stats)
     return stats
 
+async def sync_theirstack_jobs() -> dict[str, int]:
+    from app.job_ingestion.connectors.theirstack import TheirStackClient
+    from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    from app.job_ingestion.normalize import normalize_theirstack
+    if os.getenv("THEIRSTACK_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+    try: raw_jobs = await TheirStackClient().fetch_jobs()
+    except Exception as exc:
+        logger.error("[theirstack] sync fetch failed: %s", exc); return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 1}
+    stats = {"fetched": len(raw_jobs), "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+    SessionLocal = _get_session_local()
+    async with SessionLocal() as db:
+        for raw in raw_jobs:
+            job = normalize_theirstack(raw)
+            if not job["ats_job_id"] or not job["title"] or not job["job_url"] or str(job.get("country") or "").casefold() not in {"india", "in"}:
+                stats["skipped"] += 1; continue
+            try:
+                existing = await db.execute(text("SELECT ats_type FROM job_descriptions WHERE (ats_type='theirstack' AND ats_job_id=:id) OR job_url=:url LIMIT 1"), {"id": job["ats_job_id"], "url": job["job_url"]})
+                row = existing.first()
+                if row and row[0] != "theirstack":
+                    stats["skipped"] += 1; continue
+                await upsert_ats_job(db, job); stats["updated" if row else "inserted"] += 1
+            except Exception as exc:
+                stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc); await db.rollback()
+    logger.info("[theirstack] sync completed %s", stats); return stats
+
+async def _sync_theirstack_guarded() -> None:
+    try: await sync_theirstack_jobs()
+    except Exception: logger.exception("[theirstack] unexpected scheduled sync failure")
+
 
 def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
     """Log PostgreSQL diagnostics for one Fantastic row without raw payload data.
@@ -333,6 +363,8 @@ def start_scheduler() -> None:
             id="fantastic_job_sync", replace_existing=True,
         )
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
+    if os.getenv("THEIRSTACK_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        _scheduler.add_job(_sync_theirstack_guarded, trigger=_fantastic_sync_trigger(), id="theirstack_job_sync", replace_existing=True)
     next_run = job.next_run_time
     if next_run is not None:
         logger.info(

@@ -75,7 +75,7 @@ class FantasticClient:
                 if remaining <= 0:
                     break
                 params = {"time_frame": self.config.time_frame, "limit": min(self.config.limit, remaining),
-                          "offset": page * self.config.limit, "description_format": "text"}
+                          "offset": page * self.config.limit, "description_format": "text", "location": "India"}
                 logger.info("[fantastic] requesting active-ats page=%d request=%d", page + 1, page + 1)
                 try:
                     response = await client.get(f"{BASE_URL}/active-ats", params=params,

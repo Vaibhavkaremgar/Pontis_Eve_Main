@@ -213,11 +213,15 @@ def _experience_from_text(description: Any) -> str | None:
     ``including ...`` clause, making the result independent of prose order.
     """
     text = _html_text(description)
-    written_number = r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten)"
+    written_numbers = {
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    }
+    written_number = r"(?:" + "|".join(written_numbers) + r")"
     pattern = re.compile(
-        r"(?<!\w)(?P<value>(?:(?:minimum(?:\s+of)?|at\s+least)\s+)?"
-        rf"(?:\d+(?:\.\d+)?|{written_number})\s*(?:\+|[-\u2013\u2014]\s*(?:\d+(?:\.\d+)?|{written_number})|to\s+(?:\d+(?:\.\d+)?|{written_number}))?\s*"
-        r"(?:years?|yrs?)\b)(?P<qualifier>\s+of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience)?",
+        r"(?<!\w)(?P<value>(?:(?:minimum(?:\s+of)?|at\s+least|over|mindestens)\s+)?"
+        rf"(?:\d+(?:\.\d+)?|(?<!\w){written_number}(?!\w))\s*(?:\+|[-\u2013\u2014]\s*(?:\d+(?:\.\d+)?|(?<!\w){written_number}(?!\w))|to\s+(?:\d+(?:\.\d+)?|(?<!\w){written_number}(?!\w)))?\s*"
+        r"(?:years?|yrs?|jahre)\b)(?P<qualifier>\s+(?:of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience|(?:relevante\s+)?erfahrung))?",
         re.I,
     )
     candidates = []
@@ -226,23 +230,28 @@ def _experience_from_text(description: Any) -> str | None:
         qualifier = re.sub(r"\s+", " ", match.group("qualifier") or "").strip()
         context = text[max(0, match.start() - 45):match.end() + 65]
         before = text[max(0, match.start() - 35):match.start()]
-        if re.search(r"(?:for\s+over|over)\s*$|(?:founded|established)\s*$", before, re.I):
+        if re.search(r"(?:for\s+over)\s*$|(?:founded|established)\s*$", before, re.I):
             continue
-        if re.search(r"(?:in business|serving clients|providing services|years ago|years of history)", context, re.I):
+        if re.search(r"(?:in business|serving clients|serving generations|providing services|years ago|years of (?:company\s+)?history|jahre der unternehmensgeschichte)", context, re.I):
             continue
         after = text[match.end():match.end() + 90]
         score = 0
-        if re.match(r"\s+of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience\b", after, re.I): score += 100
-        if re.search(r"\b(?:candidate|applicant|ideal candidate|looking for|you)\b", before, re.I): score += 20
+        if re.match(r"\s+(?:of\s+(?:relevant\s+)?(?:hands[- ]on\s+)?experience|(?:relevante\s+)?erfahrung)\b", after, re.I): score += 100
+        if re.search(r"\b(?:candidate|applicant|ideal candidate|looking for|you|kandidat(?:en|in)?)\b", before, re.I): score += 20
         if re.search(r"\bincluding\b", before, re.I): score -= 15
-        # Keep the historical full phrase for simple scalar requirements, but
-        # canonicalize ranges and overall requirements to the numeric form.
-        is_range = bool(re.search(r"[-\u2013\u2014]|\bto\b", value))
-        if is_range or re.search(r"\bincluding\b", after, re.I) or re.match(r"(?:minimum|at\s+least)\b", value, re.I):
-            value = value
-        elif qualifier:
-            value = f"{value} {qualifier}"
-        candidates.append((score, match.start(), value))
+        # Store one stable numeric representation, never the surrounding
+        # qualification paragraph.  Ranges use a simple hyphen and minimum
+        # requirements use a plus sign.
+        numbers = re.findall(rf"\d+(?:\.\d+)?|(?<!\w){written_number}(?!\w)", value, re.I)
+        numbers = [written_numbers.get(number.casefold(), number) for number in numbers]
+        if len(numbers) > 1:
+            normalized = f"{numbers[0]}-{numbers[1]} years"
+        elif numbers:
+            minimum_suffix = "+" if re.match(r"(?:minimum|at\s+least|over|mindestens)\b", value, re.I) or "+" in value else ""
+            normalized = f"{numbers[0]}{minimum_suffix} years"
+        else:
+            continue
+        candidates.append((score, match.start(), normalized))
     if not candidates:
         return None
     return max(candidates, key=lambda item: (item[0], -item[1]))[2]
@@ -389,3 +398,18 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
             "company_name": _text(job.get("organization")) or _text(job.get("organization_name")) or "Unknown organization",
             "title": _text(job.get("title")), "description": description, "department": _text(job.get("department")),
             **loc, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
+
+def normalize_theirstack(job: dict[str, Any]) -> dict[str, Any]:
+    company = job.get("company") if isinstance(job.get("company"), dict) else {}
+    location = _first(job.get("location"), job.get("job_location"), job.get("locations"))
+    if isinstance(location, list): location = location[0] if location else None
+    description = _first(job.get("description"), job.get("description_text"), job.get("job_description"))
+    salary = _first(job.get("salary_range"), job.get("salary"), job.get("compensation"))
+    meta = _metadata(job, "theirstack", description=description, employment_type=_first(job.get("employment_status"), job.get("employment_type")), experience_level=_first(job.get("job_seniority"), job.get("experience_level")), experience_required=_first(job.get("experience_required"), _experience_from_text(description)), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), salary_range=salary, skills_required=_first(job.get("skills"), job.get("technologies")), created_at=parse_ats_datetime(_first(job.get("posted_at"), job.get("discovered_at"))))
+    meta["structured_data"]["theirstack"] = _json_safe(job)
+    meta["structured_data"]["source"] = _first(job.get("source"), job.get("source_domain"), job.get("job_board"))
+    meta["structured_data"]["source_domain"] = _first(job.get("source_domain"), job.get("domain"))
+    loc = _location_parts(location)
+    if not loc.get("country"):
+        loc["country"] = _first(job.get("job_country_code"), job.get("country_code"), job.get("job_country"))
+    return {"ats_job_id": _ats_id(_first(job.get("id"), job.get("job_id"))), "ats_type": "theirstack", "company_name": _text(_first(job.get("company_name"), company.get("name"))) or "Unknown company", "title": _first(job.get("job_title"), job.get("title")), "description": description, **loc, "job_url": _valid_http_url(_first(job.get("final_url"), job.get("url"), job.get("job_url"))), "salary_range": salary, **meta}
