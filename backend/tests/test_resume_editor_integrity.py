@@ -52,6 +52,20 @@ def test_resume_editor_empty_collections_are_not_delete_commands():
     assert payload["projects"] == []
 
 
+def test_education_merge_handles_none_without_erasing_existing_entries():
+    existing = [{"degree": "B.Tech", "institution": "MIT"}]
+
+    assert server._merge_education(existing, None) == existing
+    assert server._merge_education(None, None) == []
+    assert server._merge_education(existing, []) == existing
+
+
+def test_education_merge_adds_valid_incoming_entry_when_existing_is_none():
+    incoming = [{"degree": "MBA", "institution": "Stanford"}]
+
+    assert server._merge_education(None, incoming) == incoming
+
+
 def test_project_merge_preserves_partial_and_null_fields():
     existing = {
         "name": "Resume Parser",

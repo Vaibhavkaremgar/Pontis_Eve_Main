@@ -8201,10 +8201,10 @@ def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
     return _normalize_projects(projects)
 
 
-def _merge_education(existing: list, new_items: list) -> list:
+def _merge_education(existing: Any, new_items: Any) -> list:
     """Merge education lists, deduplicating by normalized degree + institution."""
     if not new_items:
-        return existing
+        return [dict(e) for e in (existing or []) if isinstance(e, dict)]
 
     def _education_key(entry: dict) -> str:
         degree = _normalize_profile_key(entry.get("degree") or entry.get("field_of_study") or "")
@@ -8220,7 +8220,7 @@ def _merge_education(existing: list, new_items: list) -> list:
                 merged_entry[field] = new_value
         return merged_entry
 
-    merged = [dict(e) for e in existing if isinstance(e, dict)]
+    merged = [dict(e) for e in (existing or []) if isinstance(e, dict)]
     index_by_key: dict[str, int] = {}
     for idx, entry in enumerate(merged):
         index_by_key[_education_key(entry)] = idx
@@ -10278,7 +10278,12 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     next_values.update(supplied)
     for field in ("name", "email", "phone", "location", "headline", "bio"):
         next_values[field] = str(next_values.get(field) or "").strip()
+    # Partial/stale editor payloads may contain null for untouched collections
+    # (notably the missing-skills Save Changes flow).  Null is not a deletion
+    # command; retain the complete current profile before validating/merging.
     for field in ("skills", "work_experience", "education", "certifications", "projects"):
+        if next_values.get(field) is None:
+            next_values[field] = existing_values[field]
         if not isinstance(next_values.get(field), list):
             raise HTTPException(status_code=422, detail=f"{field} must be a list.")
     # Resume Editor payloads are partial or stale snapshots by design. Empty
