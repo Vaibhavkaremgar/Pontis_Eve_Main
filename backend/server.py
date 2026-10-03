@@ -9751,7 +9751,7 @@ async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, 
         async with SessionLocal() as db:
             if rec_id:
                 inspected = await db.execute(text("""
-                    SELECT c.claim_id, c.candidate_id, c.consumed_at,
+                    SELECT c.id, c.candidate_id, c.consumed_at,
                            c.entitlement_id, e.candidate_id AS entitlement_candidate_id,
                            e.job_id, cjr.job_id AS canonical_job_id
                     FROM candidate_resume_fix_credit_claims c
