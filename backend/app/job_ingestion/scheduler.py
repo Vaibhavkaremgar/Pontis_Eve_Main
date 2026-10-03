@@ -81,6 +81,7 @@ async def sync_jobs() -> None:
     from app.job_ingestion.collect_jobs import JobCollector
     from app.job_ingestion.job_ingestion_service import upsert_ats_job
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
 
     SessionLocal = _get_session_local()
     collector = JobCollector()
@@ -267,6 +268,7 @@ async def sync_theirstack_jobs() -> dict[str, int]:
                 row = existing.first()
                 if row and row[0] != "theirstack":
                     stats["skipped"] += 1; continue
+                job = await extract_missing_job_skills(job)
                 await upsert_ats_job(db, job); stats["updated" if row else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc); await db.rollback()

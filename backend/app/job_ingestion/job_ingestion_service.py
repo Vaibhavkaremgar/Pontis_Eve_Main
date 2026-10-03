@@ -68,7 +68,8 @@ async def upsert_ats_job(
         await db.execute(
             text("""
                 UPDATE job_descriptions
-                SET job_url = CASE WHEN :is_global_provider AND CAST(:job_url AS TEXT) IS NOT NULL THEN CAST(:job_url AS TEXT) ELSE COALESCE(job_url, CAST(:job_url AS TEXT)) END,
+                SET title = COALESCE(NULLIF(CAST(:title AS TEXT), ''), title),
+                    job_url = CASE WHEN :is_global_provider AND CAST(:job_url AS TEXT) IS NOT NULL THEN CAST(:job_url AS TEXT) ELSE COALESCE(job_url, CAST(:job_url AS TEXT)) END,
                     description = CASE WHEN CAST(:refresh_description AS BOOLEAN) THEN CAST(:description AS TEXT) ELSE description END,
                     requirements = CASE WHEN CAST(:refresh_description AS BOOLEAN) OR (requirements IS NULL AND CAST(:requirements AS TEXT) IS NOT NULL) THEN CAST(:requirements AS TEXT) ELSE requirements END,
                     department = COALESCE(CAST(:department AS VARCHAR), department), location = COALESCE(CAST(:location AS VARCHAR), location),
@@ -87,7 +88,7 @@ async def upsert_ats_job(
                 WHERE id = CAST(:id AS UUID)
             """),
             {
-                "id": job_id, "job_url": incoming_job_url, "description": incoming_description,
+                "id": job_id, "title": job.get("title"), "job_url": incoming_job_url, "description": incoming_description,
                 "is_global_provider": ats_type == "fantastic",
                 "refresh_description": refresh_description, **_metadata_params(job),
             },
