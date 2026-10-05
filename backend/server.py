@@ -4797,6 +4797,46 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         return "No profile completion guidance available."
 
 
+_CONTRADICTORY_PROFILE_COMPLETION_RE = re.compile(
+    r"(?:"
+    r"\b100\s*%\s*(?:fully\s+)?complete\b"
+    r"|\b(?:your\s+|the\s+)?profile\s+(?:is|should\s+now\s+be|is\s+already)\s+"
+    r"(?:already\s+)?(?:fully\s+)?complete\b"
+    r"|\bthere\s+(?:are|is)\s+no\s+missing\s+(?:details?|fields?)\b"
+    r"|\bno\s+(?:profile\s+)?(?:details?|fields?)\s+(?:are\s+)?missing\b"
+    r"|\bnothing(?:\s+else)?\s+is\s+missing\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_profile_completion_claim(reply: str, strength_detail: Optional[dict]) -> str:
+    """Replace only completion claims contradicted by authoritative strength data."""
+    if not isinstance(reply, str) or not isinstance(strength_detail, dict):
+        return reply
+    try:
+        percent = int(round(float(strength_detail.get("percent"))))
+    except (TypeError, ValueError):
+        return reply
+    if percent >= 90 or not _CONTRADICTORY_PROFILE_COMPLETION_RE.search(reply):
+        return reply
+
+    items = (strength_detail.get("ninety_percent_guidance") or {}).get("items") or []
+    first_item = next((item for item in items if isinstance(item, dict)), {})
+    action = str(first_item.get("action") or "").strip().rstrip(".")
+    title = str(first_item.get("title") or "").strip().lower()
+    if action:
+        next_step = f" A useful next step is to {action[0].lower() + action[1:]}."
+    elif title:
+        next_step = f" The biggest remaining opportunity is strengthening your {title}."
+    else:
+        next_step = " Adding stronger project, experience, or career-direction detail can improve it."
+    return (
+        f"Your core profile details are filled in, but your Profile Strength is currently {percent}%. "
+        f"It can still be strengthened to reach 90%.{next_step}"
+    )
+
+
 # Conversational prefixes that must never appear as list items in structured fields.
 _CONVERSATIONAL_LIST_PREFIXES = re.compile(
     r"^(?:"
@@ -5201,6 +5241,28 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
                 "I've updated your profile." if sanitized else "",
                 _correct_profile_categories(sanitized, candidate_message) or None,
             )
+
+    # Groq may wrap the update envelope in a fenced block while also adding
+    # conversational prose. Remove only fences that parse as a JSON object
+    # with a top-level profile_updates dict; unrelated JSON remains visible.
+    embedded_updates = None
+    embedded_match = None
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", reply_text, flags=re.IGNORECASE):
+        try:
+            fenced_data = json.loads(match.group(1).strip())
+        except (TypeError, ValueError):
+            continue
+        if isinstance(fenced_data, dict) and isinstance(fenced_data.get("profile_updates"), dict):
+            embedded_updates = fenced_data["profile_updates"]
+            embedded_match = match
+            break
+    if embedded_match is not None:
+        clean = (reply_text[:embedded_match.start()] + reply_text[embedded_match.end():]).strip()
+        clean = re.sub(r"\n{3,}", "\n\n", clean)
+        sanitized = _sanitize_profile_updates(embedded_updates or {})
+        if deletion:
+            sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
+        return clean, _correct_profile_categories(sanitized, candidate_message) or None
 
     if candidate_message and _is_acknowledgement_only(candidate_message):
         clean = reply_text.split(marker_start, 1)[0].strip() if marker_start in reply_text else reply_text.strip()
@@ -7533,6 +7595,19 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
             await _advance_voice_intake_from_chat(request.candidate_id, last_user.content)
         except Exception as e:
             logger.warning("Chat voice intake advance failed: %s", e)
+
+    # Enforce consistency only when the model makes a clear completion claim.
+    # Load the post-update profile so a turn that genuinely crosses 90% is not
+    # rewritten using the pre-turn score.
+    if request.candidate_id and _CONTRADICTORY_PROFILE_COMPLETION_RE.search(clean_reply):
+        try:
+            authoritative_profile = await _get_candidate_profile_payload(request.candidate_id)
+            clean_reply = _sanitize_profile_completion_claim(
+                clean_reply,
+                authoritative_profile.get("profile_strength_detail"),
+            )
+        except Exception as e:
+            logger.warning("Chat completion-claim consistency check failed: %s", e)
 
     # Persist the exact completed turn synchronously.  Deferred saves could
     # finish out of order and let a later request load/replay a stale assistant

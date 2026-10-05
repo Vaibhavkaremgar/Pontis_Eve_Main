@@ -354,3 +354,53 @@ class TestRequiredFieldsVersusProfileStrength:
             'Profile is at 40% (below 90%). Ask this one work-preference question naturally: '
             '"What kinds of roles are you looking for?"'
         )
+
+
+class TestCompletionClaimConsistency:
+    @staticmethod
+    def _detail(percent=87):
+        return {
+            "percent": percent,
+            "ninety_percent_guidance": {
+                "items": [{
+                    "title": "Project evidence",
+                    "action": "Add another relevant project",
+                    "question": "Tell me about another relevant project and what you contributed.",
+                }],
+            },
+        }
+
+    def test_100_percent_complete_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "Your profile should now be 100% complete.", self._detail()
+        )
+        assert "100% complete" not in result
+        assert "currently 87%" in result
+
+    def test_spaced_100_percent_complete_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "Your profile should now be 100 % complete.", self._detail()
+        )
+        assert "100 % complete" not in result
+        assert "currently 87%" in result
+
+    def test_no_missing_details_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "There are no missing details left.", self._detail()
+        )
+        assert "no missing details" not in result.lower()
+        assert "currently 87%" in result
+
+    def test_normal_response_is_unchanged(self):
+        reply = "Your remote and full-time preferences are saved."
+        assert server._sanitize_profile_completion_claim(reply, self._detail()) == reply
+
+    def test_completion_claim_at_90_or_above_is_unchanged(self):
+        reply = "Your profile is complete."
+        assert server._sanitize_profile_completion_claim(reply, self._detail(90)) == reply
+
+    def test_replacement_uses_existing_ninety_percent_guidance(self):
+        result = server._sanitize_profile_completion_claim(
+            "Nothing is missing from your profile.", self._detail()
+        )
+        assert "add another relevant project" in result.lower()
