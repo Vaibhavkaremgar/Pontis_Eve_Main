@@ -31,6 +31,7 @@ import asyncio
 import html
 import textwrap
 import mimetypes
+from importlib.metadata import PackageNotFoundError, version as package_version
 from app.job_ingestion.lifecycle import candidate_visible_where
 from location_matching import country_eligible
 from skill_normalization import canonical_skill_key
@@ -84,6 +85,39 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _groq_sdk_version() -> str:
+    try:
+        return package_version("openai")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _log_groq_chat_diagnostic(request_id: str, kwargs: dict[str, Any]) -> None:
+    """Log only non-sensitive metadata for the primary candidate chat call."""
+    logger.info(
+        "GROQ_CHAT_DIAGNOSTIC request_id=%s model=%s has_tools=%s "
+        "has_tool_choice=%s has_functions=%s has_function_call=%s "
+        "has_response_format=%s sdk_version=%s",
+        request_id, kwargs.get("model"), "tools" in kwargs,
+        "tool_choice" in kwargs, "functions" in kwargs,
+        "function_call" in kwargs, "response_format" in kwargs,
+        _groq_sdk_version(),
+    )
+
+
+def _log_groq_chat_exception(exc: Exception, request_id: str) -> None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    provider_request_id = getattr(exc, "request_id", None) or headers.get("x-request-id")
+    logger.error(
+        "GROQ_CHAT_DIAGNOSTIC_ERROR request_id=%s exception_type=%s "
+        "status_code=%s error_code=%s error_type=%s provider_request_id=%s",
+        request_id, type(exc).__name__,
+        getattr(exc, "status_code", None) or getattr(response, "status_code", None),
+        getattr(exc, "code", None), getattr(exc, "type", None), provider_request_id,
+    )
 
 
 @app.middleware("http")
@@ -4706,7 +4740,6 @@ def _build_profile_completion_guidance(profile: dict) -> str:
     When profile strength < 90%, returns the single most important next question.
     When >= 90%, returns a note to stop asking profile questions.
     """
-    from profile_strength_service import calculate_profile_strength_v2
     raw_data = profile.get("raw_data") or {}
     if isinstance(raw_data, str):
         try:
@@ -4714,7 +4747,12 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         except Exception:
             raw_data = {}
     try:
-        result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
+        # _normalize_for_frontend calculates this once for the request. Reuse
+        # that immutable result instead of scoring the same snapshot again.
+        result = profile.get("profile_strength_detail")
+        if not isinstance(result, dict):
+            from profile_strength_service import calculate_profile_strength_v2
+            result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
         percent = result.get("percent", 0)
         if percent >= 90:
             return f"Profile is at {percent}% (90%+ reached). Do NOT ask any more profile-completion questions."
@@ -5123,6 +5161,10 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
     # Detect deletion intent from the candidate's own message first
     deletion = _detect_deletion_intent(candidate_message) if candidate_message else None
 
+    if candidate_message and _is_acknowledgement_only(candidate_message):
+        clean = reply_text.split(marker_start, 1)[0].strip() if marker_start in reply_text else reply_text.strip()
+        return clean, None
+
     if marker_start not in reply_text:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
         sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
@@ -5453,15 +5495,26 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             entry = {k: v for k, v in statement.items() if k != "current"}
             updates["work_experience"] = [entry]
 
+    degree_pattern = r"(?:master'?s?|bachelor'?s?|mba|mca|m\.?tech|m\.?sc|m\.?a|b\.?tech|b\.?e|b\.?sc|b\.?a|ph\.?d)"
+    education_prefix = rf"\b(?:done\s+(?:with\s+)?|completed\s+|finished\s+|studied\s+|graduated\s+(?:from\s+)?|earned\s+|have\s+(?:a\s+|an\s+)?|i\s+have\s+(?:a\s+|an\s+)?|i\s+)?(?P<degree>{degree_pattern})(?:\s+degree)?\s+(?:at|from|in)\s+"
     education_match = re.search(
-        r"\b(?:completed|studied|graduated(?:\s+from)?|earned)\s+(?:my\s+|a\s+|an\s+)?(?P<degree>(?:master'?s|bachelor'?s|mba|m\.?(?:tech|sc|a)|b\.?(?:tech|sc|a)|ph\.?d)[^,.]*?)\s+(?:at|from)\s+(?P<institution>[^,.!?;]+)",
+        education_prefix + r"(?P<institution>[^,.!?;]+?)\s+in\s+(?P<year>\d{4})\s*$",
         text, re.I,
-    )
+    ) or re.search(education_prefix + r"(?P<institution>[^,.!?;]+?)\s*$", text, re.I)
+    if not education_match:
+        education_match = re.search(
+            rf"\bgraduated\s+from\s+(?P<institution>[^,.!?;]+?)(?:\s+in\s+(?P<year>\d{{4}}))?$",
+            text, re.I,
+        )
     if education_match:
+        degree = _normalize_profile_text(education_match.groupdict().get("degree") or "")
+        institution = _normalize_profile_text(education_match.group("institution"))
+        year = _normalize_profile_text(education_match.groupdict().get("year") or "")
         updates["education"] = [
             {
-                "degree": _normalize_profile_text(education_match.group("degree")),
-                "institution": _normalize_profile_text(education_match.group("institution")),
+                "degree": degree,
+                "institution": institution,
+                **({"end_date": year} if year else {}),
             }
         ]
 
@@ -5598,6 +5651,24 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
     ) and any(field in result for field in typed_fields):
         result.pop("additional_information", None)
     return _sanitize_profile_updates(result)
+
+
+_ACKNOWLEDGEMENT_ONLY = re.compile(
+    r"^\s*(?:already\s+added|done|i\s+already\s+(?:told|provided)\s+(?:you|that)|"
+    r"i\s+mentioned\s+that\s+before|(?:that'?s|this\s+is)\s+already\s+in\s+my\s+profile|"
+    r"added\s+them\s+already)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_acknowledgement_only(message: str) -> bool:
+    """Return true only for standalone conversational acknowledgements."""
+    if not isinstance(message, str) or not message.strip():
+        return False
+    # Never suppress a message containing explicit profile evidence.
+    if _infer_profile_updates_from_message(message):
+        return False
+    return bool(_ACKNOWLEDGEMENT_ONLY.fullmatch(message))
 
 
 VALID_UPDATE_FIELDS = {
@@ -7310,22 +7381,33 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     # the frontend did not send (i.e. messages older than the current request window).
     messages = [{"role": "system", "content": system_prompt}] + combined[-CHAT_WINDOW_SIZE:]
 
+    groq_diagnostic_request_id = str(uuid.uuid4())
+    groq_request_kwargs = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+    }
+    _log_groq_chat_diagnostic(groq_diagnostic_request_id, groq_request_kwargs)
     try:
-        resp = await openai_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.7,
-        )
+        resp = await openai_client.chat.completions.create(**groq_request_kwargs)
         raw_reply = resp.choices[0].message.content or ""
     except Exception as e:
+        _log_groq_chat_exception(e, groq_diagnostic_request_id)
         logger.exception("LLM chat failure")
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
     clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
 
+    # An acknowledgement is conversational state, not new profile evidence.
+    # Apply this backend guard before the optional multi-field extractor so an
+    # accidental LLM update cannot reach persistence or ledger synchronization.
+    acknowledgement_only = _is_acknowledgement_only(last_user.content)
+    if acknowledgement_only:
+        profile_updates = None
+
     # Scan the candidate's answer against ALL missing fields, not just the one asked.
     # This ensures a single answer that covers multiple questions saves all of them.
-    if request.candidate_id and (missing_fields or missing_preference_fields) and last_user.content.strip():
+    if (not acknowledgement_only) and request.candidate_id and (missing_fields or missing_preference_fields) and last_user.content.strip():
         # Skip [PROFILE_QUESTION] instructions — they are not candidate answers
         candidate_text = last_user.content
         if not candidate_text.startswith("[PROFILE_QUESTION]"):

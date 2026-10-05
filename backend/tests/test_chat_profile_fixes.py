@@ -287,6 +287,56 @@ def test_degree_is_never_persisted_as_a_certification_even_if_llm_misclassifies_
     assert "certifications" not in updates
 
 
+def test_common_education_phrasings_override_wrong_llm_certification_category():
+    cases = [
+        ("done my BTech in CMR Engineering College in 2022", "BTech", "CMR Engineering College"),
+        ("completed my BTech at CMR", "BTech", "CMR"),
+        ("I completed my BTech from CMR Engineering College", "BTech", "CMR Engineering College"),
+        ("I graduated from XYZ University", "", "XYZ University"),
+        ("I have an MBA from XYZ", "MBA", "XYZ"),
+    ]
+    wrong = '<<<PROFILE_UPDATES>>>\n{"profile_updates":{"certifications":["degree record"]}}\n<<<END_UPDATES>>>'
+    for message, degree, institution in cases:
+        _, updates = server._extract_profile_updates(wrong, message)
+        assert updates["education"][0]["institution"] == institution
+        assert updates["education"][0]["degree"] == degree
+        assert "certifications" not in updates
+
+
+def test_legitimate_certification_remains_certification():
+    _, updates = server._extract_profile_updates("", "I hold an AWS certification")
+    assert updates == {"certifications": ["AWS"]}
+
+
+def test_acknowledgement_only_messages_cannot_produce_updates():
+    reply = '<<<PROFILE_UPDATES>>>\n{"profile_updates":{"certifications":["AWS"]}}\n<<<END_UPDATES>>>'
+    for message in (
+        "already added", "done", "I already told you", "added them already",
+        "I already provided that", "I mentioned that before", "that's already in my profile",
+    ):
+        assert server._is_acknowledgement_only(message)
+        _, updates = server._extract_profile_updates(reply, message)
+        assert updates is None or updates == {}
+
+
+def test_real_profile_information_is_not_suppressed_as_acknowledgement():
+    for message in (
+        "done my BTech in CMR Engineering College in 2022",
+        "I completed my MBA in 2020",
+        "I have AWS certification",
+        "I worked at Infosys for 3 years",
+    ):
+        assert not server._is_acknowledgement_only(message)
+
+
+def test_profile_strength_result_is_reused_by_completion_guidance():
+    candidate = _make_candidate()
+    profile = server._normalize_for_frontend(candidate)
+    with mock.patch("profile_strength_service.calculate_profile_strength_v2", side_effect=AssertionError("duplicate scoring")):
+        guidance = server._build_profile_completion_guidance(profile)
+    assert "Profile is at" in guidance
+
+
 def test_partial_conversational_records_are_created_and_merged_when_completed_later():
     state = _make_candidate(education=[], work_experience=[])
     _run_apply(state, {"education": [{"degree": "Master's", "institution": "CMR University"}]})
