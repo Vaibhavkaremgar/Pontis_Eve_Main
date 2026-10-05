@@ -57,6 +57,25 @@ class TestProfileStrengthGuidanceAnswers:
 
 
 class TestImmediateExplicitProfileUpdates:
+    def test_standalone_json_profile_updates_are_not_shown_to_candidate(self):
+        reply = '{"profile_updates": {"remote_preference": "Remote", "employment_types": ["Full-time"]}}'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "I've updated your profile."
+        assert updates == {
+            "remote_preference": "Remote",
+            "employment_types": ["Full-time"],
+        }
+
+    def test_fenced_standalone_json_profile_updates_are_not_shown_to_candidate(self):
+        reply = '```json\n{"profile_updates": {"open_to_opportunities": true}}\n```'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "I've updated your profile."
+        assert updates == {"open_to_opportunities": True}
+
     def test_add_skills_command_is_ready_for_persistence_without_llm(self):
         message = "Add Docker and Redis to my skills"
 

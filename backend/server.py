@@ -5161,6 +5161,26 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
     # Detect deletion intent from the candidate's own message first
     deletion = _detect_deletion_intent(candidate_message) if candidate_message else None
 
+    # Some providers/models ignore the marker contract and return the update
+    # envelope as the entire assistant message (occasionally inside a JSON
+    # code fence). Never expose that machine-readable payload to the chat UI.
+    standalone_json = reply_text.strip()
+    if standalone_json.startswith("```") and standalone_json.endswith("```"):
+        standalone_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", standalone_json, flags=re.IGNORECASE).strip()
+    if standalone_json.startswith("{") and standalone_json.endswith("}"):
+        try:
+            standalone_data = json.loads(standalone_json)
+        except (TypeError, ValueError):
+            standalone_data = None
+        if isinstance(standalone_data, dict) and isinstance(standalone_data.get("profile_updates"), dict):
+            sanitized = _sanitize_profile_updates(standalone_data["profile_updates"])
+            if deletion:
+                sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
+            return (
+                "I've updated your profile." if sanitized else "",
+                _correct_profile_categories(sanitized, candidate_message) or None,
+            )
+
     if candidate_message and _is_acknowledgement_only(candidate_message):
         clean = reply_text.split(marker_start, 1)[0].strip() if marker_start in reply_text else reply_text.strip()
         return clean, None
