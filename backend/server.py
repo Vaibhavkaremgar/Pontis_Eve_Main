@@ -4553,6 +4553,7 @@ BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
 - PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
 - PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 90% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE backend-selected question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking proactive profile questions once the guidance says the profile is at 90%+.
+- COMPLETENESS WORDING: An empty MISSING FIELDS list means the candidate's core required details are present; it does NOT mean Profile Strength is 100%. When PROFILE COMPLETION GUIDANCE says the profile is below 90%, never say the profile is "complete", "100% complete", or has "no missing details". Instead, say the core details are present and naturally use the supplied strengthening area/question.
 - PREFERENCE COMPLETION: When PROFILE COMPLETION GUIDANCE asks about a work preference, ask that exact question naturally. Never expose field keys, internal guidance, or a profile score/percentage to the candidate.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
@@ -4771,7 +4772,27 @@ def _build_profile_completion_guidance(profile: dict) -> str:
                 f"Profile is at {percent}% (below 90%). "
                 f"Ask this ONE question to help complete the profile: \"{next_actions[0]}\""
             )
-        return f"Profile is at {percent}% (below 90%). Ask about any missing fields listed above."
+        # Required-field completeness is intentionally narrower than Profile
+        # Strength. When all required fields are present, use the scorer's
+        # existing partial-gap guidance instead of implying 100% completion.
+        partial_items = (result.get("ninety_percent_guidance") or {}).get("items") or []
+        first_partial = next(
+            (item for item in partial_items if isinstance(item, dict) and item.get("question")),
+            None,
+        )
+        if first_partial:
+            area = first_partial.get("title") or "profile evidence"
+            return (
+                f"Profile is at {percent}% (below 90%). Core required details may already be present, "
+                f"but Profile Strength can still improve in {area}. Do not describe the profile as "
+                f"complete or 100% complete. Ask this ONE strengthening question naturally: "
+                f"\"{first_partial['question']}\""
+            )
+        return (
+            f"Profile is at {percent}% (below 90%). Core required details may already be present, "
+            "but do not describe the profile as complete or 100% complete. Explain that meaningful "
+            "evidence or career-direction detail can still strengthen it."
+        )
     except Exception:
         return "No profile completion guidance available."
 

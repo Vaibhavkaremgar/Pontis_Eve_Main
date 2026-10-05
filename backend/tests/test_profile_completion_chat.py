@@ -266,3 +266,91 @@ class TestGuidanceContract:
         """EVE_SYSTEM_TEMPLATE must contain the PROFILE COMPLETION behavior rule."""
         assert "PROFILE COMPLETION" in server.EVE_SYSTEM_TEMPLATE
         assert "90%" in server.EVE_SYSTEM_TEMPLATE
+
+
+class TestRequiredFieldsVersusProfileStrength:
+    def test_below_90_with_no_required_fields_never_claims_full_completion(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 87,
+                "recommended_next_actions": [],
+                "ninety_percent_guidance": {
+                    "items": [{
+                        "title": "Measured impact",
+                        "question": "What measurable result did your work achieve?",
+                    }],
+                },
+            },
+            "_prefs_row": {
+                "preferred_roles": ["Backend Engineer"],
+                "preferred_locations": ["Remote"],
+                "remote_preference": "Remote",
+                "notice_period": "Immediate",
+                "expected_salary": "Market rate",
+                "employment_types": ["Full-time"],
+                "preferred_industries": ["Technology"],
+                "willing_to_relocate": True,
+            },
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert "below 90%" in guidance
+        assert "Core required details may already be present" in guidance
+        assert "Do not describe the profile as complete or 100% complete" in guidance
+        assert 'never say the profile is "complete", "100% complete"' in server.EVE_SYSTEM_TEMPLATE
+
+    def test_below_90_uses_existing_partial_gap_guidance(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 87,
+                "recommended_next_actions": [],
+                "ninety_percent_guidance": {
+                    "items": [{
+                        "title": "Project evidence",
+                        "question": "Tell me about another relevant project and what you contributed.",
+                    }],
+                },
+            },
+            "_prefs_row": {
+                "preferred_roles": ["Backend Engineer"],
+                "preferred_locations": ["Remote"],
+                "remote_preference": "Remote",
+                "notice_period": "Immediate",
+                "expected_salary": "Market rate",
+                "employment_types": ["Full-time"],
+                "preferred_industries": ["Technology"],
+                "willing_to_relocate": True,
+            },
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert "Project evidence" in guidance
+        assert "Tell me about another relevant project" in guidance
+
+    def test_strength_100_keeps_fully_complete_stop_behavior(self):
+        guidance = server._build_profile_completion_guidance({
+            "profile_strength_detail": {"percent": 100},
+        })
+
+        assert guidance == (
+            "Profile is at 100% (90%+ reached). "
+            "Do NOT ask any more profile-completion questions."
+        )
+
+    def test_actual_missing_preference_keeps_existing_guidance(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 40,
+                "recommended_next_actions": ["Tell Eve what kind of role you are targeting"],
+            },
+            "_prefs_row": {},
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert guidance == (
+            'Profile is at 40% (below 90%). Ask this one work-preference question naturally: '
+            '"What kinds of roles are you looking for?"'
+        )
