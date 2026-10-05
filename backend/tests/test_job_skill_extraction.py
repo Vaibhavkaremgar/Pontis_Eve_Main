@@ -1,7 +1,11 @@
 import asyncio
+import json
+import sys
+import types
 
 from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
 from app.job_ingestion.normalize import normalize_greenhouse, normalize_lever, normalize_ashby, normalize_fantastic
+from skill_normalization import canonical_skill, canonical_skill_key
 
 
 def test_go_is_extracted_only_in_programming_language_contexts():
@@ -100,3 +104,40 @@ def test_invalid_or_unavailable_llm_output_does_not_create_garbage(monkeypatch):
     job = {"ats_job_id": "x", "title": "Engineer", "description": "Build systems", "requirements": ""}
     result = asyncio.run(extract_missing_job_skills(job))
     assert result.get("skills_required") is None
+
+
+def test_provider_and_llm_skills_are_monotonically_enriched(monkeypatch):
+    class Completions:
+        async def create(self, **_kwargs):
+            message = types.SimpleNamespace(content=json.dumps({"skills": ["Python", "FastAPI", "Docker", "AWS"]}))
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Completions()))
+    monkeypatch.setitem(sys.modules, "groq_client", types.SimpleNamespace(GroqClientPool=lambda: client))
+    job = {"ats_job_id": "f", "title": "Engineer", "description": "Build APIs", "requirements": "",
+           "skills": ["Python", "FastAPI", "PostgreSQL"], "skills_required": ["Python", "FastAPI", "PostgreSQL"],
+           "structured_data": {}}
+    result = asyncio.run(extract_missing_job_skills(job))
+    assert result["skills_required"] == ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS"]
+    assert result["structured_data"]["skill_extraction"]["provider_skills"] == ["Python", "FastAPI", "PostgreSQL"]
+
+
+def test_llm_smaller_result_cannot_reduce_existing_skills(monkeypatch):
+    class Completions:
+        async def create(self, **_kwargs):
+            message = types.SimpleNamespace(content=json.dumps({"skills": ["Python"]}))
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Completions()))
+    monkeypatch.setitem(sys.modules, "groq_client", types.SimpleNamespace(GroqClientPool=lambda: client))
+    original = ["Python", "FastAPI", "PostgreSQL", "Docker"]
+    job = {"ats_job_id": "f", "title": "Engineer", "description": "Build APIs", "requirements": "",
+           "skills": original[:], "skills_required": original[:], "structured_data": {}}
+    assert asyncio.run(extract_missing_job_skills(job))["skills_required"] == original
+
+
+def test_safe_aliases_and_non_equivalences():
+    assert {canonical_skill(value) for value in ("Postgres", "PostgreSQL", "postgresql database")} == {"PostgreSQL"}
+    assert canonical_skill("GCP") == "Google Cloud Platform"
+    assert canonical_skill("ReactJS") == "React"
+    for left, right in (("Java", "JavaScript"), ("Python", "PyTorch"), ("SQL", "PostgreSQL"),
+                        ("Docker", "Kubernetes"), ("AWS", "AWS Lambda")):
+        assert canonical_skill_key(left) != canonical_skill_key(right)

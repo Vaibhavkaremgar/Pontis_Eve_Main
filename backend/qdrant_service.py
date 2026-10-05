@@ -1,6 +1,7 @@
 import os
 import logging
 from typing import List, Tuple
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def _get_client():
     return _client
 
 
-def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[str, float]]:
+def search_job_chunks(query_vector: List[float], limit: int = 50, country_code: str | None = None) -> List[Tuple[str, float]]:
     """
     Search the job_chunks Qdrant collection using COSINE similarity.
     Returns a list of (jobId, score) tuples, deduplicated by jobId (best score kept).
@@ -39,6 +40,7 @@ def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[
             query=query_vector,
             limit=limit,
             with_payload=True,
+            query_filter=Filter(must=[FieldCondition(key="country_code", match=MatchValue(value=country_code))]) if country_code else None,
         )
         results = response.points
     else:
@@ -47,6 +49,7 @@ def search_job_chunks(query_vector: List[float], limit: int = 50) -> List[Tuple[
             query_vector=query_vector,
             limit=limit,
             with_payload=True,
+            query_filter=Filter(must=[FieldCondition(key="country_code", match=MatchValue(value=country_code))]) if country_code else None,
         )
     logger.info("[matching] Qdrant raw hits=%d requested_limit=%d", len(results), limit)
 

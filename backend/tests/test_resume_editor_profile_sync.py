@@ -419,7 +419,7 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
 
     async def get_guidance(candidate_id, rec_id):
         assert (candidate_id, rec_id) == ("candidate-1", "rec-1")
-        return {"match_score": 90.0}
+        return {"match_score": 90.0, "missing_skills": ["Rust"]}
 
     async def get_job_context(candidate_id, rec_id):
         assert (candidate_id, rec_id) == ("candidate-1", "rec-1")
@@ -487,7 +487,7 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
     response = asyncio.run(server.improve_job_match(
         "candidate-1",
         "rec-1",
-        server.JobMatchImprovementRequest(profile_updates={"skills": ["Python", "Rust"]}),
+        server.JobMatchImprovementRequest(profile_updates={"skills": ["Python", "Rust"]}, confirmed_skills=["Rust"]),
     ))
 
     assert response["match_score"] == 84.0

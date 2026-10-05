@@ -91,6 +91,7 @@ export default function ResumeEditor() {
   const [error, setError] = React.useState("");
   const [remainingCredits] = React.useState(initialRemainingCredits === null ? null : Number(initialRemainingCredits));
   const [generating, setGenerating] = React.useState(Boolean(params.get("selected_sections") || params.get("selected_skills")));
+  const [confirmedSkills, setConfirmedSkills] = React.useState(selectedSkills);
   // ContentEditable blur and button click can share one event turn. Keep the
   // current parsed list outside render state so Save never posts a stale array.
   const skillsDraftRef = React.useRef([]);
@@ -126,6 +127,7 @@ export default function ResumeEditor() {
     const current = list(skillsDraftRef.current || resume?.skills);
     if (current.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase())) return;
     const next = [...current, skill];
+    setConfirmedSkills((old) => old.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase()) ? old : [...old, skill]);
     skillsDraftRef.current = next;
     update("skills", next);
     setGuidance((old) => old ? { ...old, missing_skills: list(old.missing_skills).filter((item) => plain(item).trim().toLowerCase() !== plain(skill).trim().toLowerCase()) } : old);
@@ -141,7 +143,7 @@ export default function ResumeEditor() {
   const save = async () => {
     setSaving(true); setError("");
     try {
-      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: fixCreditClaimId });
+      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: fixCreditClaimId, confirmed_skills: confirmedSkills });
       setResult(data);
       // The API re-reads candidates.skills after saving and returns that
       // canonical profile. Keep the document in sync with it so a combined

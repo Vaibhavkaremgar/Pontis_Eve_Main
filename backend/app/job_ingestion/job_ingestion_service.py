@@ -34,7 +34,7 @@ async def upsert_ats_job(
     # Check whether this ATS job already exists.
     result = await db.execute(
         text("""
-            SELECT id, job_url, description, requirements
+            SELECT id, job_url, description, requirements, skills, skills_required
             FROM job_descriptions
             WHERE ats_type = :ats_type
               AND ats_job_id = :ats_job_id
@@ -54,6 +54,11 @@ async def upsert_ats_job(
         existing_job_url = existing[1] if len(existing) > 1 else None
         existing_description = existing[2] if len(existing) > 2 else ""
         existing_requirements = existing[3] if len(existing) > 3 else ""
+        from skill_normalization import merge_skills
+        existing_skills = existing[4] if len(existing) > 4 else []
+        existing_required = existing[5] if len(existing) > 5 else []
+        job["skills"] = merge_skills(existing_skills, job.get("skills"), canonical_display=True)
+        job["skills_required"] = merge_skills(existing_required, job.get("skills_required"), canonical_display=True)
         incoming_job_url = _valid_http_url(job.get("job_url"))
         incoming_description = str(job.get("description") or "").strip()
         # Refresh only when the newly collected JD contains strictly more

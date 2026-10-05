@@ -213,38 +213,94 @@ async def _sync_jobs_guarded() -> None:
         logger.info("[job-scheduler] Job sync completed")
 
 
-async def sync_fantastic_jobs() -> dict[str, int]:
-    """Sync Fantastic independently of company_registry and other ATS sources."""
+async def sync_fantastic_jobs() -> dict:
+    """Sync both bounded Fantastic active feeds through the shared persistence path."""
     from app.job_ingestion.connectors.fantastic import FantasticClient
     from app.job_ingestion.job_ingestion_service import upsert_ats_job
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
     if os.getenv("FANTASTIC_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
     logger.info("[fantastic] starting sync")
-    try:
-        raw_jobs = await FantasticClient().fetch_active_ats()
-    except Exception as exc:
-        logger.error("[fantastic] sync fetch failed: %s", exc)
-        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 1}
+    client = FantasticClient()
+    feeds = (("active-ats", client.fetch_active_ats), ("active-jb", client.fetch_active_job_boards))
     from app.job_ingestion.normalize import normalize_fantastic
-    jobs = [normalize_fantastic(job) for job in raw_jobs]
-    stats = {"fetched": len(raw_jobs), "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
-    logger.info("[fantastic] normalized %d jobs", len(jobs))
+    from location_matching import country_code
+    per_feed = {}
+    accepted = []
+    seen_ids, seen_urls, seen_fingerprints = set(), set(), set()
+    for feed_name, fetch in feeds:
+        feed_stats = {"fetched": 0, "accepted_india": 0, "rejected_country": 0,
+                      "rejected_expired": 0, "duplicates": 0, "pages_requested": 0, "requests_made": 0}
+        try:
+            raw_jobs = await fetch()
+            feed_stats.update({key: value for key, value in getattr(client, "last_fetch_stats", {}).items()
+                               if key in {"fetched", "pages_requested", "requests_made"}})
+        except Exception as exc:
+            logger.error("[fantastic] %s fetch failed: %s", feed_name, exc)
+            feed_stats["failed"] = 1
+            per_feed[feed_name] = feed_stats
+            continue
+        for raw in raw_jobs:
+            job = normalize_fantastic(raw)
+            job.setdefault("structured_data", {})["fantastic_feed"] = feed_name
+            if country_code(job.get("country")) != "IN":
+                feed_stats["rejected_country"] += 1
+                continue
+            valid_through = job.get("valid_through")
+            if valid_through is not None and valid_through < datetime.now(valid_through.tzinfo or IST):
+                feed_stats["rejected_expired"] += 1
+                continue
+            identity = (job.get("ats_job_id") or "").strip()
+            url = (job.get("job_url") or "").strip().casefold()
+            fingerprint = tuple(str(job.get(key) or "").strip().casefold()
+                                for key in ("company_name", "title", "city", "state", "country"))
+            duplicate = ((identity and identity in seen_ids) or (url and url in seen_urls)
+                         or (all(fingerprint) and fingerprint in seen_fingerprints))
+            if duplicate:
+                feed_stats["duplicates"] += 1
+                continue
+            if identity: seen_ids.add(identity)
+            if url: seen_urls.add(url)
+            if all(fingerprint): seen_fingerprints.add(fingerprint)
+            feed_stats["accepted_india"] += 1
+            accepted.append((feed_name, job))
+        per_feed[feed_name] = feed_stats
+
+    stats = {"fetched": sum(s["fetched"] for s in per_feed.values()),
+             "accepted": sum(s["accepted_india"] for s in per_feed.values()),
+             "rejected": sum(s["rejected_country"] for s in per_feed.values()),
+             "duplicates": sum(s["duplicates"] for s in per_feed.values()),
+             "inserted": 0, "updated": 0, "skipped": 0,
+             "failed": sum(s.get("failed", 0) for s in per_feed.values()),
+             "pages_requested": sum(s["pages_requested"] for s in per_feed.values()),
+             "requests_made": sum(s["requests_made"] for s in per_feed.values())}
     SessionLocal = _get_session_local()
     async with SessionLocal() as db:
-        for job in jobs:
+        for feed_name, job in accepted:
             if not job["ats_job_id"] or not job["title"] or not job["job_url"]:
                 stats["skipped"] += 1; continue
             try:
-                existing = await db.execute(text("SELECT id FROM job_descriptions WHERE ats_type='fantastic' AND ats_job_id=:ats_job_id LIMIT 1"), {"ats_job_id": job["ats_job_id"]})
+                existing = await db.execute(text("""
+                    SELECT id, ats_job_id FROM job_descriptions
+                    WHERE ats_type='fantastic' AND (ats_job_id=:ats_job_id OR job_url=:job_url)
+                    ORDER BY CASE WHEN ats_job_id=:ats_job_id THEN 0 ELSE 1 END LIMIT 1
+                """), {"ats_job_id": job["ats_job_id"], "job_url": job["job_url"]})
+                existing_row = existing.first()
+                if existing_row and str(existing_row[1] or "") != str(job["ats_job_id"]):
+                    stats["duplicates"] += 1
+                    per_feed[feed_name]["duplicates"] += 1
+                    continue
                 job = await extract_missing_job_skills(job)
                 await upsert_ats_job(db, job)
-                stats["updated" if existing.first() else "inserted"] += 1
+                stats["updated" if existing_row else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1
                 _log_fantastic_upsert_error(exc, job)
                 await db.rollback()
-    logger.info("[fantastic] sync completed fetched=%(fetched)d inserted=%(inserted)d updated=%(updated)d skipped=%(skipped)d failed=%(failed)d embedding=%(inserted)d", stats)
+    for feed_name, feed_stats in per_feed.items():
+        logger.info("[fantastic] feed=%s stats=%s", feed_name, feed_stats)
+    logger.info("[fantastic] sync completed stats=%s", stats)
+    stats["feeds"] = per_feed
     return stats
 
 async def sync_theirstack_jobs() -> dict[str, int]:

@@ -62,24 +62,31 @@ class FantasticClient:
     def __init__(self, config: FantasticConfig | None = None, client: httpx.AsyncClient | None = None):
         self.config = config or FantasticConfig.from_env()
         self.client = client
+        self._requests_used = 0
 
-    async def fetch_active_ats(self) -> list[dict[str, Any]]:
+    async def _fetch_feed(self, endpoint: str) -> list[dict[str, Any]]:
         if not self.config.api_key:
             raise FantasticAPIError("FANTASTIC_JOBS_API_KEY is not configured")
         owned_client = self.client is None
         client = self.client or httpx.AsyncClient(timeout=self.config.timeout)
         jobs: list[dict[str, Any]] = []
+        requests_made = 0
+        pages_requested = 0
         try:
-            for page in range(min(self.config.max_pages, self.config.max_requests_per_run)):
+            available_requests = max(0, self.config.max_requests_per_run - self._requests_used)
+            for page in range(min(self.config.max_pages, available_requests)):
                 remaining = self.config.max_jobs_per_run - len(jobs)
                 if remaining <= 0:
                     break
                 params = {"time_frame": self.config.time_frame, "limit": min(self.config.limit, remaining),
                           "offset": page * self.config.limit, "description_format": "text", "location": "India"}
-                logger.info("[fantastic] requesting active-ats page=%d request=%d", page + 1, page + 1)
+                logger.info("[fantastic] requesting %s page=%d request=%d", endpoint, page + 1, page + 1)
+                pages_requested += 1
                 try:
-                    response = await client.get(f"{BASE_URL}/active-ats", params=params,
+                    response = await client.get(f"{BASE_URL}/{endpoint}", params=params,
                                                 headers={"Authorization": f"Bearer {self.config.api_key}"})
+                    requests_made += 1
+                    self._requests_used += 1
                 except httpx.TimeoutException as exc:
                     raise FantasticAPIError("Fantastic request timed out") from exc
                 except httpx.RequestError as exc:
@@ -92,10 +99,12 @@ class FantasticClient:
                     retry_after = response.headers.get("Retry-After")
                     try: delay = min(float(retry_after or 0), 30.0)
                     except ValueError: delay = 0
-                    if delay and page == 0:
+                    if delay and page == 0 and self._requests_used < self.config.max_requests_per_run:
                         await asyncio.sleep(delay)
-                        response = await client.get(f"{BASE_URL}/active-ats", params=params,
+                        response = await client.get(f"{BASE_URL}/{endpoint}", params=params,
                                                     headers={"Authorization": f"Bearer {self.config.api_key}"})
+                        requests_made += 1
+                        self._requests_used += 1
                     if response.status_code == 429:
                         raise FantasticAPIError("Fantastic rate limit reached")
                 if response.status_code in {401, 403}:
@@ -110,7 +119,16 @@ class FantasticClient:
                 logger.info("[fantastic] fetched %d jobs (total=%d)", len(batch), len(jobs))
                 if len(batch) < params["limit"]:
                     break
-            return jobs[:self.config.max_jobs_per_run]
+            result = jobs[:self.config.max_jobs_per_run]
+            self.last_fetch_stats = {"endpoint": endpoint, "pages_requested": pages_requested,
+                                     "requests_made": requests_made, "fetched": len(result)}
+            return result
         finally:
             if owned_client:
                 await client.aclose()
+
+    async def fetch_active_ats(self) -> list[dict[str, Any]]:
+        return await self._fetch_feed("active-ats")
+
+    async def fetch_active_job_boards(self) -> list[dict[str, Any]]:
+        return await self._fetch_feed("active-jb")

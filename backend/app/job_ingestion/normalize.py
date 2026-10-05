@@ -369,9 +369,7 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
     locations = _first(job.get("locations_derived"), job.get("locations_alt"))
     if isinstance(locations, (list, tuple)):
         locations = ", ".join(str(item) for item in locations if item)
-    skills = job.get("ai_key_skills")
-    if isinstance(skills, str):
-        skills = [part.strip() for part in re.split(r"[,;/|]", skills) if part.strip()]
+    skills = [*_skill_list(job.get("ai_key_skills")), *_skill_list(job.get("ai_keywords"))]
     salary = _first(job.get("salary_range"), job.get("salary"), job.get("ai_salary_range"))
     description = _first(job.get("description_text"), job.get("description"))
     extraction_text = "\n".join(dict.fromkeys(filter(None, (
@@ -388,16 +386,29 @@ def normalize_fantastic(job: dict[str, Any]) -> dict[str, Any]:
         created_at=parse_ats_datetime(job.get("date_posted")))
     useful = ("source", "source_type", "source_domain", "source_slug", "domain_derived", "date_posted",
               "date_created", "date_valid_through", "ai_employment_type", "ai_experience_level",
-              "ai_requirements_summary", "ai_work_arrangement", "ai_key_skills")
+              "ai_requirements_summary", "ai_core_responsibilities", "ai_work_arrangement",
+              "ai_key_skills", "ai_keywords", "ai_taxonomies", "ai_education")
     meta["structured_data"].update({key: job[key] for key in useful if job.get(key) not in (None, "", [], {})})
     meta["structured_data"]["fantastic"] = {key: value for key, value in job.items() if key not in {"description_text", "description"}}
     meta["valid_through"] = parse_ats_datetime(job.get("date_valid_through"))
+    if not meta.get("responsibilities") and _text(job.get("ai_core_responsibilities")):
+        meta["responsibilities"] = _text(job.get("ai_core_responsibilities"))
     meta["locations"] = [_location_parts(v) for v in (job.get("locations_derived") or job.get("locations_alt") or [])] if isinstance((job.get("locations_derived") or job.get("locations_alt")), list) else []
     loc = _location_parts(locations)
+    countries = job.get("countries_derived") or job.get("countries")
+    if isinstance(countries, (list, tuple)):
+        countries = next((value for value in countries if _text(value)), None)
+    if _text(countries):
+        loc["country"] = _text(countries)
+    from location_matching import country_code
+    normalized_country_code = country_code(loc.get("country"))
+    if normalized_country_code == "IN":
+        loc["country"] = "India"
     return {"ats_job_id": _ats_id(job.get("id")), "ats_type": "fantastic",
             "company_name": _text(job.get("organization")) or _text(job.get("organization_name")) or "Unknown organization",
             "title": _text(job.get("title")), "description": description, "department": _text(job.get("department")),
-            **loc, "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
+            **loc, "country_code": normalized_country_code,
+            "job_url": _valid_http_url(job.get("url")), "salary_range": meta["salary_range"], **meta}
 
 def normalize_theirstack(job: dict[str, Any]) -> dict[str, Any]:
     company_object = job.get("company_object") if isinstance(job.get("company_object"), dict) else {}

@@ -32,6 +32,8 @@ import html
 import textwrap
 import mimetypes
 from app.job_ingestion.lifecycle import candidate_visible_where
+from location_matching import country_eligible
+from skill_normalization import canonical_skill_key
 
 try:  # pragma: no cover - optional dependency
     from reportlab.lib import colors
@@ -138,6 +140,7 @@ class JobMatchImprovementRequest(BaseModel):
     """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
     fix_credit_claim_id: Optional[str] = None
+    confirmed_skills: List[str] = Field(default_factory=list)
 
 
 class RazorpayVerificationRequest(BaseModel):
@@ -9295,6 +9298,10 @@ async def get_opportunities(candidate_id: str):
                     jd.title,
                     jd.company_name,
                     jd.location,
+                    jd.city,
+                    jd.state,
+                    jd.country,
+                    jd.remote,
                     jd.description,
                     jd.requirements,
                     jd.skills
@@ -9307,6 +9314,10 @@ async def get_opportunities(candidate_id: str):
             {"cid": candidate_id},
         )
         results = rows.mappings().fetchall()
+    # Defense in depth: recommendations are revalidated against the current
+    # candidate location so stale rows cannot bypass the country boundary.
+    results = [r for r in results if country_eligible(candidate, dict(r))]
+    total_matching_jobs = min(total_matching_jobs, len(results))
     return [
         {
             "id": str(r["id"]),
@@ -10333,7 +10344,7 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
         symbols such as ``+`` and ``#`` so distinct skills (for example C++
         and C#) are not collapsed together.
         """
-        return re.sub(r"[\s._-]+", "", clean(value).casefold())
+        return canonical_skill_key(clean(value))
 
     def skill_name(skill: Any) -> str:
         return clean(skill.get("name") if isinstance(skill, dict) else skill)
@@ -10585,6 +10596,20 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
     await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id, rec_id)
+    proposed_skills = request.profile_updates.get("skills") if isinstance(request.profile_updates, dict) else None
+    if isinstance(proposed_skills, list):
+        existing_keys = {canonical_skill_key(skill) for skill in _candidate_profile_skills(before)}
+        missing_by_key = {canonical_skill_key(skill): skill for skill in guidance.get("missing_skills", [])}
+        confirmed_keys = {canonical_skill_key(skill) for skill in request.confirmed_skills}
+        unsupported_confirmations = confirmed_keys - set(missing_by_key)
+        if unsupported_confirmations:
+            raise HTTPException(status_code=422, detail="Confirmed skills must come from this job's current missing-skill list.")
+        added_missing = {
+            canonical_skill_key(skill) for skill in proposed_skills
+            if canonical_skill_key(skill) not in existing_keys and canonical_skill_key(skill) in missing_by_key
+        }
+        if not added_missing.issubset(confirmed_keys):
+            raise HTTPException(status_code=422, detail="Confirm each missing job skill before adding it to your resume.")
     # Save the complete, candidate-edited uploaded-resume representation into
     # both its parsed snapshot and the canonical candidate profile.
     profile_updates = request.profile_updates

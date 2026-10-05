@@ -12,6 +12,8 @@ from candidate_text import build_candidate_text
 from embedding_service import generate_embedding
 from qdrant_service import search_job_chunks
 from app.job_ingestion.lifecycle import candidate_visible_where
+from location_matching import country_eligible, location_preference_score, candidate_location
+from skill_normalization import canonical_skill, canonical_skill_key
 
 logger = logging.getLogger(__name__)
 
@@ -129,21 +131,21 @@ def _evidence_weighted_skills_score(
                 skill.get("name") or skill.get("title") or skill.get("skill")
                 if isinstance(skill, dict) else skill
             )
-            if value and _normalize(value) not in {_normalize(item) for item in explicit_required}:
+            if value and canonical_skill_key(value) not in {canonical_skill_key(item) for item in explicit_required}:
                 explicit_required.append(value)
     if explicit_required:
-        candidate_text = " ".join(candidate_skills)
+        candidate_text = " ".join(canonical_skill(skill) for skill in candidate_skills)
         candidate_tokens = _phrase_set(candidate_text)
         hits = sum(
             base_weight for required in explicit_required
-            if _term_in_text(_normalize(required), candidate_text, candidate_tokens)
+            if _term_in_text(_normalize(canonical_skill(required)), candidate_text, candidate_tokens)
         )
         return min(hits / len(explicit_required), 1.0)
 
     text_tokens = _phrase_set(job_text)
     hits = sum(
         base_weight for s in candidate_skills
-        if s and _term_in_text(_normalize(s), job_text, text_tokens)
+        if s and _term_in_text(_normalize(canonical_skill(s)), job_text, text_tokens)
     )
     return min(hits / len(candidate_skills), 1.0)
 
@@ -344,7 +346,7 @@ def _skills_score(candidate_skills: List[str], job_text: str) -> float:
     if not candidate_skills:
         return 0.0
     text_tokens = _phrase_set(job_text)
-    hits = sum(1 for s in candidate_skills if s and _term_in_text(_normalize(s), job_text, text_tokens))
+    hits = sum(1 for s in candidate_skills if s and _term_in_text(_normalize(canonical_skill(s)), job_text, text_tokens))
     return min(hits / len(candidate_skills), 1.0)
 
 
@@ -517,6 +519,7 @@ def _job_text(job_title: str, job_description: str, job_requirements: Any = "", 
                 skill_parts.append(_normalize_text(skill.get("name") or skill.get("title") or skill.get("skill")))
             else:
                 skill_parts.append(_normalize_text(skill))
+        skill_parts.extend(canonical_skill(skill) for skill in list(skill_parts))
         parts.append(", ".join(part for part in skill_parts if part))
     elif job_skills:
         parts.append(_normalize_text(job_skills))
@@ -576,7 +579,7 @@ def _count_skill_matches(candidate_skills: List[str], job_text: str) -> int:
     if not candidate_skills:
         return 0
     text_tokens = _phrase_set(job_text)
-    return sum(1 for skill in candidate_skills if skill and _term_in_text(_normalize(skill), job_text, text_tokens))
+    return sum(1 for skill in candidate_skills if skill and _term_in_text(_normalize(canonical_skill(skill)), job_text, text_tokens))
 
 
 def _job_is_eligible(signals: Dict[str, Any], candidate_years: float, job_title: str, job_description: str, job_requirements: Any = "", job_skills: Any = None) -> bool:
@@ -687,6 +690,9 @@ def _salary_number(value: Any) -> float | None:
 def _preference_eligibility(signals: Dict[str, Any], job: Dict[str, Any], candidate_years: float) -> Tuple[bool, List[str]]:
     """Apply only explicit constraints. Unknown job metadata remains eligible."""
     reasons: List[str] = []
+    # Country is an eligibility boundary, never a ranking signal.
+    if signals.get("_candidate") is not None and not country_eligible(signals.get("_candidate", {}), job):
+        reasons.append("job_country_ineligible")
     mode = _job_work_mode(job)
     if _remote_only(signals.get("remote_preference")) and mode in ("onsite", "hybrid"):
         reasons.append("remote_only_job_not_remote")
@@ -721,6 +727,8 @@ def _experience_fit_score(candidate_years: float, job_text: str) -> float:
 def _preference_score(signals: Dict[str, Any], job: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
     """Average only preferences for which the job supplies comparable metadata."""
     scored: Dict[str, float] = {}
+    if signals.get("_candidate"):
+        scored["country_location"] = location_preference_score(signals["_candidate"], job)
     mode = _job_work_mode(job)
     if signals.get("remote_preference") and mode:
         desired = _normalize_text(signals["remote_preference"]).lower()
@@ -838,6 +846,7 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "expected_salary": preferences.get("expected_salary") or "",
         "willing_to_relocate": preferences.get("willing_to_relocate"),
         "total_experience_years": _candidate_total_experience_years(candidate),
+        "_candidate": candidate,
     }
 
 
@@ -1153,7 +1162,7 @@ def _hybrid_score(
     candidate_skills = signals.get("skills") or []
     components["missing_required_skills"] = [
         skill for skill in required_skills if skill and not any(
-            _normalize(skill) == _normalize(candidate_skill)
+            canonical_skill_key(skill) == canonical_skill_key(candidate_skill)
             for candidate_skill in candidate_skills if candidate_skill
         )
     ]
@@ -1186,6 +1195,7 @@ async def refresh_candidate_job_matches(
     # Read target intent before retrieval; it is also reused by the existing
     # eligibility and hybrid ranking logic below.
     signals = _build_candidate_signals(candidate)
+    candidate_country = candidate_location(candidate)["country_code"]
     candidate_text = build_candidate_text(candidate)
     if not candidate_text.strip():
         logger.info("[matching] Candidate %s has no profile text — skipping", candidate_id)
@@ -1193,7 +1203,7 @@ async def refresh_candidate_job_matches(
 
     # Preserve the existing broad candidate-semantic retrieval.
     query_vector = generate_embedding(candidate_text)
-    job_scores = search_job_chunks(query_vector, limit=QDRANT_TOP_K)
+    job_scores = search_job_chunks(query_vector, limit=QDRANT_TOP_K, country_code=candidate_country or None)
     logger.info("[matching] candidate=%s broad_qdrant_results=%d", candidate_id, len(job_scores))
 
     # An explicit preferred role receives an independent, intent-only path.
@@ -1207,7 +1217,7 @@ async def refresh_candidate_job_matches(
             candidate_id, target_role_query, signals["target_roles"],
         )
         target_role_scores = search_job_chunks(
-            generate_embedding(target_role_query), limit=QDRANT_TOP_K
+            generate_embedding(target_role_query), limit=QDRANT_TOP_K, country_code=candidate_country or None
         )
         logger.info("[matching] candidate=%s target_role_qdrant_results=%d", candidate_id, len(target_role_scores))
 

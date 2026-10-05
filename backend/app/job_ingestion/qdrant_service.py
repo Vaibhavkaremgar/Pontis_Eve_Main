@@ -3,6 +3,8 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from dotenv import load_dotenv
+from location_matching import country_code
+from skill_normalization import merge_skills, canonical_skill
 
 load_dotenv()
 
@@ -79,6 +81,14 @@ def upsert_job_embedding(job_id: str, embedding: list[float], job: dict, *, rein
                     "title": job.get("title"),
                     "company_name": job.get("company_name"),
                     "ats_type": job.get("ats_type"),
+                    "country": job.get("country"),
+                    "country_code": country_code(job.get("country")),
+                    "city": job.get("city"),
+                    "state": job.get("state"),
+                    "location": job.get("location"),
+                    "remote": job.get("remote"),
+                    "skills": merge_skills(job.get("skills_required"), job.get("skills")),
+                    "canonical_skills": [canonical_skill(value) for value in merge_skills(job.get("skills_required"), job.get("skills"))],
                     "embedding_version": EMBEDDING_VERSION,
                     "embedding_model": EMBEDDING_MODEL_NAME,
                 },

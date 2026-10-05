@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from app.job_ingestion.normalize import _normalize_skill_values, _html_text
+from skill_normalization import merge_skills, canonical_skill_key
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,8 @@ _SYSTEM = (
 )
 
 async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
-    """Shared semantic extraction for every ATS; native values are fallback only."""
+    """Monotonically enrich provider skills with optional semantic extraction."""
+    original = merge_skills(job.get("skills_required"), job.get("skills"))
     jd = _html_text("\n".join(str(job.get(key) or "") for key in ("title", "description", "requirements", "responsibilities")))
     if not jd.strip():
         return job
@@ -32,7 +34,8 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(response.choices[0].message.content or "{}")
         if not isinstance(payload, dict):
             raise ValueError("LLM returned non-object JSON")
-        skills = _normalize_skill_values(payload.get("skills"))
+        llm_skills = _normalize_skill_values(payload.get("skills"))
+        skills = merge_skills(original, llm_skills, canonical_display=True)
         if skills:
             job["skills_required"] = skills
             job["skills"] = skills
@@ -46,7 +49,20 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
         if not job.get("employment_type") and isinstance(payload.get("employment_type"), str) and payload["employment_type"].strip():
             job["employment_type"] = payload["employment_type"].strip()
         if isinstance(job.get("structured_data"), dict):
-            job["structured_data"]["llm_extraction"] = {"skills": skills, "experience_required": job.get("experience_required"), "salary_range": job.get("salary_range"), "employment_type": job.get("employment_type")}
+            provenance: dict[str, list[str]] = {}
+            for source_name, values in (("provider", original), ("llm", llm_skills)):
+                for value in values:
+                    key = canonical_skill_key(value)
+                    if key:
+                        provenance.setdefault(key, []).append(source_name)
+            job["structured_data"]["llm_extraction"] = {"skills": llm_skills, "experience_required": job.get("experience_required"), "salary_range": job.get("salary_range"), "employment_type": job.get("employment_type")}
+            job["structured_data"]["skill_extraction"] = {
+                "provider_skills": original, "llm_skills": llm_skills,
+                "final_skills": skills, "provenance": provenance,
+            }
     except Exception as exc:
         logger.warning("[job-skills] LLM extraction failed for ats_job_id=%s: %s", job.get("ats_job_id"), exc)
+        if original:
+            job["skills_required"] = original
+            job["skills"] = original
     return job
