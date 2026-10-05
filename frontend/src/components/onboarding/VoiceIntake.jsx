@@ -189,7 +189,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     [firstName, resolvedCandidateId, candidateProfile]
   );
 
-  const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute } = useVapi({
+  const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute, callId } = useVapi({
     publicKey: PUBLIC_KEY,
     assistantId: ASSISTANT_ID,
     assistantOverrides,
@@ -213,6 +213,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         final: turn.final !== false,
       })),
       candidate_id: resolvedCandidateId,
+      vapi_call_id: callId.current || null,
+      transcript_revision: String(transcript.length),
     };
 
     const generation = progressGenerationRef.current;
@@ -230,7 +232,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         clearTimeout(progressTimerRef.current);
       }
     };
-  }, [transcript, persistProgress, resolvedCandidateId]);
+  }, [transcript, persistProgress, resolvedCandidateId, callId]);
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {
@@ -265,6 +267,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
             final: turn.final !== false,
           })),
           candidate_id: resolvedCandidateId,
+          vapi_call_id: callId.current || null,
+          transcript_revision: String(transcript.length),
         });
       } catch (err) {
         console.warn("[voice-intake] interrupted-state save failed", err);
@@ -299,6 +303,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         transcript: transcriptText,
         voice_notes: transcript.map((t) => ({ role: t.role, text: t.text })),
         candidate_id: resolvedCandidateId,
+        vapi_call_id: callId.current || null,
       })
       .then((res) => {
         console.log("[voice-intake] navigating to summary");

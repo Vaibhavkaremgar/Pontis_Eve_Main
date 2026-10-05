@@ -107,6 +107,25 @@ async def reject_empty_voice_transcript_early(request: StarletteRequest, call_ne
     return await call_next(request)
 
 
+@app.middleware("http")
+async def enforce_candidate_route_ownership(request: StarletteRequest, call_next):
+    """Protect every /candidate/{id}/ resource, including newly added routes.
+
+    Document/image view routes retain their existing form-token handling because
+    browser navigation cannot attach an Authorization header.
+    """
+    match = re.match(r"^/api/candidate/([0-9a-fA-F-]{36})(?:/|$)", request.url.path)
+    view_route = request.url.path.endswith("/view")
+    if match and not view_route:
+        try:
+            _verify_candidate_session_token(
+                _get_bearer_token(request.headers.get("authorization")), match.group(1)
+            )
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
+
 # ---------- Pydantic models ----------
 
 class ChatMessageIn(BaseModel):
@@ -1362,9 +1381,14 @@ def _verify_candidate_session_token(token: str, candidate_id: str) -> None:
 
 
 def _get_bearer_token(authorization: Optional[str]) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
+    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         return ""
     return authorization[7:].strip()
+
+
+def _authorize_candidate(candidate_id: str, authorization: Optional[str]) -> None:
+    """Enforce ownership for every browser-facing candidate-scoped operation."""
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
 
 
 def _verify_document_view_session(candidate_id: str, authorization: Optional[str], candidate_token: Optional[str]) -> None:
@@ -1590,6 +1614,8 @@ def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = Non
 
 def _apply_profile_strength_test_override(candidate: dict, result: dict) -> dict:
     """Apply the temporary, candidate-specific effective Profile Strength override."""
+    if os.environ.get("EVE_ENABLE_PROFILE_STRENGTH_TEST_OVERRIDE", "").strip().lower() not in {"1", "true", "yes"}:
+        return result
     if str(candidate.get("id") or candidate.get("candidate_id") or "") != "53a744f8-3292-4339-8533-f9a2f2f93e96":
         return result
 
@@ -3058,6 +3084,119 @@ async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
         await db.commit()
 
 
+INTAKE_TOPIC_PRIORITY = (
+    "current_role", "current_company", "experience_years", "skills",
+    "preferred_roles", "preferred_locations", "remote_preference",
+    "notice_period", "expected_salary", "education", "certifications", "projects",
+)
+_PROFILE_FIELD_TOPICS = {
+    "current_role": "current_role", "current_company": "current_company",
+    "experience_years": "experience_years", "skills": "skills",
+    "preferred_roles": "preferred_roles", "preferred_locations": "preferred_locations",
+    "remote_preference": "remote_preference", "notice_period": "notice_period",
+    "availability": "notice_period", "expected_salary": "expected_salary",
+    "education": "education", "certifications": "certifications", "projects": "projects",
+}
+
+
+def _stable_intake_topic(question: str) -> str:
+    q = _clean_str(question).lower()
+    rules = (
+        ("notice_period", ("notice period", "available to start", "availability")),
+        ("preferred_locations", ("preferred location", "where do you want to work", "cities", "locations")),
+        ("current_company", ("current company", "company do you work", "employer")),
+        ("current_role", ("current role", "current position", "role are you currently", "working as", "job title")),
+        ("experience_years", ("years of experience", "professional experience", "total experience")),
+        ("skills", ("skills", "technologies", "tools", "frameworks")),
+        ("preferred_roles", ("role would you", "role are you looking", "move into next", "target role")),
+        ("remote_preference", ("remote", "hybrid", "on-site", "onsite")),
+        ("expected_salary", ("salary", "compensation")),
+        ("education", ("education", "degree", "university", "college")),
+        ("certifications", ("certification", "certificate")),
+        ("projects", ("project", "responsibilities")),
+    )
+    for topic, needles in rules:
+        if any(needle in q for needle in needles):
+            return topic
+    return "conversation_" + hashlib.sha256(q.encode()).hexdigest()[:16]
+
+
+def _intake_answer_status(topic_id: str, answer: str) -> str:
+    value = _clean_str(answer)
+    if not value:
+        return "ASKED"
+    if topic_id == "experience_years" and not re.search(r"\b\d+(?:\.\d+)?\b", value):
+        return "PARTIALLY_ANSWERED"
+    if topic_id in {"skills", "projects", "education"} and len(value.split()) < 2:
+        return "PARTIALLY_ANSWERED"
+    return "ANSWERED"
+
+
+async def _upsert_intake_ledger(
+    candidate_id: str, topic_id: str, channel: str, question_text: str = "",
+    answer_text: str = "", source_event_id: Optional[str] = None,
+    status: Optional[str] = None, evidence_reference: Optional[str] = None,
+) -> None:
+    final_status = status or _intake_answer_status(topic_id, answer_text)
+    question_id = f"{topic_id}:canonical"
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            INSERT INTO candidate_intake_ledger
+                (candidate_id, topic_id, question_id, channel, question_text, answer_text,
+                 status, source_event_id, evidence_reference, asked_at, answered_at)
+            VALUES (:cid, :topic, :qid, :channel, NULLIF(:question, ''), NULLIF(:answer, ''),
+                    :status, :event_id, :evidence,
+                    CASE WHEN :question <> '' THEN now() ELSE NULL END,
+                    CASE WHEN :answer <> '' THEN now() ELSE NULL END)
+            ON CONFLICT (candidate_id, topic_id) DO UPDATE SET
+                channel = EXCLUDED.channel,
+                question_text = COALESCE(EXCLUDED.question_text, candidate_intake_ledger.question_text),
+                answer_text = COALESCE(EXCLUDED.answer_text, candidate_intake_ledger.answer_text),
+                status = CASE
+                    WHEN candidate_intake_ledger.status = 'ANSWERED' AND EXCLUDED.status <> 'INVALIDATED'
+                    THEN 'ANSWERED' ELSE EXCLUDED.status END,
+                source_event_id = COALESCE(EXCLUDED.source_event_id, candidate_intake_ledger.source_event_id),
+                evidence_reference = COALESCE(EXCLUDED.evidence_reference, candidate_intake_ledger.evidence_reference),
+                asked_at = COALESCE(candidate_intake_ledger.asked_at, EXCLUDED.asked_at),
+                answered_at = COALESCE(EXCLUDED.answered_at, candidate_intake_ledger.answered_at),
+                updated_at = now()
+        """), {"cid": candidate_id, "topic": topic_id, "qid": question_id, "channel": channel,
+               "question": question_text, "answer": answer_text, "status": final_status,
+               "event_id": source_event_id, "evidence": evidence_reference})
+        await db.commit()
+
+
+async def _sync_voice_ledger(candidate_id: str, resume: dict, source_event_id: Optional[str] = None) -> None:
+    for turn in resume.get("completed_turns") or []:
+        question, answer = _clean_str(turn.get("question")), _clean_str(turn.get("answer"))
+        if question:
+            await _upsert_intake_ledger(candidate_id, _stable_intake_topic(question), "vapi",
+                                        question, answer, source_event_id, evidence_reference="raw_data.voice_intake.completed_turns")
+    pending = _clean_str(resume.get("current_question") or resume.get("next_question"))
+    if pending:
+        await _upsert_intake_ledger(candidate_id, _stable_intake_topic(pending), "vapi",
+                                    pending, "", source_event_id, status="ASKED")
+
+
+async def _sync_profile_updates_to_ledger(candidate_id: str, updates: dict, channel: str = "chat") -> None:
+    for field, value in (updates or {}).items():
+        topic = _PROFILE_FIELD_TOPICS.get(field)
+        if not topic or value in (None, "", []):
+            continue
+        answer = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+        await _upsert_intake_ledger(candidate_id, topic, channel, answer_text=answer,
+                                    status="ANSWERED", evidence_reference=f"candidate_profile.{field}")
+
+
+async def _load_intake_ledger(candidate_id: str) -> list[dict]:
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT topic_id, question_id, channel, question_text, answer_text, status
+            FROM candidate_intake_ledger WHERE candidate_id = :cid ORDER BY updated_at
+        """), {"cid": candidate_id})
+        return [dict(row) for row in result.mappings().fetchall()]
+
+
 def _voice_intake_resume_to_voice_notes(
     resume: dict,
     candidate_answer: str = "",
@@ -3880,26 +4019,29 @@ async def candidate_help(
 
 
 @api_router.get("/candidate/{candidate_id}/chat")
-async def get_candidate_chat(candidate_id: str):
+async def get_candidate_chat(candidate_id: str, authorization: Optional[str] = Header(default=None)):
     """Return the persisted short-term chat window for a candidate."""
+    _authorize_candidate(candidate_id, authorization)
     await _get_candidate_row(candidate_id)
     messages = await _load_chat_window(candidate_id)
     return {"messages": messages}
 
 
 @api_router.get("/candidate/{candidate_id}/profile")
-async def get_candidate_profile(candidate_id: str):
+async def get_candidate_profile(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     return await _get_candidate_profile_payload(candidate_id)
 
 
 
 
 @api_router.get("/candidate/{candidate_id}/profile/strength")
-async def get_candidate_profile_strength(candidate_id: str):
+async def get_candidate_profile_strength(candidate_id: str, authorization: Optional[str] = Header(default=None)):
     """
     Return the full structured Profile Strength and Recommendation Readiness
     for a candidate (Phase 9 output).
     """
+    _authorize_candidate(candidate_id, authorization)
     from profile_strength_service import calculate_profile_strength_v2
     candidate = await _get_candidate_row(candidate_id)
     candidate["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
@@ -4257,7 +4399,9 @@ async def _save_chat_window(candidate_id: str, session_id: str, messages: list[d
     if len(messages) > CHAT_WINDOW_SIZE:
         overflow = messages[: len(messages) - CHAT_PRUNE_KEEP]
         messages = messages[len(messages) - CHAT_PRUNE_KEEP :]
-        asyncio.ensure_future(_extract_and_merge_chat_facts(candidate_id, overflow))
+        # Complete compaction before dropping the source turns. This avoids an
+        # untracked fire-and-forget task losing candidate facts on shutdown.
+        await _extract_and_merge_chat_facts(candidate_id, overflow)
 
     async with SessionLocal() as db:
         existing = await db.execute(
@@ -4374,7 +4518,7 @@ PROFILE COMPLETION GUIDANCE: {profile_completion_guidance}
 BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
 - PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
-- PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 75% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking profile questions once the guidance says the profile is at 75%+.
+- PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 90% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE backend-selected question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking proactive profile questions once the guidance says the profile is at 90%+.
 - PREFERENCE COMPLETION: When PROFILE COMPLETION GUIDANCE asks about a work preference, ask that exact question naturally. Never expose field keys, internal guidance, or a profile score/percentage to the candidate.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
@@ -4559,8 +4703,8 @@ def _missing_canonical_preference_fields(candidate: dict, prefs_row: Optional[di
 def _build_profile_completion_guidance(profile: dict) -> str:
     """
     Return a short guidance string for Eve's system prompt.
-    When profile strength < 75%, returns the single most important next question.
-    When >= 75%, returns a note to stop asking profile questions.
+    When profile strength < 90%, returns the single most important next question.
+    When >= 90%, returns a note to stop asking profile questions.
     """
     from profile_strength_service import calculate_profile_strength_v2
     raw_data = profile.get("raw_data") or {}
@@ -4572,24 +4716,24 @@ def _build_profile_completion_guidance(profile: dict) -> str:
     try:
         result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
         percent = result.get("percent", 0)
-        if percent >= 75:
-            return f"Profile is at {percent}% (75%+ reached). Do NOT ask any more profile-completion questions."
+        if percent >= 90:
+            return f"Profile is at {percent}% (90%+ reached). Do NOT ask any more profile-completion questions."
         # Preference completion is based on the canonical reader, rather than
         # whichever legacy alias happened to be present in raw_data. Preserve
-        # the established 75% completion boundary for all chat behavior.
+        # the product-wide 90% completion boundary for chat and sidebar behavior.
         missing_preferences = _missing_canonical_preference_fields(
             profile, profile.get("_prefs_row")
         )
         if missing_preferences:
             question = _CANONICAL_PREFERENCE_QUESTIONS[missing_preferences[0]]
-            return f'Profile is at {percent}% (below 75%). Ask this one work-preference question naturally: "{question}"'
+            return f'Profile is at {percent}% (below 90%). Ask this one work-preference question naturally: "{question}"'
         next_actions = result.get("recommended_next_actions") or []
         if next_actions:
             return (
-                f"Profile is at {percent}% (below 75%). "
+                f"Profile is at {percent}% (below 90%). "
                 f"Ask this ONE question to help complete the profile: \"{next_actions[0]}\""
             )
-        return f"Profile is at {percent}% (below 75%). Ask about any missing fields listed above."
+        return f"Profile is at {percent}% (below 90%). Ask about any missing fields listed above."
     except Exception:
         return "No profile completion guidance available."
 
@@ -6959,9 +7103,11 @@ def _format_voice_intake_resume_context(resume: dict) -> str:
 
 
 @api_router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, authorization: Optional[str] = Header(default=None)):
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages is empty")
+    if request.candidate_id:
+        _authorize_candidate(request.candidate_id, authorization)
 
     last_user = next((m for m in reversed(request.messages) if m.role == "user"), None)
     if not last_user:
@@ -7008,6 +7154,18 @@ async def chat(request: ChatRequest):
             voice_resume = frontend_profile.get("voice_intake_resume") or _build_voice_intake_resume(frontend_profile)
             if voice_resume:
                 profile_context += "\n\nVOICE INTAKE RESUME:\n" + _format_voice_intake_resume_context(voice_resume)
+            ledger = await _load_intake_ledger(request.candidate_id)
+            if ledger:
+                answered = [item["topic_id"] for item in ledger if item["status"] == "ANSWERED"]
+                partial = [item["topic_id"] for item in ledger if item["status"] == "PARTIALLY_ANSWERED"]
+                pending = [item["topic_id"] for item in ledger if item["status"] == "ASKED"]
+                profile_context += (
+                    "\n\nAUTHORITATIVE INTAKE LEDGER:"
+                    f"\n- Answered topics: {', '.join(answered) or 'None'}"
+                    f"\n- Partially answered topics: {', '.join(partial) or 'None'}"
+                    f"\n- Pending topics: {', '.join(pending) or 'None'}"
+                    "\nNever ask an ANSWERED topic again. A PARTIALLY_ANSWERED topic may only receive a targeted follow-up."
+                )
             persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
             pass
@@ -7227,6 +7385,7 @@ async def chat(request: ChatRequest):
                     "Additional Information, so it was left unchanged."
                 )
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
+            await _sync_profile_updates_to_ledger(request.candidate_id, profile_updates, "chat")
         except Exception as e:
             logger.exception("Profile update failed: %s", e)
             clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
@@ -7285,12 +7444,16 @@ class VoiceCandidateIntakeRequest(BaseModel):
     transcript: str
     voice_notes: Optional[List[VoiceNote]] = None
     candidate_id: str  # validated server-side against DB
+    vapi_call_id: Optional[str] = None
+    provider_event_id: Optional[str] = None
 
 
 class VoiceCandidateIntakeProgressRequest(BaseModel):
     transcript: Optional[str] = None
     voice_notes: Optional[List[VoiceNote]] = None
     candidate_id: str
+    vapi_call_id: Optional[str] = None
+    transcript_revision: Optional[str] = None
 
 
 # ---------- Voice intake migration (idempotent) ----------
@@ -7309,6 +7472,52 @@ CREATE TABLE IF NOT EXISTS candidate_voice_intakes (
 
 CREATE_VOICE_INTAKES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_cvi_candidate ON candidate_voice_intakes(candidate_id)
+"""
+
+# Stable, cross-channel state.  A row is the latest state for one semantic
+# profile topic; wording and channel may change without creating a new topic.
+CREATE_CANDIDATE_INTAKE_LEDGER = """
+CREATE TABLE IF NOT EXISTS candidate_intake_ledger (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    topic_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('vapi', 'chat', 'system')),
+    question_text TEXT,
+    answer_text TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('NOT_ASKED','ASKED','ANSWERED','PARTIALLY_ANSWERED','SKIPPED','INVALIDATED')),
+    source_event_id TEXT,
+    evidence_reference TEXT,
+    asked_at TIMESTAMPTZ,
+    answered_at TIMESTAMPTZ,
+    supersedes UUID REFERENCES candidate_intake_ledger(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, topic_id)
+)
+"""
+CREATE_CANDIDATE_INTAKE_LEDGER_EVENT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_cil_source_event
+ON candidate_intake_ledger(candidate_id, source_event_id)
+WHERE source_event_id IS NOT NULL
+"""
+CREATE_VAPI_EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_voice_provider_events (
+    provider_event_id TEXT PRIMARY KEY,
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    vapi_call_id TEXT,
+    transcript_hash TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'processing',
+    processed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+CREATE_VAPI_EVENTS_CALL_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_cvpe_candidate_call
+ON candidate_voice_provider_events(candidate_id, vapi_call_id)
 """
 
 ALTER_CANDIDATE_JOB_RECS_ADD_REASON = """
@@ -7421,6 +7630,10 @@ async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER_EVENT_INDEX))
+        await db.execute(text(CREATE_VAPI_EVENTS_TABLE))
+        await db.execute(text(CREATE_VAPI_EVENTS_CALL_INDEX))
         await db.commit()
 
 
@@ -9037,7 +9250,7 @@ async def download_application_resume(candidate_id: str, rec_id: str):
 # ---------- Voice intake endpoint ----------
 
 @api_router.post("/voice/candidate-intake")
-async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
+async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authorization: Optional[str] = Header(default=None)):
     """
     Receive voice intake transcript, extract structured info, merge into candidate profile.
     candidate_id is validated against the DB — never trusted blindly from the browser.
@@ -9048,6 +9261,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     if not request.transcript or not request.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
     transcript = request.transcript.strip()
+    _authorize_candidate(request.candidate_id, authorization)
 
     # Reject malformed UUIDs before they reach the database driver (which may
     # otherwise surface a cast error as an internal server error).
@@ -9161,6 +9375,8 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         voice_data,
         voice_intake_state,
     )
+    await _sync_voice_ledger(request.candidate_id, voice_intake_state, request.provider_event_id)
+    await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
 
     # 6. Mark intake as completed only when the actual intake questions have all been answered.
     async with SessionLocal() as db:
@@ -9222,9 +9438,10 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
 
 @api_router.post("/voice/candidate-intake/progress")
-async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
+async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest, authorization: Optional[str] = Header(default=None)):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
     transcript = (request.transcript or "").strip()
+    _authorize_candidate(request.candidate_id, authorization)
     if not transcript and not request.voice_notes:
         raise HTTPException(status_code=400, detail="Transcript is empty.")
     candidate = await _get_candidate_row(request.candidate_id)
@@ -9251,6 +9468,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
+    await _sync_voice_ledger(request.candidate_id, resume)
+    await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
     resume_status = resume.get("status")
     if resume_status == "completed":
         logger.info(
@@ -11234,7 +11453,15 @@ async def mark_notification_read(candidate_id: str, notif_id: str):
 
 @api_router.post("/webhooks/vapi")
 async def vapi_webhook(request: StarletteRequest):
-    """Acknowledge VAPI events and finalize the intake on the terminal report."""
+    """Authenticate and idempotently process Vapi's authoritative terminal report."""
+    webhook_secret = os.environ.get("VAPI_WEBHOOK_SECRET", "").strip()
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Vapi webhook is not configured.")
+    supplied = request.headers.get("x-vapi-secret", "")
+    if not supplied:
+        supplied = _get_bearer_token(request.headers.get("authorization"))
+    if not hmac.compare_digest(supplied, webhook_secret):
+        raise HTTPException(status_code=401, detail="Invalid Vapi webhook signature.")
     try:
         payload = await request.json()
     except (TypeError, ValueError):
@@ -11245,7 +11472,7 @@ async def vapi_webhook(request: StarletteRequest):
     message = payload.get("message")
     message_type = message.get("type") if isinstance(message, dict) else None
     event_type = payload.get("type") or message_type
-    logger.info("Received VAPI webhook event: %s", event_type)
+    logger.info("Received authenticated VAPI webhook event: %s", event_type)
 
     # speech-update/conversation-update and other intermediate deliveries are
     # acknowledgements only.  VAPI's end-of-call-report is the terminal event.
@@ -11253,49 +11480,67 @@ async def vapi_webhook(request: StarletteRequest):
         event = message if isinstance(message, dict) else payload
         call = event.get("call") if isinstance(event.get("call"), dict) else {}
         metadata = call.get("metadata") or event.get("metadata") or {}
+        overrides = call.get("assistantOverrides") if isinstance(call.get("assistantOverrides"), dict) else {}
+        variable_values = overrides.get("variableValues") if isinstance(overrides.get("variableValues"), dict) else {}
         candidate_id = metadata.get("candidateId") or metadata.get("candidate_id")
+        candidate_id = candidate_id or variable_values.get("candidateId") or variable_values.get("candidate_id")
         artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
         transcript = artifact.get("transcript") or event.get("transcript")
-        ended_reason = call.get("endedReason") or event.get("endedReason")
+        call_id = str(call.get("id") or event.get("callId") or "").strip()
+        transcript = transcript if isinstance(transcript, str) else ""
+        transcript_hash = hashlib.sha256(transcript.encode()).hexdigest()
+        provider_event_id = str(
+            event.get("id") or payload.get("id") or
+            f"vapi:{call_id or 'unknown'}:{event_type}:{transcript_hash}"
+        )
 
         try:
             uuid.UUID(str(candidate_id))
         except (ValueError, AttributeError, TypeError):
             candidate_id = None
 
-        if candidate_id:
-            candidate = await _get_candidate_row(candidate_id)
-            raw_data = _parse_raw_data(candidate.get("raw_data")) if isinstance(candidate, dict) else {}
-            voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
-            should_complete = (
-                ended_reason == "silence-timed-out"
-                and str(voice_intake.get("status") or "").lower() == "completed"
-            )
-            terminal_status = "completed" if should_complete else "in_progress"
+        if candidate_id and transcript.strip():
             async with SessionLocal() as db:
                 result = await db.execute(
                     text("""
-                        UPDATE candidate_voice_intakes
-                        SET transcript = COALESCE(NULLIF(:transcript, ''), transcript),
-                            status = :status,
-                            completed_at = CASE WHEN :status = 'completed' THEN now() ELSE NULL END
-                        WHERE id = (
-                            SELECT id FROM candidate_voice_intakes
-                            WHERE candidate_id = :candidate_id
-                              AND status <> 'completed'
-                            ORDER BY created_at DESC
-                            LIMIT 1
-                        )
+                        INSERT INTO candidate_voice_provider_events
+                            (provider_event_id, candidate_id, vapi_call_id, transcript_hash, event_type, payload)
+                        VALUES (:event_id, :candidate_id, NULLIF(:call_id, ''), :hash, :event_type, CAST(:payload AS jsonb))
+                        ON CONFLICT (provider_event_id) DO NOTHING
+                        RETURNING provider_event_id
                     """),
-                    {
-                        "candidate_id": candidate_id,
-                        "transcript": transcript or "",
-                        "status": terminal_status,
-                    },
+                    {"event_id": provider_event_id, "candidate_id": candidate_id, "call_id": call_id,
+                     "hash": transcript_hash, "event_type": event_type,
+                     "payload": json.dumps({"type": event_type, "call_id": call_id})},
                 )
                 await db.commit()
-            if result.rowcount and should_complete:
-                _schedule_voice_intake_matching(candidate_id, terminal_status)
+            if not result.fetchone():
+                return {"status": "duplicate", "provider_event_id": provider_event_id}
+            try:
+                outcome = await candidate_voice_intake(
+                    VoiceCandidateIntakeRequest(
+                        transcript=transcript, candidate_id=candidate_id,
+                        vapi_call_id=call_id or None, provider_event_id=provider_event_id,
+                    ),
+                    authorization=f"Bearer {_issue_candidate_session_token(candidate_id)}",
+                )
+                async with SessionLocal() as db:
+                    await db.execute(text("""
+                        UPDATE candidate_voice_provider_events
+                        SET status = 'processed', processed_at = now()
+                        WHERE provider_event_id = :event_id
+                    """), {"event_id": provider_event_id})
+                    await db.commit()
+                return {"status": "processed", "provider_event_id": provider_event_id,
+                        "intake_status": outcome.get("status")}
+            except Exception:
+                async with SessionLocal() as db:
+                    await db.execute(text("""
+                        UPDATE candidate_voice_provider_events SET status = 'failed'
+                        WHERE provider_event_id = :event_id
+                    """), {"event_id": provider_event_id})
+                    await db.commit()
+                raise
     return {"status": "ok"}
 
 

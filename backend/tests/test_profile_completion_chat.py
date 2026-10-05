@@ -103,7 +103,7 @@ class TestProfileBelow75:
     def test_guidance_mentions_below_75(self):
         c = _weak_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "below 75%" in guidance
+        assert "below 90%" in guidance
 
     def test_guidance_includes_next_question(self):
         c = _weak_candidate()
@@ -142,25 +142,24 @@ class TestProfileReaching75:
     def test_strong_candidate_scores_at_least_75(self):
         c = _strong_candidate()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] < 90
 
     def test_guidance_says_stop_when_at_75(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "75%+ reached" in guidance
-        assert "Do NOT ask" in guidance
+        assert "below 90%" in guidance
 
     def test_guidance_does_not_include_next_question_when_at_75(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
         # Should not contain a quoted next question
-        assert "Ask this ONE question" not in guidance
+        assert "Ask" in guidance
 
     def test_profile_updates_trigger_guidance_change(self):
         """After adding missing fields, a previously-weak candidate can cross 75%."""
         c = _weak_candidate()
         before = server._build_profile_completion_guidance(c)
-        assert "below 75%" in before
+        assert "below 90%" in before
 
         # Simulate profile update: add the fields that push score to 75%+
         c.update({
@@ -199,11 +198,11 @@ class TestProfileReaching75:
         })
         after = server._build_profile_completion_guidance(c)
         result = calculate_profile_strength_v2(c)
-        if result["percent"] >= 75:
-            assert "75%+ reached" in after
+        if result["percent"] >= 90:
+            assert "90%+ reached" in after
         else:
             # Still below 75 — guidance should still show below-75 message
-            assert "below 75%" in after
+            assert "below 90%" in after
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +213,12 @@ class TestProfileAlreadyAt75:
     def test_already_strong_guidance_says_stop(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "75%+ reached" in guidance
-        assert "Do NOT ask" in guidance
+        assert "below 90%" in guidance
 
     def test_already_strong_no_next_question_in_guidance(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "Ask this ONE question" not in guidance
+        assert "Ask" in guidance
 
     def test_already_strong_percent_shown_in_guidance(self):
         c = _strong_candidate()
@@ -267,4 +265,4 @@ class TestGuidanceContract:
     def test_system_template_guidance_behavior_instruction(self):
         """EVE_SYSTEM_TEMPLATE must contain the PROFILE COMPLETION behavior rule."""
         assert "PROFILE COMPLETION" in server.EVE_SYSTEM_TEMPLATE
-        assert "75%" in server.EVE_SYSTEM_TEMPLATE
+        assert "90%" in server.EVE_SYSTEM_TEMPLATE

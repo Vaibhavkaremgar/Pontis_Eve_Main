@@ -1,6 +1,6 @@
 export function getProfileStrengthLabel(percent) {
-  if (percent >= 75) return "Strong";
-  if (percent >= 50) return "Developing";
+  if (percent >= 80) return "Strong";
+  if (percent >= 55) return "Developing";
   return "Building";
 }
 
