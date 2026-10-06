@@ -53,6 +53,33 @@ def test_client_paginates_with_caps():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await FantasticClient(FantasticConfig("key", limit=2, max_pages=3, max_jobs_per_run=3, max_requests_per_run=2), client).fetch_active_ats()
     assert len(asyncio.run(run())) == 3 and len(calls) == 2
+    assert [int(call.url.params["offset"]) for call in calls] == [0, 2]
+    assert all(call.url.params["location"] == "India" for call in calls)
+
+
+def test_active_job_boards_uses_india_filter_and_shared_pagination():
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"jobs": [_record(id=f"jb-{len(calls)}")]})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await FantasticClient(
+                FantasticConfig("key", limit=1, max_pages=2, max_jobs_per_run=2, max_requests_per_run=2), client
+            ).fetch_active_job_boards()
+    assert len(asyncio.run(run())) == 2
+    assert all(call.url.path.endswith("/v1/active-jb") for call in calls)
+    assert all(call.url.params["location"] == "India" for call in calls)
+    assert [int(call.url.params["offset"]) for call in calls] == [0, 1]
+
+
+def test_fantastic_country_is_normalized_from_structured_country():
+    indian = normalize_fantastic(_record(countries_derived=["IND"], locations_derived=["Bengaluru", "Karnataka", "India"]))
+    foreign = normalize_fantastic(_record(countries_derived=["United States"], locations_derived=["New York", "United States"]))
+    unknown = normalize_fantastic(_record(countries_derived=None, locations_derived=["Remote"]))
+    assert indian["country_code"] == "IN" and indian["country"] == "India"
+    assert foreign["country_code"] == "US" and foreign["country"] == "United States"
+    assert unknown["country_code"] == ""
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])

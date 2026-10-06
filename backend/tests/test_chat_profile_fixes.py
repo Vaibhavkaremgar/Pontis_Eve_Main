@@ -204,6 +204,66 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
     }
 
 
+def test_chat_profile_category_routing_keeps_typed_facts_out_of_additional_information():
+    message = (
+        "I have an AWS certification. I built the Billing Portal project using Python. "
+        "I worked at Acme as a Backend Engineer. My skills are Python and SQL. "
+        "I am targeting Platform Engineer roles."
+    )
+    _, updates = server._extract_profile_updates("", message)
+
+    assert updates["certifications"] == ["AWS"]
+    assert updates["projects"][0]["title"] == "Billing Portal"
+    assert "Python" in updates["projects"][0]["technologies"]
+    assert updates["work_experience"][0]["company"] == "Acme"
+    assert updates["work_experience"][0]["title"] == "Backend Engineer"
+    assert set(updates["skills"]) >= {"Python", "SQL"}
+    assert updates["preferred_roles"] == ["Platform Engineer"]
+    assert "additional_information" not in updates
+
+
+def test_chat_profile_category_correction_preserves_explicit_additional_information():
+    corrected = server._correct_profile_categories(
+        {"skills": ["Python"], "additional_information": "Career changer"},
+        "My skills are Python. Additional information: I am a career changer.",
+    )
+    assert corrected["skills"] == ["Python"]
+    assert corrected["additional_information"] == "Career changer"
+
+
+def test_chat_project_addition_preserves_existing_project_in_raw_data():
+    state = _make_candidate(raw_data={"projects": [{"title": "Existing Platform"}]})
+    message = "Add Inventory Platform to my projects"
+
+    _, updates = server._extract_profile_updates(
+        '<<<PROFILE_UPDATES>>>\n{"profile_updates": {}}\n<<<END_UPDATES>>>',
+        message,
+    )
+    _run_apply(state, updates)
+
+    projects = state["raw_data"]["projects"]
+    assert {project["title"] for project in projects} == {
+        "Existing Platform", "Inventory Platform"
+    }
+
+
+def test_structured_chat_project_update_also_preserves_existing_projects():
+    state = _make_candidate(raw_data={"projects": [{"title": "Existing Platform"}]})
+    _, updates = server._extract_profile_updates(
+        '<<<PROFILE_UPDATES>>>\n'
+        '{"profile_updates": {"projects": [{"title": "Inventory Platform", "description": "Built APIs", "technologies": ["Python"]}]}}\n'
+        '<<<END_UPDATES>>>',
+        "I added a project called Inventory Platform",
+    )
+    _run_apply(state, updates)
+
+    projects = state["raw_data"]["projects"]
+    assert projects == [
+        {"title": "Existing Platform"},
+        {"title": "Inventory Platform", "description": "Built APIs", "technologies": ["Python"]},
+    ]
+
+
 def test_conversational_profile_categories_creation_and_correction():
     """Direct statements are classified by meaning and retained in schema fields."""
     _, education = server._extract_profile_updates("", "I completed my Master's at CMR University")
@@ -225,6 +285,56 @@ def test_degree_is_never_persisted_as_a_certification_even_if_llm_misclassifies_
     _, updates = server._extract_profile_updates(reply, "I completed my Master's at CMR University")
     assert updates["education"][0]["institution"] == "CMR University"
     assert "certifications" not in updates
+
+
+def test_common_education_phrasings_override_wrong_llm_certification_category():
+    cases = [
+        ("done my BTech in CMR Engineering College in 2022", "BTech", "CMR Engineering College"),
+        ("completed my BTech at CMR", "BTech", "CMR"),
+        ("I completed my BTech from CMR Engineering College", "BTech", "CMR Engineering College"),
+        ("I graduated from XYZ University", "", "XYZ University"),
+        ("I have an MBA from XYZ", "MBA", "XYZ"),
+    ]
+    wrong = '<<<PROFILE_UPDATES>>>\n{"profile_updates":{"certifications":["degree record"]}}\n<<<END_UPDATES>>>'
+    for message, degree, institution in cases:
+        _, updates = server._extract_profile_updates(wrong, message)
+        assert updates["education"][0]["institution"] == institution
+        assert updates["education"][0]["degree"] == degree
+        assert "certifications" not in updates
+
+
+def test_legitimate_certification_remains_certification():
+    _, updates = server._extract_profile_updates("", "I hold an AWS certification")
+    assert updates == {"certifications": ["AWS"]}
+
+
+def test_acknowledgement_only_messages_cannot_produce_updates():
+    reply = '<<<PROFILE_UPDATES>>>\n{"profile_updates":{"certifications":["AWS"]}}\n<<<END_UPDATES>>>'
+    for message in (
+        "already added", "done", "I already told you", "added them already",
+        "I already provided that", "I mentioned that before", "that's already in my profile",
+    ):
+        assert server._is_acknowledgement_only(message)
+        _, updates = server._extract_profile_updates(reply, message)
+        assert updates is None or updates == {}
+
+
+def test_real_profile_information_is_not_suppressed_as_acknowledgement():
+    for message in (
+        "done my BTech in CMR Engineering College in 2022",
+        "I completed my MBA in 2020",
+        "I have AWS certification",
+        "I worked at Infosys for 3 years",
+    ):
+        assert not server._is_acknowledgement_only(message)
+
+
+def test_profile_strength_result_is_reused_by_completion_guidance():
+    candidate = _make_candidate()
+    profile = server._normalize_for_frontend(candidate)
+    with mock.patch("profile_strength_service.calculate_profile_strength_v2", side_effect=AssertionError("duplicate scoring")):
+        guidance = server._build_profile_completion_guidance(profile)
+    assert "Profile is at" in guidance
 
 
 def test_partial_conversational_records_are_created_and_merged_when_completed_later():

@@ -57,6 +57,53 @@ class TestProfileStrengthGuidanceAnswers:
 
 
 class TestImmediateExplicitProfileUpdates:
+    def test_prose_plus_fenced_profile_updates_is_hidden(self):
+        reply = 'Here\'s the updated profile:\n```json\n{"profile_updates":{"remote_preference":"Remote"}}\n```'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "Here's the updated profile:"
+        assert updates == {"remote_preference": "Remote"}
+
+    def test_prose_around_fenced_profile_updates_is_preserved(self):
+        reply = (
+            'Here are the updates I made.\n```\n'
+            '{"profile_updates":{"employment_types":["Full-time"]}}\n'
+            '```\nYour preferences are now saved.'
+        )
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "Here are the updates I made.\n\nYour preferences are now saved."
+        assert updates == {"employment_types": ["Full-time"]}
+
+    def test_unrelated_fenced_json_remains_visible(self):
+        reply = 'Here is an example:\n```json\n{"status":"ok"}\n```'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == reply
+        assert updates is None
+
+    def test_standalone_json_profile_updates_are_not_shown_to_candidate(self):
+        reply = '{"profile_updates": {"remote_preference": "Remote", "employment_types": ["Full-time"]}}'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "I've updated your profile."
+        assert updates == {
+            "remote_preference": "Remote",
+            "employment_types": ["Full-time"],
+        }
+
+    def test_fenced_standalone_json_profile_updates_are_not_shown_to_candidate(self):
+        reply = '```json\n{"profile_updates": {"open_to_opportunities": true}}\n```'
+
+        clean, updates = server._extract_profile_updates(reply)
+
+        assert clean == "I've updated your profile."
+        assert updates == {"open_to_opportunities": True}
+
     def test_add_skills_command_is_ready_for_persistence_without_llm(self):
         message = "Add Docker and Redis to my skills"
 
@@ -92,7 +139,7 @@ class TestImmediateExplicitProfileUpdates:
         )
 
         assert result["updates"] == {
-            "projects": [{"project_name": "Inventory Platform", "title": "Inventory Platform"}]
+            "projects": [{"title": "Inventory Platform"}]
         }
 
     def test_candidate_scalar_update_is_merged_when_llm_omits_it(self):

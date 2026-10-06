@@ -21,6 +21,30 @@ function stripHtml(str) {
   return clean.replace(/\s+/g, " ").trim();
 }
 
+function relativePostedTime(value) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "Just now";
+  const units = [[86400, "day"], [3600, "hour"], [60, "minute"]];
+  const unit = units.find(([size]) => seconds >= size);
+  if (!unit) return "Just now";
+  const count = Math.floor(seconds / unit[0]);
+  return `${count} ${unit[1]}${count === 1 ? "" : "s"} ago`;
+}
+
+function matchReasonText(reason) {
+  if (!reason) return "";
+  if (typeof reason === "string") return reason;
+  const explanation = reason.match_explanation || reason;
+  return [
+    ...(explanation.strong || []),
+    ...(explanation.partial || []),
+    ...(explanation.constraints || []),
+  ].filter(Boolean).join(" · ");
+}
+
 function ProfileStrengthBar({ label, percent }) {
   const previousPercent = React.useRef(percent);
   const [isImproving, setIsImproving] = React.useState(false);
@@ -707,14 +731,13 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
             const matchValue = job.match_score != null
               ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
               : null;
-            const jobType = job.employment_type || job.job_type || job.type;
-            const workMode = job.work_mode || job.workplace_type || job.workplace || job.remote_type || job.remote;
-            const experience = job.experience_required || job.experience_level || job.seniority || job.experience;
-            const salary = job.salary ?? job.salary_range ?? job.minimum_salary ?? job.salary_min;
-            const postedDate = job.posted_age || job.posted_ago || job.posted_date || job.posted_at || job.date_posted || job.published_at || job.created_at;
-            const applicants = job.applicants_count ?? job.applicant_count ?? job.applicants;
-            const context = [job.context, job.company_context, job.company_type, job.early_applicant ? "Early applicant" : "", job.public_company ? "Public company" : ""].filter(Boolean);
-            const matchLabel = matchValue == null ? null : matchValue >= 80 ? "Strong match" : matchValue >= 60 ? "Fair match" : "Potential match";
+            const companyName = job.company || job.company_name || job.employer || "";
+            const location = job.location || [job.city, job.state, job.country].filter(Boolean).join(", ");
+            const jobType = job.employment_type || job.job_type || job.employmentType || job.type;
+            const rawWorkMode = job.work_mode || job.workplace_type || job.workplace || job.remote_type || job.remote_policy || job.workplaceType;
+            const workMode = rawWorkMode || (job.remote === true ? "Remote" : job.remote === false ? "On-site" : "");
+            const experience = job.experience_required || job.experience_level || job.seniority || job.experience_required_text || job.experience;
+            const salary = job.salary || job.salary_range || job.compensation || job.minimum_salary || job.salary_min;
             return (
               <div
                 key={job.id}
@@ -739,38 +762,34 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                     {job.logo ? (
                       <img
                         src={job.logo}
-                        alt={job.company}
+                        alt={companyName}
                         className="h-10 w-10 shrink-0 rounded-lg border border-black/[0.06] object-cover"
                       />
                     ) : (
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#E7E3F0]">
                         <span className="text-[14px] font-semibold text-[#7B6FB8]">
-                          {(job.company || "?")[0].toUpperCase()}
+                          {(companyName || "?")[0].toUpperCase()}
                         </span>
                       </div>
                     )}
                     <div className="flex-1 min-w-0">
                       <h4 className="truncate text-[15px] font-semibold leading-tight text-[#1F1F1F]">
-                        {job.title}
+                        {job.title || job.job_title}
                       </h4>
                       <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
                         {job.company} · {job.location}
                       </p>
                     </div>
                     </div>
-                    {context.length > 0 && <div className="ml-12 mt-1 flex flex-wrap gap-1">{context.map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-[#F2F0F8] px-2 py-0.5 text-[10.5px] font-medium text-[#62578F]">{item}</span>)}</div>}
-                    <p className="mt-1.5 line-clamp-1 text-[12px] leading-snug text-[#5D5D5A]">{stripHtml(job.description)}</p>
-                    <div data-testid={`job-metadata-${job.id}`} className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[#4A4A48]">
-                      {job.location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{job.location}</span></span>}
+                    <div data-testid={`job-metadata-${job.id}`} className="mt-3 grid grid-cols-1 gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48] sm:grid-cols-2">
+                      {location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{location}</span></span>}
                       {workMode && <span className="flex min-w-0 items-center gap-1.5"><Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{workMode}</span></span>}
                       {jobType && <span className="flex min-w-0 items-center gap-1.5"><BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{jobType}</span></span>}
                       {experience && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{experience}</span></span>}
                       {salary != null && salary !== "" && <span className="flex min-w-0 items-center gap-1.5 font-medium text-[#1F1F1F]"><CircleDollarSign className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{salary}</span></span>}
-                      {postedDate && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{postedDate}</span></span>}
-                      {applicants != null && <span className="flex min-w-0 items-center gap-1.5"><UsersRound className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{typeof applicants === "number" ? `${applicants}+ applicants` : applicants}</span></span>}
                     </div>
                   </div>
-                  {matchValue != null && <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-2.5 py-2 text-white sm:w-[104px] sm:flex-col sm:justify-center sm:gap-0.5"><div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#67C77B] text-[13px] font-semibold">{matchValue}%</div><span className="text-[10px] font-semibold uppercase tracking-wide text-[#BBDCC0]">{matchLabel}</span></div>}
+                  {matchValue != null && <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-2.5 py-2 text-white sm:w-[104px] sm:flex-col sm:justify-center sm:gap-0.5" aria-label={`${matchValue}% match`}><div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#67C77B] text-[13px] font-semibold">{matchValue}%</div><span className="text-[10px] font-semibold uppercase tracking-wide text-[#BBDCC0]" aria-hidden="true">&nbsp;</span></div>}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-black/[0.06] pt-2">
                 <button

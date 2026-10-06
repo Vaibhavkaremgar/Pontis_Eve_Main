@@ -91,6 +91,7 @@ export default function ResumeEditor() {
   const [error, setError] = React.useState("");
   const [remainingCredits] = React.useState(initialRemainingCredits === null ? null : Number(initialRemainingCredits));
   const [generating, setGenerating] = React.useState(Boolean(params.get("selected_sections") || params.get("selected_skills")));
+  const [confirmedSkills, setConfirmedSkills] = React.useState(selectedSkills);
   // ContentEditable blur and button click can share one event turn. Keep the
   // current parsed list outside render state so Save never posts a stale array.
   const skillsDraftRef = React.useRef([]);
@@ -126,6 +127,7 @@ export default function ResumeEditor() {
     const current = list(skillsDraftRef.current || resume?.skills);
     if (current.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase())) return;
     const next = [...current, skill];
+    setConfirmedSkills((old) => old.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase()) ? old : [...old, skill]);
     skillsDraftRef.current = next;
     update("skills", next);
     setGuidance((old) => old ? { ...old, missing_skills: list(old.missing_skills).filter((item) => plain(item).trim().toLowerCase() !== plain(skill).trim().toLowerCase()) } : old);
@@ -141,7 +143,7 @@ export default function ResumeEditor() {
   const save = async () => {
     setSaving(true); setError("");
     try {
-      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: fixCreditClaimId });
+      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: fixCreditClaimId, confirmed_skills: confirmedSkills });
       setResult(data);
       // The API re-reads candidates.skills after saving and returns that
       // canonical profile. Keep the document in sync with it so a combined
@@ -184,7 +186,7 @@ export default function ResumeEditor() {
       {typeof item !== "string" && <Editable value={text.detail} onChange={(v) => updateItem(key, index, detailField, v)} className="mt-1 whitespace-pre-wrap text-slate-700" multiline testId={`${key}-${index}-detail`} />}</div>;
   });
   return <main className="min-h-screen bg-slate-100 p-4 text-slate-900 md:p-8" data-testid="resume-editor-page">
-    <header className="mx-auto mb-5 flex max-w-[1500px] items-center justify-between"><div><p className="text-lg font-semibold">Review Your New Resume</p><p className="text-xs text-slate-500">ATS-friendly draft for this job. Review every detail before saving.</p>{remainingCredits != null && <p data-testid="resume-fix-credit-balance" className="mt-1 text-xs font-medium text-slate-700">{remainingCredits} {initialCreditPhase === "starter" ? "starter" : "daily"} credits remaining</p>}</div><button onClick={save} disabled={saving} className="rounded-lg bg-[#70659A] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button></header>
+    <header className="mx-auto mb-5 flex max-w-[1500px] items-center justify-between"><div><p className="text-lg font-semibold">Review Your New Resume</p><p className="text-xs text-slate-500">ATS-friendly draft for this job. Review every detail before saving.</p>{remainingCredits != null && <p data-testid="resume-fix-credit-balance" className="mt-1 text-xs font-medium text-slate-700">{remainingCredits} {initialCreditPhase === "starter" ? "starter" : "daily"} credits remaining</p>}</div><div className="flex items-center gap-3"><button onClick={save} disabled={saving} className="rounded-lg bg-[#70659A] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save Changes"}</button><button type="button" data-testid="resume-editor-back" onClick={() => window.history?.back?.()} className="rounded-lg bg-black/[.05] px-5 py-2.5 text-sm font-medium text-slate-700">Back</button></div></header>
     <div className="mx-auto grid max-w-[1500px] gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
       <article className="order-2 min-h-[1056px] bg-white px-8 py-12 shadow-lg md:px-16" data-testid="resume-document">
         <header className="border-b-2 border-slate-800 pb-5 text-center"><Editable value={resume.name} onChange={(v) => update("name", v)} className="text-3xl font-bold tracking-wide" testId="resume-name" /><Editable value={resume.headline} onChange={(v) => update("headline", v)} className="mt-1 text-lg text-slate-600" testId="resume-headline" /><Editable value={[resume.location, resume.email, resume.phone].filter(Boolean).join(" | ")} onChange={(v) => { const [location, email, phone] = v.split("|").map((x) => x.trim()); setResume((old) => ({ ...old, location, email, phone })); }} className="mt-2 text-sm text-slate-600" testId="resume-contact" /></header>

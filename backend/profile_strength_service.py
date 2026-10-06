@@ -710,6 +710,7 @@ def _score_evidence(candidate: dict, evidence: dict, raw: dict, role_category: s
     if complete_roles:
         components.append(("work_history_depth", 3))
         signals.append("complete_experience_records")
+        
 
     # Non-technical roles: communication evidence counts here too
     if role_category in ("sales", "management"):

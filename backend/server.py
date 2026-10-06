@@ -5285,8 +5285,7 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
         if deletion:
             sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
         return clean, _correct_profile_categories(sanitized, candidate_message) or None
-
-
+    
     if candidate_message and _is_acknowledgement_only(candidate_message):
         clean = reply_text.split(marker_start, 1)[0].strip() if marker_start in reply_text else reply_text.strip()
         return clean, None

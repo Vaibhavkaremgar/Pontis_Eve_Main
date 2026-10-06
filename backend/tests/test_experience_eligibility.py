@@ -2,7 +2,11 @@ import sys
 
 sys.path.insert(0, "backend")
 
-from candidate_job_matching_service import experience_eligibility, normalize_job_experience
+from candidate_job_matching_service import (
+    experience_eligibility,
+    normalize_job_experience,
+    stored_recommendation_experience_eligibility,
+)
 
 
 def test_supported_experience_formats_normalize_to_common_bounds():
@@ -37,3 +41,19 @@ def test_unknown_requirements_are_neutral_not_exact_matches():
     assert result["job_min_years"] is None
     assert result["job_max_years"] is None
 
+
+def test_stored_recommendation_gate_rejects_stale_six_year_job_without_matching():
+    result = stored_recommendation_experience_eligibility(
+        {"experience_years": 0.9390828199863107},
+        {"title": "Engineer", "description": "", "requirements": "6+ years", "skills": []},
+    )
+    assert result["eligible"] is False
+    assert result["rejection_reason"] == "candidate_below_job_minimum"
+
+
+def test_stored_recommendation_gate_preserves_eligible_recommendation_data():
+    result = stored_recommendation_experience_eligibility(
+        {"experience_years": 6.0},
+        {"title": "Engineer", "description": "", "requirements": "6+ years", "skills": []},
+    )
+    assert result["eligible"] is True

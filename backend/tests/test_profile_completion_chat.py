@@ -103,7 +103,7 @@ class TestProfileBelow75:
     def test_guidance_mentions_below_75(self):
         c = _weak_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "below 75%" in guidance
+        assert "below 90%" in guidance
 
     def test_guidance_includes_next_question(self):
         c = _weak_candidate()
@@ -142,25 +142,24 @@ class TestProfileReaching75:
     def test_strong_candidate_scores_at_least_75(self):
         c = _strong_candidate()
         result = calculate_profile_strength_v2(c)
-        assert result["percent"] >= 75
+        assert result["percent"] < 90
 
     def test_guidance_says_stop_when_at_75(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "75%+ reached" in guidance
-        assert "Do NOT ask" in guidance
+        assert "below 90%" in guidance
 
     def test_guidance_does_not_include_next_question_when_at_75(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
         # Should not contain a quoted next question
-        assert "Ask this ONE question" not in guidance
+        assert "Ask" in guidance
 
     def test_profile_updates_trigger_guidance_change(self):
         """After adding missing fields, a previously-weak candidate can cross 75%."""
         c = _weak_candidate()
         before = server._build_profile_completion_guidance(c)
-        assert "below 75%" in before
+        assert "below 90%" in before
 
         # Simulate profile update: add the fields that push score to 75%+
         c.update({
@@ -199,11 +198,11 @@ class TestProfileReaching75:
         })
         after = server._build_profile_completion_guidance(c)
         result = calculate_profile_strength_v2(c)
-        if result["percent"] >= 75:
-            assert "75%+ reached" in after
+        if result["percent"] >= 90:
+            assert "90%+ reached" in after
         else:
             # Still below 75 — guidance should still show below-75 message
-            assert "below 75%" in after
+            assert "below 90%" in after
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +213,12 @@ class TestProfileAlreadyAt75:
     def test_already_strong_guidance_says_stop(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "75%+ reached" in guidance
-        assert "Do NOT ask" in guidance
+        assert "below 90%" in guidance
 
     def test_already_strong_no_next_question_in_guidance(self):
         c = _strong_candidate()
         guidance = server._build_profile_completion_guidance(c)
-        assert "Ask this ONE question" not in guidance
+        assert "Ask" in guidance
 
     def test_already_strong_percent_shown_in_guidance(self):
         c = _strong_candidate()
@@ -267,4 +265,142 @@ class TestGuidanceContract:
     def test_system_template_guidance_behavior_instruction(self):
         """EVE_SYSTEM_TEMPLATE must contain the PROFILE COMPLETION behavior rule."""
         assert "PROFILE COMPLETION" in server.EVE_SYSTEM_TEMPLATE
-        assert "75%" in server.EVE_SYSTEM_TEMPLATE
+        assert "90%" in server.EVE_SYSTEM_TEMPLATE
+
+
+class TestRequiredFieldsVersusProfileStrength:
+    def test_below_90_with_no_required_fields_never_claims_full_completion(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 87,
+                "recommended_next_actions": [],
+                "ninety_percent_guidance": {
+                    "items": [{
+                        "title": "Measured impact",
+                        "question": "What measurable result did your work achieve?",
+                    }],
+                },
+            },
+            "_prefs_row": {
+                "preferred_roles": ["Backend Engineer"],
+                "preferred_locations": ["Remote"],
+                "remote_preference": "Remote",
+                "notice_period": "Immediate",
+                "expected_salary": "Market rate",
+                "employment_types": ["Full-time"],
+                "preferred_industries": ["Technology"],
+                "willing_to_relocate": True,
+            },
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert "below 90%" in guidance
+        assert "Core required details may already be present" in guidance
+        assert "Do not describe the profile as complete or 100% complete" in guidance
+        assert 'never say the profile is "complete", "100% complete"' in server.EVE_SYSTEM_TEMPLATE
+
+    def test_below_90_uses_existing_partial_gap_guidance(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 87,
+                "recommended_next_actions": [],
+                "ninety_percent_guidance": {
+                    "items": [{
+                        "title": "Project evidence",
+                        "question": "Tell me about another relevant project and what you contributed.",
+                    }],
+                },
+            },
+            "_prefs_row": {
+                "preferred_roles": ["Backend Engineer"],
+                "preferred_locations": ["Remote"],
+                "remote_preference": "Remote",
+                "notice_period": "Immediate",
+                "expected_salary": "Market rate",
+                "employment_types": ["Full-time"],
+                "preferred_industries": ["Technology"],
+                "willing_to_relocate": True,
+            },
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert "Project evidence" in guidance
+        assert "Tell me about another relevant project" in guidance
+
+    def test_strength_100_keeps_fully_complete_stop_behavior(self):
+        guidance = server._build_profile_completion_guidance({
+            "profile_strength_detail": {"percent": 100},
+        })
+
+        assert guidance == (
+            "Profile is at 100% (90%+ reached). "
+            "Do NOT ask any more profile-completion questions."
+        )
+
+    def test_actual_missing_preference_keeps_existing_guidance(self):
+        profile = {
+            "profile_strength_detail": {
+                "percent": 40,
+                "recommended_next_actions": ["Tell Eve what kind of role you are targeting"],
+            },
+            "_prefs_row": {},
+        }
+
+        guidance = server._build_profile_completion_guidance(profile)
+
+        assert guidance == (
+            'Profile is at 40% (below 90%). Ask this one work-preference question naturally: '
+            '"What kinds of roles are you looking for?"'
+        )
+
+
+class TestCompletionClaimConsistency:
+    @staticmethod
+    def _detail(percent=87):
+        return {
+            "percent": percent,
+            "ninety_percent_guidance": {
+                "items": [{
+                    "title": "Project evidence",
+                    "action": "Add another relevant project",
+                    "question": "Tell me about another relevant project and what you contributed.",
+                }],
+            },
+        }
+
+    def test_100_percent_complete_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "Your profile should now be 100% complete.", self._detail()
+        )
+        assert "100% complete" not in result
+        assert "currently 87%" in result
+
+    def test_spaced_100_percent_complete_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "Your profile should now be 100 % complete.", self._detail()
+        )
+        assert "100 % complete" not in result
+        assert "currently 87%" in result
+
+    def test_no_missing_details_claim_is_replaced(self):
+        result = server._sanitize_profile_completion_claim(
+            "There are no missing details left.", self._detail()
+        )
+        assert "no missing details" not in result.lower()
+        assert "currently 87%" in result
+
+    def test_normal_response_is_unchanged(self):
+        reply = "Your remote and full-time preferences are saved."
+        assert server._sanitize_profile_completion_claim(reply, self._detail()) == reply
+
+    def test_completion_claim_at_90_or_above_is_unchanged(self):
+        reply = "Your profile is complete."
+        assert server._sanitize_profile_completion_claim(reply, self._detail(90)) == reply
+
+    def test_replacement_uses_existing_ninety_percent_guidance(self):
+        result = server._sanitize_profile_completion_claim(
+            "Nothing is missing from your profile.", self._detail()
+        )
+        assert "add another relevant project" in result.lower()

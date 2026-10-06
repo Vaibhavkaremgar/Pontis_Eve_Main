@@ -1,5 +1,6 @@
 """Regression coverage for public ATS payload -> normalized job -> API fields."""
 import asyncio
+import json
 import os
 from datetime import date, datetime, timezone
 
@@ -7,9 +8,35 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unused:unused@localhost/unused")
 
-from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_workable, parse_ats_datetime
+from app.job_ingestion.normalize import normalize_ashby, normalize_greenhouse, normalize_lever, normalize_theirstack, normalize_workable, parse_ats_datetime
 from app.job_ingestion.job_ingestion_service import _metadata_params, _persistence_safe_job, upsert_ats_job
 import server
+import candidate_job_matching_service
+
+
+def test_theirstack_company_string_and_company_metadata_are_preserved():
+    job = normalize_theirstack({
+        "id": "ts-company", "title": "Engineer", "company": "Larsen & Toubro",
+        "company_domain": "larsentoubro.com",
+        "company_object": {"name": "Larsen & Toubro", "domain": "larsentoubro.com", "country": "India", "country_code": "IN"},
+    })
+
+    assert job["company_name"] == "Larsen & Toubro"
+    structured = job["structured_data"]
+    assert structured["company"] == "Larsen & Toubro"
+    assert structured["company_domain"] == "larsentoubro.com"
+    assert structured["company_object"]["name"] == "Larsen & Toubro"
+    assert structured["company_object"]["country"] == "India"
+    assert structured["company_object"]["country_code"] == "IN"
+
+
+def test_theirstack_company_object_name_is_fallback():
+    job = normalize_theirstack({
+        "id": "ts-company-object", "title": "Engineer",
+        "company_object": {"name": "Larsen & Toubro"},
+    })
+
+    assert job["company_name"] == "Larsen & Toubro"
 
 
 def test_representative_public_ats_payloads_preserve_explicit_metadata():
@@ -238,11 +265,25 @@ def test_eligible_normalized_job_insert_binds_non_null_skills_required(monkeypat
     assert session.insert_params["experience_level"] == "Not specified"
     assert session.insert_params["title"] == "Engineer"
     assert session.insert_params["description"] == ""
-    assert session.insert_params["structured_data"] == '{"source": "ashby"}'
+    structured_data = json.loads(session.insert_params["structured_data"])
+    assert structured_data["source"] == "ashby"
+    assert structured_data["raw_source"]["provider"] == "ashby"
+    assert structured_data["raw_source"]["schema_version"] == 1
+    assert structured_data["raw_source"]["payload"]["id"] == "insert-safe"
+    assert structured_data["raw_source"]["payload"]["title"] == "Engineer"
+    assert "experience_requirements" in structured_data
 
 
 def test_candidate_jobs_serializes_normalized_metadata_without_changing_matching(monkeypatch):
     row = {"rec_id": "r", "job_id": "j", "match_score": 0.8, "recommendation_rank": 1, "match_reason": None, "tracked_at": None, "applied_at": None, "hidden_at": None, "viewed_at": None, "application_status": None, "application_agency_id": None, "application_job_role": None, "title": "Engineer", "company_name": "Acme", "location": "Remote", "salary_range": "$100k-$120k", "employment_type": "Full-time", "remote_policy": "Remote", "experience_level": "Senior", "experience_required": None, "created_at": "2026-01-01T00:00:00+00:00", "skills_required": ["Python"], "description": "", "requirements": "", "skills": [], "company_logo_url": None, "job_url": "https://jobs.example/a"}
+    class Row(dict):
+        _positional = ("job_id", "title", "description", "requirements", "skills", "skills_required", "experience_required")
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                return super().__getitem__(self._positional[key])
+            return super().__getitem__(key)
+
+    row = Row(row)
     class Result:
         def __init__(self, scalar=None): self.scalar_value = scalar
         def scalar(self): return self.scalar_value
@@ -255,5 +296,7 @@ def test_candidate_jobs_serializes_normalized_metadata_without_changing_matching
     async def candidate(_): return {"subscription_active": True}
     async def strength(*_): return 90
     monkeypatch.setattr(server, "_get_candidate_row", candidate); monkeypatch.setattr(server, "_effective_profile_strength_percent", strength); monkeypatch.setattr(server, "SessionLocal", lambda: Session())
+    monkeypatch.setattr(server, "_voice_intake_completed_for_matching", lambda _: True)
+    monkeypatch.setattr(candidate_job_matching_service, "stored_recommendation_experience_eligibility", lambda *_: {"eligible": True})
     response = asyncio.run(server.get_candidate_jobs("c"))
     assert response[0]["employment_type"] == "Full-time" and response[0]["skills_required"] == ["Python"] and response[0]["posted_at"] == "2026-01-01T00:00:00+00:00"
