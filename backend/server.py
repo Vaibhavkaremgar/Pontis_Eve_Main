@@ -31,7 +31,10 @@ import asyncio
 import html
 import textwrap
 import mimetypes
+from importlib.metadata import PackageNotFoundError, version as package_version
 from app.job_ingestion.lifecycle import candidate_visible_where
+from location_matching import country_eligible, country_code
+from skill_normalization import canonical_skill_key
 
 try:  # pragma: no cover - optional dependency
     from reportlab.lib import colors
@@ -84,6 +87,39 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def _groq_sdk_version() -> str:
+    try:
+        return package_version("openai")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _log_groq_chat_diagnostic(request_id: str, kwargs: dict[str, Any]) -> None:
+    """Log only non-sensitive metadata for the primary candidate chat call."""
+    logger.info(
+        "GROQ_CHAT_DIAGNOSTIC request_id=%s model=%s has_tools=%s "
+        "has_tool_choice=%s has_functions=%s has_function_call=%s "
+        "has_response_format=%s sdk_version=%s",
+        request_id, kwargs.get("model"), "tools" in kwargs,
+        "tool_choice" in kwargs, "functions" in kwargs,
+        "function_call" in kwargs, "response_format" in kwargs,
+        _groq_sdk_version(),
+    )
+
+
+def _log_groq_chat_exception(exc: Exception, request_id: str) -> None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    provider_request_id = getattr(exc, "request_id", None) or headers.get("x-request-id")
+    logger.error(
+        "GROQ_CHAT_DIAGNOSTIC_ERROR request_id=%s exception_type=%s "
+        "status_code=%s error_code=%s error_type=%s provider_request_id=%s",
+        request_id, type(exc).__name__,
+        getattr(exc, "status_code", None) or getattr(response, "status_code", None),
+        getattr(exc, "code", None), getattr(exc, "type", None), provider_request_id,
+    )
+
+
 @app.middleware("http")
 async def reject_empty_voice_transcript_early(request: StarletteRequest, call_next):
     """Reject empty intake bodies before route dependencies or handler work."""
@@ -102,6 +138,25 @@ async def reject_empty_voice_transcript_early(request: StarletteRequest, call_ne
             return {"type": "http.request", "body": body, "more_body": False}
 
         request = StarletteRequest(request.scope, receive=replay_body)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def enforce_candidate_route_ownership(request: StarletteRequest, call_next):
+    """Protect every /candidate/{id}/ resource, including newly added routes.
+
+    Document/image view routes retain their existing form-token handling because
+    browser navigation cannot attach an Authorization header.
+    """
+    match = re.match(r"^/api/candidate/([0-9a-fA-F-]{36})(?:/|$)", request.url.path)
+    view_route = request.url.path.endswith("/view")
+    if match and not view_route:
+        try:
+            _verify_candidate_session_token(
+                _get_bearer_token(request.headers.get("authorization")), match.group(1)
+            )
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
 
 
@@ -138,6 +193,7 @@ class JobMatchImprovementRequest(BaseModel):
     """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
     fix_credit_claim_id: Optional[str] = None
+    confirmed_skills: List[str] = Field(default_factory=list)
 
 
 class RazorpayVerificationRequest(BaseModel):
@@ -450,6 +506,8 @@ PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resu
   "current_role": "",
   "current_company": "",
   "location": "",
+  "country": "",
+  "country_code": "",
   "bio": "",
   "experience_years": 0,
   "skills": ["skill1"],
@@ -1359,9 +1417,14 @@ def _verify_candidate_session_token(token: str, candidate_id: str) -> None:
 
 
 def _get_bearer_token(authorization: Optional[str]) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
+    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         return ""
     return authorization[7:].strip()
+
+
+def _authorize_candidate(candidate_id: str, authorization: Optional[str]) -> None:
+    """Enforce ownership for every browser-facing candidate-scoped operation."""
+    _verify_candidate_session_token(_get_bearer_token(authorization), candidate_id)
 
 
 def _verify_document_view_session(candidate_id: str, authorization: Optional[str], candidate_token: Optional[str]) -> None:
@@ -1587,6 +1650,8 @@ def _build_profile_strength_source(profile: dict, raw_data: Optional[dict] = Non
 
 def _apply_profile_strength_test_override(candidate: dict, result: dict) -> dict:
     """Apply the temporary, candidate-specific effective Profile Strength override."""
+    if os.environ.get("EVE_ENABLE_PROFILE_STRENGTH_TEST_OVERRIDE", "").strip().lower() not in {"1", "true", "yes"}:
+        return result
     if str(candidate.get("id") or candidate.get("candidate_id") or "") != "53a744f8-3292-4339-8533-f9a2f2f93e96":
         return result
 
@@ -2798,6 +2863,24 @@ def _build_voice_intake_resume_from_notes(
     promoted_current = _choose_active_current_question(current_question or "", next_question or "")
     if promoted_current and promoted_current != current_question:
         current_question = promoted_current
+    # Never infer a country from a city or state. Once a location answer has
+    # been collected, require an explicit country confirmation unless one is
+    # already present in the canonical profile/raw data.
+    profile_raw = _parse_raw_data((candidate_profile or {}).get("raw_data"))
+    known_country = ((candidate_profile or {}).get("country_code")
+                     or (candidate_profile or {}).get("country")
+                     or profile_raw.get("country_code")
+                     or profile_raw.get("country"))
+    location_turn = next((turn for turn in reversed(completed_turns)
+                          if "location" in _normalize_profile_key(turn.get("question"))
+                          or ("city" in _normalize_profile_key(turn.get("question"))
+                              and "country" in _normalize_profile_key(turn.get("question")))), None)
+    if location_turn and _clean_str(location_turn.get("answer")) and not known_country:
+        current_question = ("And which country is that in?"
+                            if "city" in _normalize_profile_key(location_turn.get("question"))
+                            else "Which country are you currently based in?")
+        next_question = ""
+        is_completed = False
     if (
         current_question
         and next_question
@@ -3053,6 +3136,119 @@ async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
             {"voice_intake": json.dumps(resume), "cid": candidate_id},
         )
         await db.commit()
+
+
+INTAKE_TOPIC_PRIORITY = (
+    "current_role", "current_company", "experience_years", "skills",
+    "preferred_roles", "preferred_locations", "remote_preference",
+    "notice_period", "expected_salary", "education", "certifications", "projects",
+)
+_PROFILE_FIELD_TOPICS = {
+    "current_role": "current_role", "current_company": "current_company",
+    "experience_years": "experience_years", "skills": "skills",
+    "preferred_roles": "preferred_roles", "preferred_locations": "preferred_locations",
+    "remote_preference": "remote_preference", "notice_period": "notice_period",
+    "availability": "notice_period", "expected_salary": "expected_salary",
+    "education": "education", "certifications": "certifications", "projects": "projects",
+}
+
+
+def _stable_intake_topic(question: str) -> str:
+    q = _clean_str(question).lower()
+    rules = (
+        ("notice_period", ("notice period", "available to start", "availability")),
+        ("preferred_locations", ("preferred location", "where do you want to work", "cities", "locations")),
+        ("current_company", ("current company", "company do you work", "employer")),
+        ("current_role", ("current role", "current position", "role are you currently", "working as", "job title")),
+        ("experience_years", ("years of experience", "professional experience", "total experience")),
+        ("skills", ("skills", "technologies", "tools", "frameworks")),
+        ("preferred_roles", ("role would you", "role are you looking", "move into next", "target role")),
+        ("remote_preference", ("remote", "hybrid", "on-site", "onsite")),
+        ("expected_salary", ("salary", "compensation")),
+        ("education", ("education", "degree", "university", "college")),
+        ("certifications", ("certification", "certificate")),
+        ("projects", ("project", "responsibilities")),
+    )
+    for topic, needles in rules:
+        if any(needle in q for needle in needles):
+            return topic
+    return "conversation_" + hashlib.sha256(q.encode()).hexdigest()[:16]
+
+
+def _intake_answer_status(topic_id: str, answer: str) -> str:
+    value = _clean_str(answer)
+    if not value:
+        return "ASKED"
+    if topic_id == "experience_years" and not re.search(r"\b\d+(?:\.\d+)?\b", value):
+        return "PARTIALLY_ANSWERED"
+    if topic_id in {"skills", "projects", "education"} and len(value.split()) < 2:
+        return "PARTIALLY_ANSWERED"
+    return "ANSWERED"
+
+
+async def _upsert_intake_ledger(
+    candidate_id: str, topic_id: str, channel: str, question_text: str = "",
+    answer_text: str = "", source_event_id: Optional[str] = None,
+    status: Optional[str] = None, evidence_reference: Optional[str] = None,
+) -> None:
+    final_status = status or _intake_answer_status(topic_id, answer_text)
+    question_id = f"{topic_id}:canonical"
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            INSERT INTO candidate_intake_ledger
+                (candidate_id, topic_id, question_id, channel, question_text, answer_text,
+                 status, source_event_id, evidence_reference, asked_at, answered_at)
+            VALUES (:cid, :topic, :qid, :channel, NULLIF(:question, ''), NULLIF(:answer, ''),
+                    :status, :event_id, :evidence,
+                    CASE WHEN :question <> '' THEN now() ELSE NULL END,
+                    CASE WHEN :answer <> '' THEN now() ELSE NULL END)
+            ON CONFLICT (candidate_id, topic_id) DO UPDATE SET
+                channel = EXCLUDED.channel,
+                question_text = COALESCE(EXCLUDED.question_text, candidate_intake_ledger.question_text),
+                answer_text = COALESCE(EXCLUDED.answer_text, candidate_intake_ledger.answer_text),
+                status = CASE
+                    WHEN candidate_intake_ledger.status = 'ANSWERED' AND EXCLUDED.status <> 'INVALIDATED'
+                    THEN 'ANSWERED' ELSE EXCLUDED.status END,
+                source_event_id = COALESCE(EXCLUDED.source_event_id, candidate_intake_ledger.source_event_id),
+                evidence_reference = COALESCE(EXCLUDED.evidence_reference, candidate_intake_ledger.evidence_reference),
+                asked_at = COALESCE(candidate_intake_ledger.asked_at, EXCLUDED.asked_at),
+                answered_at = COALESCE(EXCLUDED.answered_at, candidate_intake_ledger.answered_at),
+                updated_at = now()
+        """), {"cid": candidate_id, "topic": topic_id, "qid": question_id, "channel": channel,
+               "question": question_text, "answer": answer_text, "status": final_status,
+               "event_id": source_event_id, "evidence": evidence_reference})
+        await db.commit()
+
+
+async def _sync_voice_ledger(candidate_id: str, resume: dict, source_event_id: Optional[str] = None) -> None:
+    for turn in resume.get("completed_turns") or []:
+        question, answer = _clean_str(turn.get("question")), _clean_str(turn.get("answer"))
+        if question:
+            await _upsert_intake_ledger(candidate_id, _stable_intake_topic(question), "vapi",
+                                        question, answer, source_event_id, evidence_reference="raw_data.voice_intake.completed_turns")
+    pending = _clean_str(resume.get("current_question") or resume.get("next_question"))
+    if pending:
+        await _upsert_intake_ledger(candidate_id, _stable_intake_topic(pending), "vapi",
+                                    pending, "", source_event_id, status="ASKED")
+
+
+async def _sync_profile_updates_to_ledger(candidate_id: str, updates: dict, channel: str = "chat") -> None:
+    for field, value in (updates or {}).items():
+        topic = _PROFILE_FIELD_TOPICS.get(field)
+        if not topic or value in (None, "", []):
+            continue
+        answer = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+        await _upsert_intake_ledger(candidate_id, topic, channel, answer_text=answer,
+                                    status="ANSWERED", evidence_reference=f"candidate_profile.{field}")
+
+
+async def _load_intake_ledger(candidate_id: str) -> list[dict]:
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT topic_id, question_id, channel, question_text, answer_text, status
+            FROM candidate_intake_ledger WHERE candidate_id = :cid ORDER BY updated_at
+        """), {"cid": candidate_id})
+        return [dict(row) for row in result.mappings().fetchall()]
 
 
 def _voice_intake_resume_to_voice_notes(
@@ -3877,26 +4073,29 @@ async def candidate_help(
 
 
 @api_router.get("/candidate/{candidate_id}/chat")
-async def get_candidate_chat(candidate_id: str):
+async def get_candidate_chat(candidate_id: str, authorization: Optional[str] = Header(default=None)):
     """Return the persisted short-term chat window for a candidate."""
+    _authorize_candidate(candidate_id, authorization)
     await _get_candidate_row(candidate_id)
     messages = await _load_chat_window(candidate_id)
     return {"messages": messages}
 
 
 @api_router.get("/candidate/{candidate_id}/profile")
-async def get_candidate_profile(candidate_id: str):
+async def get_candidate_profile(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     return await _get_candidate_profile_payload(candidate_id)
 
 
 
 
 @api_router.get("/candidate/{candidate_id}/profile/strength")
-async def get_candidate_profile_strength(candidate_id: str):
+async def get_candidate_profile_strength(candidate_id: str, authorization: Optional[str] = Header(default=None)):
     """
     Return the full structured Profile Strength and Recommendation Readiness
     for a candidate (Phase 9 output).
     """
+    _authorize_candidate(candidate_id, authorization)
     from profile_strength_service import calculate_profile_strength_v2
     candidate = await _get_candidate_row(candidate_id)
     candidate["candidate_certificates"] = await _load_candidate_certificates(candidate_id)
@@ -4254,7 +4453,9 @@ async def _save_chat_window(candidate_id: str, session_id: str, messages: list[d
     if len(messages) > CHAT_WINDOW_SIZE:
         overflow = messages[: len(messages) - CHAT_PRUNE_KEEP]
         messages = messages[len(messages) - CHAT_PRUNE_KEEP :]
-        asyncio.ensure_future(_extract_and_merge_chat_facts(candidate_id, overflow))
+        # Complete compaction before dropping the source turns. This avoids an
+        # untracked fire-and-forget task losing candidate facts on shutdown.
+        await _extract_and_merge_chat_facts(candidate_id, overflow)
 
     async with SessionLocal() as db:
         existing = await db.execute(
@@ -4282,6 +4483,8 @@ Return ONLY valid JSON with these keys (omit keys where no information was found
   "career_goals": "",
   "target_industries": [],
   "location_preferences": "",
+  "country": "",
+  "country_code": "",
   "salary_expectation": "",
   "availability": "",
   "notice_period": "",
@@ -4371,7 +4574,8 @@ PROFILE COMPLETION GUIDANCE: {profile_completion_guidance}
 BEHAVIOR:
 - ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
 - PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
-- PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 75% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking profile questions once the guidance says the profile is at 75%+.
+- PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 90% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE backend-selected question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking proactive profile questions once the guidance says the profile is at 90%+.
+- COMPLETENESS WORDING: An empty MISSING FIELDS list means the candidate's core required details are present; it does NOT mean Profile Strength is 100%. When PROFILE COMPLETION GUIDANCE says the profile is below 90%, never say the profile is "complete", "100% complete", or has "no missing details". Instead, say the core details are present and naturally use the supplied strengthening area/question.
 - PREFERENCE COMPLETION: When PROFILE COMPLETION GUIDANCE asks about a work preference, ask that exact question naturally. Never expose field keys, internal guidance, or a profile score/percentage to the candidate.
 - If the candidate asks whether you have their resume, details, or profile — answer YES or NO based on the profile above, and summarise what you have. Never say you are loading jobs in response to such questions.
 - If the candidate asks what information you still need — list only the MISSING FIELDS from the profile above. Do not mention jobs.
@@ -4556,10 +4760,9 @@ def _missing_canonical_preference_fields(candidate: dict, prefs_row: Optional[di
 def _build_profile_completion_guidance(profile: dict) -> str:
     """
     Return a short guidance string for Eve's system prompt.
-    When profile strength < 75%, returns the single most important next question.
-    When >= 75%, returns a note to stop asking profile questions.
+    When profile strength < 90%, returns the single most important next question.
+    When >= 90%, returns a note to stop asking profile questions.
     """
-    from profile_strength_service import calculate_profile_strength_v2
     raw_data = profile.get("raw_data") or {}
     if isinstance(raw_data, str):
         try:
@@ -4567,28 +4770,93 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         except Exception:
             raw_data = {}
     try:
-        result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
+        # _normalize_for_frontend calculates this once for the request. Reuse
+        # that immutable result instead of scoring the same snapshot again.
+        result = profile.get("profile_strength_detail")
+        if not isinstance(result, dict):
+            from profile_strength_service import calculate_profile_strength_v2
+            result = calculate_profile_strength_v2(profile, raw_data, profile.get("_prefs_row"))
         percent = result.get("percent", 0)
-        if percent >= 75:
-            return f"Profile is at {percent}% (75%+ reached). Do NOT ask any more profile-completion questions."
+        if percent >= 90:
+            return f"Profile is at {percent}% (90%+ reached). Do NOT ask any more profile-completion questions."
         # Preference completion is based on the canonical reader, rather than
         # whichever legacy alias happened to be present in raw_data. Preserve
-        # the established 75% completion boundary for all chat behavior.
+        # the product-wide 90% completion boundary for chat and sidebar behavior.
         missing_preferences = _missing_canonical_preference_fields(
             profile, profile.get("_prefs_row")
         )
         if missing_preferences:
             question = _CANONICAL_PREFERENCE_QUESTIONS[missing_preferences[0]]
-            return f'Profile is at {percent}% (below 75%). Ask this one work-preference question naturally: "{question}"'
+            return f'Profile is at {percent}% (below 90%). Ask this one work-preference question naturally: "{question}"'
         next_actions = result.get("recommended_next_actions") or []
         if next_actions:
             return (
-                f"Profile is at {percent}% (below 75%). "
+                f"Profile is at {percent}% (below 90%). "
                 f"Ask this ONE question to help complete the profile: \"{next_actions[0]}\""
             )
-        return f"Profile is at {percent}% (below 75%). Ask about any missing fields listed above."
+        # Required-field completeness is intentionally narrower than Profile
+        # Strength. When all required fields are present, use the scorer's
+        # existing partial-gap guidance instead of implying 100% completion.
+        partial_items = (result.get("ninety_percent_guidance") or {}).get("items") or []
+        first_partial = next(
+            (item for item in partial_items if isinstance(item, dict) and item.get("question")),
+            None,
+        )
+        if first_partial:
+            area = first_partial.get("title") or "profile evidence"
+            return (
+                f"Profile is at {percent}% (below 90%). Core required details may already be present, "
+                f"but Profile Strength can still improve in {area}. Do not describe the profile as "
+                f"complete or 100% complete. Ask this ONE strengthening question naturally: "
+                f"\"{first_partial['question']}\""
+            )
+        return (
+            f"Profile is at {percent}% (below 90%). Core required details may already be present, "
+            "but do not describe the profile as complete or 100% complete. Explain that meaningful "
+            "evidence or career-direction detail can still strengthen it."
+        )
     except Exception:
         return "No profile completion guidance available."
+
+
+_CONTRADICTORY_PROFILE_COMPLETION_RE = re.compile(
+    r"(?:"
+    r"\b100\s*%\s*(?:fully\s+)?complete\b"
+    r"|\b(?:your\s+|the\s+)?profile\s+(?:is|should\s+now\s+be|is\s+already)\s+"
+    r"(?:already\s+)?(?:fully\s+)?complete\b"
+    r"|\bthere\s+(?:are|is)\s+no\s+missing\s+(?:details?|fields?)\b"
+    r"|\bno\s+(?:profile\s+)?(?:details?|fields?)\s+(?:are\s+)?missing\b"
+    r"|\bnothing(?:\s+else)?\s+is\s+missing\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_profile_completion_claim(reply: str, strength_detail: Optional[dict]) -> str:
+    """Replace only completion claims contradicted by authoritative strength data."""
+    if not isinstance(reply, str) or not isinstance(strength_detail, dict):
+        return reply
+    try:
+        percent = int(round(float(strength_detail.get("percent"))))
+    except (TypeError, ValueError):
+        return reply
+    if percent >= 90 or not _CONTRADICTORY_PROFILE_COMPLETION_RE.search(reply):
+        return reply
+
+    items = (strength_detail.get("ninety_percent_guidance") or {}).get("items") or []
+    first_item = next((item for item in items if isinstance(item, dict)), {})
+    action = str(first_item.get("action") or "").strip().rstrip(".")
+    title = str(first_item.get("title") or "").strip().lower()
+    if action:
+        next_step = f" A useful next step is to {action[0].lower() + action[1:]}."
+    elif title:
+        next_step = f" The biggest remaining opportunity is strengthening your {title}."
+    else:
+        next_step = " Adding stronger project, experience, or career-direction detail can improve it."
+    return (
+        f"Your core profile details are filled in, but your Profile Strength is currently {percent}%. "
+        f"It can still be strengthened to reach 90%.{next_step}"
+    )
 
 
 # Conversational prefixes that must never appear as list items in structured fields.
@@ -4976,6 +5244,53 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
     # Detect deletion intent from the candidate's own message first
     deletion = _detect_deletion_intent(candidate_message) if candidate_message else None
 
+    # Some providers/models ignore the marker contract and return the update
+    # envelope as the entire assistant message (occasionally inside a JSON
+    # code fence). Never expose that machine-readable payload to the chat UI.
+    standalone_json = reply_text.strip()
+    if standalone_json.startswith("```") and standalone_json.endswith("```"):
+        standalone_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", standalone_json, flags=re.IGNORECASE).strip()
+    if standalone_json.startswith("{") and standalone_json.endswith("}"):
+        try:
+            standalone_data = json.loads(standalone_json)
+        except (TypeError, ValueError):
+            standalone_data = None
+        if isinstance(standalone_data, dict) and isinstance(standalone_data.get("profile_updates"), dict):
+            sanitized = _sanitize_profile_updates(standalone_data["profile_updates"])
+            if deletion:
+                sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
+            return (
+                "I've updated your profile." if sanitized else "",
+                _correct_profile_categories(sanitized, candidate_message) or None,
+            )
+
+    # Groq may wrap the update envelope in a fenced block while also adding
+    # conversational prose. Remove only fences that parse as a JSON object
+    # with a top-level profile_updates dict; unrelated JSON remains visible.
+    embedded_updates = None
+    embedded_match = None
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", reply_text, flags=re.IGNORECASE):
+        try:
+            fenced_data = json.loads(match.group(1).strip())
+        except (TypeError, ValueError):
+            continue
+        if isinstance(fenced_data, dict) and isinstance(fenced_data.get("profile_updates"), dict):
+            embedded_updates = fenced_data["profile_updates"]
+            embedded_match = match
+            break
+    if embedded_match is not None:
+        clean = (reply_text[:embedded_match.start()] + reply_text[embedded_match.end():]).strip()
+        clean = re.sub(r"\n{3,}", "\n\n", clean)
+        sanitized = _sanitize_profile_updates(embedded_updates or {})
+        if deletion:
+            sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
+        return clean, _correct_profile_categories(sanitized, candidate_message) or None
+
+
+    if candidate_message and _is_acknowledgement_only(candidate_message):
+        clean = reply_text.split(marker_start, 1)[0].strip() if marker_start in reply_text else reply_text.strip()
+        return clean, None
+
     if marker_start not in reply_text:
         fallback_updates = _infer_profile_updates_from_message(candidate_message or reply_text)
         sanitized = _sanitize_profile_updates(fallback_updates) if fallback_updates else {}
@@ -5002,6 +5317,32 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
         if deletion:
             sanitized = _apply_deletion_to_profile_updates(sanitized, deletion)
         return clean, _correct_profile_categories(sanitized, candidate_message) or None
+
+
+def _replace_generic_profile_update_reply(reply: str, updates: Optional[dict]) -> str:
+    """Replace an empty LLM profile heading with a confirmation of persisted fields."""
+    if not updates or not re.fullmatch(
+        r"(?:here(?:'|’)s|here is) the (?:corrected|updated) profile\s*[:.!]?",
+        (reply or "").strip(), flags=re.IGNORECASE,
+    ):
+        return reply
+    deletions = updates.get("profile_deletions") or {}
+    if deletions:
+        items = [item for values in deletions.values() for item in (values if isinstance(values, list) else [values])]
+        return f"I've removed {', '.join(str(item) for item in items)} from your profile." if items else "I've updated your profile."
+    labels = {
+        "location": "location", "country": "country", "certifications": "certifications",
+        "skills": "skills", "preferred_locations": "preferred locations",
+        "preferred_roles": "target roles", "bio": "career summary", "education": "education",
+        "work_experience": "work experience",
+    }
+    changed = [labels[field] for field in updates if field in labels]
+    if len(changed) == 1:
+        field = next(field for field in labels if labels[field] == changed[0])
+        value = updates.get(field)
+        if field in {"location", "country", "bio"} and isinstance(value, str) and value.strip():
+            return f"I've updated your {changed[0]} to {value.strip()}."
+    return f"I've updated your {', '.join(changed) or 'profile'}."
 
 
 def _split_update_list(text: str) -> list[str]:
@@ -5274,6 +5615,9 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             continue
         company = _normalize_profile_text(match.groupdict().get("company"))
         title = _normalize_profile_text(match.groupdict().get("title"))
+        # A mixed answer often continues with another section after the job
+        # clause. Keep that continuation out of the work record.
+        title = re.split(r"\s*,?\s+and\s+(?:my\s+|i\s+|the\s+)|\s+and\s+(?:my\s+|i\s+)", title, maxsplit=1, flags=re.I)[0].strip(" ,.;:")
         title = re.sub(r"\s+for\s+\d+(?:\.\d+)?\s*years?\s*$", "", title, flags=re.I).strip()
         if not company or not title:
             continue
@@ -5303,15 +5647,26 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             entry = {k: v for k, v in statement.items() if k != "current"}
             updates["work_experience"] = [entry]
 
+    degree_pattern = r"(?:master'?s?|bachelor'?s?|mba|mca|m\.?tech|m\.?sc|m\.?a|b\.?tech|b\.?e|b\.?sc|b\.?a|ph\.?d)"
+    education_prefix = rf"\b(?:done\s+(?:with\s+)?|completed\s+|finished\s+|studied\s+|graduated\s+(?:from\s+)?|earned\s+|have\s+(?:a\s+|an\s+)?|i\s+have\s+(?:a\s+|an\s+)?|i\s+)?(?P<degree>{degree_pattern})(?:\s+degree)?\s+(?:at|from|in)\s+"
     education_match = re.search(
-        r"\b(?:completed|studied|graduated(?:\s+from)?|earned)\s+(?:my\s+|a\s+|an\s+)?(?P<degree>(?:master'?s|bachelor'?s|mba|m\.?(?:tech|sc|a)|b\.?(?:tech|sc|a)|ph\.?d)[^,.]*?)\s+(?:at|from)\s+(?P<institution>[^,.!?;]+)",
+        education_prefix + r"(?P<institution>[^,.!?;]+?)\s+in\s+(?P<year>\d{4})\s*$",
         text, re.I,
-    )
+    ) or re.search(education_prefix + r"(?P<institution>[^,.!?;]+?)\s*$", text, re.I)
+    if not education_match:
+        education_match = re.search(
+            rf"\bgraduated\s+from\s+(?P<institution>[^,.!?;]+?)(?:\s+in\s+(?P<year>\d{{4}}))?$",
+            text, re.I,
+        )
     if education_match:
+        degree = _normalize_profile_text(education_match.groupdict().get("degree") or "")
+        institution = _normalize_profile_text(education_match.group("institution"))
+        year = _normalize_profile_text(education_match.groupdict().get("year") or "")
         updates["education"] = [
             {
-                "degree": _normalize_profile_text(education_match.group("degree")),
-                "institution": _normalize_profile_text(education_match.group("institution")),
+                "degree": degree,
+                "institution": institution,
+                **({"end_date": year} if year else {}),
             }
         ]
 
@@ -5352,11 +5707,52 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             updates[field] = value
 
     project = _extract_first_match(text, [
+        r"\b(?:add|include)\s+(?:a\s+)?project\s+(?:called|named)\s+(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?:my\s+)?project\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:add|include)\s+(?P<value>.+?)\s+(?:to|in)\s+(?:my\s+)?projects?(?:\s+section|\s+list)?(?:[.!?;]|$)",
+        r"\b(?:built|developed|created|worked\s+on)\s+(?:the\s+)?(?P<value>[A-Z][\w .'-]+?)\s+project(?:\s+(?:using|with)\s+(?P<tech>[^.!?;]+))?(?:[.!?;]|$)",
     ])
     if project:
-        updates["projects"] = [project]
+        # Keep deterministic extraction in the same shape as structured
+        # extraction.  The rest of the pipeline accepts lists of records, not
+        # a bare project-name string.
+        project_match = re.search(
+            r"\b(?:built|developed|created|worked\s+on)\s+(?:the\s+)?(?P<title>[A-Z][\w .'-]+?)\s+project(?:\s+(?:using|with)\s+(?P<tech>[^.!?;]+))?",
+            text, re.I,
+        )
+        technologies = _merge_skills([], _split_update_list(project_match.group("tech"))) if project_match and project_match.group("tech") else []
+        updates["projects"] = [{"title": project.strip(), "description": "", "technologies": technologies}]
+
+    # Project intent is authoritative over generic technology/skill extraction.
+    # Keep this deterministic so an LLM skills-only block cannot swallow a
+    # project update containing Java, databases, or framework names.
+    project_intent = re.search(
+        r"\b(?:update|modify|change)\s+(?:my|the)?\s*(?P<title>.+?)\s+project\b|"
+        r"\badd\s+(?:details|technologies)\s+to\s+(?:my|the)?\s*(?P<title2>.+?)\s+project\b|"
+        r"\badd\s+(?P<tech_before>.+?)\s+to\s+(?:my|the)?\s*(?P<title3>.+?)\s+project\b|"
+        r"\bupdate\s+project\s+description\b|\bupdate\s+my\s+project\b",
+        text, re.I,
+    )
+    if project_intent:
+        title = _normalize_profile_text(project_intent.group("title") or project_intent.group("title2") or project_intent.group("title3") or "")
+        title = re.sub(r"\s+(?:with|by|to)\s+(?:this\s+)?(?:description|technologies).*$", "", title, flags=re.I).strip(" .,:;")
+        if not title:
+            # A title-less update is still project intent; preflight/LLM can
+            # resolve it from the surrounding project wording.
+            title = ""
+        description = _extract_first_match(text, [
+            r"\bdescription\s*:\s*(?P<value>.+?)(?=\s+(?:also\s+)?add\s+(?:the\s+)?technologies?\s*:|\s+technologies?\s*:|$)",
+            r"\bwith\s+(?:this\s+)?description\s*:\s*(?P<value>.+?)(?=\s+(?:also\s+)?add\s+(?:the\s+)?technologies?\s*:|$)",
+        ])
+        technology_text = project_intent.group("tech_before") or _extract_first_match(text, [
+            r"\btechnologies?\s*:\s*(?P<value>.+?)(?:[.!?;]|$)",
+            r"\badd\s+(?:the\s+)?technologies?\s*:\s*(?P<value>.+?)(?:[.!?;]|$)",
+        ])
+        technologies = _merge_skills([], _split_update_list(technology_text)) if technology_text else []
+        if title or description or technologies:
+            updates["projects"] = [{"title": title, "description": description or "", "technologies": technologies}]
+        if not re.search(r"\b(?:my|candidate|profile)\s+skills?\b", text, re.I):
+            updates.pop("skills", None)
 
     return updates
 
@@ -5375,13 +5771,17 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
         result["education"] = inferred["education"]
         result.pop("certifications", None)
     # Candidate wording is the reliable fallback when the model omits a field
-    # from its hidden update block. Previously only four fields were merged,
-    # so Eve could acknowledge location, bio, preferences, or certifications
-    # without those values ever reaching persistence.
+    # from its hidden update block. Keep list-valued deterministic fields
+    # additive so an inferred project cannot replace existing projects.
+    deterministic_fields = {
+        "preferred_roles", "skills", "work_experience", "education",
+        "certifications", "projects", "preferred_locations",
+        "preferred_industries", "employment_types",
+    }
     for field, value in inferred.items():
         if field == "education":
             continue
-        if isinstance(value, list) and isinstance(result.get(field), list):
+        if field in deterministic_fields and isinstance(value, list) and isinstance(result.get(field), list):
             result[field] = _merge_profile_updates(
                 {field: result[field]}, {field: value}
             )[field]
@@ -5389,11 +5789,42 @@ def _correct_profile_categories(updates: dict, candidate_message: str) -> dict:
             result[field] = value
     if inferred.get("replace_preferred_locations"):
         result["replace_preferred_locations"] = True
+    # This is a typed profile extractor.  Additional Information is reserved
+    # for content the candidate explicitly labels as such; it must not become
+    # a fallback bucket when a model is uncertain about a typed section.
+    typed_fields = {
+        "certifications", "projects", "work_experience", "education", "skills",
+        "preferred_roles", "preferred_locations", "preferred_industries",
+        "employment_types", "current_role", "experience_years", "location",
+    }
+    if not re.search(
+        r"\b(?:additional information|additional info|about me|other information)\b",
+        candidate_message or "", re.IGNORECASE,
+    ) and any(field in result for field in typed_fields):
+        result.pop("additional_information", None)
     return _sanitize_profile_updates(result)
 
 
+_ACKNOWLEDGEMENT_ONLY = re.compile(
+    r"^\s*(?:already\s+added|done|i\s+already\s+(?:told|provided)\s+(?:you|that)|"
+    r"i\s+mentioned\s+that\s+before|(?:that'?s|this\s+is)\s+already\s+in\s+my\s+profile|"
+    r"added\s+them\s+already)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_acknowledgement_only(message: str) -> bool:
+    """Return true only for standalone conversational acknowledgements."""
+    if not isinstance(message, str) or not message.strip():
+        return False
+    # Never suppress a message containing explicit profile evidence.
+    if _infer_profile_updates_from_message(message):
+        return False
+    return bool(_ACKNOWLEDGEMENT_ONLY.fullmatch(message))
+
+
 VALID_UPDATE_FIELDS = {
-    "name", "email", "phone", "location", "headline", "bio",
+    "name", "email", "phone", "location", "country", "country_code", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "salary_expectation", "certifications",
     "projects", "preferred_locations", "preferred_industries", "employment_types",
@@ -5613,11 +6044,69 @@ def _incomplete_new_chat_experience(updates: Optional[dict], candidate: Optional
             missing.append("start month/year")
         if end is None and not open_ended:
             missing.append("end month/year or confirmation that it is current")
-        if not description:
-            missing.append("responsibilities or project details")
         if missing:
             return missing
     return []
+
+
+def _pending_chat_work_experience_completion(message: str, candidate: dict, history: list[dict]) -> Optional[dict]:
+    """Collect a new employment record across chat turns before persisting it."""
+    user_messages = [m.get("content", "") for m in history if m.get("role") == "user"]
+    if not user_messages:
+        user_messages = [message]
+    source = " ".join(str(item) for item in user_messages)
+    if re.search(r"\bproject\b", source, re.I) or not re.search(r"\b(?:job|work(?:ing)?|employment|role|position|employed|started)\b", source, re.I):
+        return None
+
+    company = ""
+    company_match = re.search(r"\b(?:at|for|with)\s+(?P<company>[A-Z][A-Za-z0-9&.' -]+?)(?=\s+(?:as|from|since|in|on)\b|[,.!?;]|$)", source)
+    if company_match:
+        company = _normalize_profile_text(company_match.group("company"))
+    title = ""
+    statement = _extract_employment_statement(source)
+    if statement:
+        title, company = statement["title"], statement["company"] or company
+    title_match = re.search(r"\b(?:as|role(?:d)?\s+as|position(?:ed)?\s+as)\s+(?:an?\s+)?(?P<title>[A-Za-z][A-Za-z0-9 /&+'-]+?)(?=\s+(?:at|for|with|from|since)\b|[,.!?;]|$)", source, re.I)
+    if not title and title_match:
+        title = _normalize_profile_text(title_match.group("title"))
+    latest = _normalize_profile_text(user_messages[-1])
+    if not title:
+        for answer in user_messages:
+            answer = _normalize_profile_text(answer)
+            if _is_actual_job_role(answer):
+                title = answer.strip(" .")
+                break
+
+    start = end = ""
+    range_match = _CHAT_EXPERIENCE_RANGE.search(source)
+    if range_match:
+        start, end = range_match.group("start"), range_match.group("end")
+    else:
+        start_match = re.search(r"\b(?:from|since|starting(?:\s+in)?|started\s+in)\s+(" + _CHAT_EXPERIENCE_DATE + r")\b", source, re.I)
+        if start_match:
+            start = start_match.group(1)
+        if re.search(r"\b(?:present|currently|ongoing|now|today)\b", source, re.I):
+            end = "Present"
+        else:
+            end_match = re.search(r"\b(?:to|until|through|till|ended\s+in)\s+(" + _CHAT_EXPERIENCE_DATE + r")\b", source, re.I)
+            if end_match:
+                end = end_match.group(1)
+    for answer in user_messages:
+        answer = _normalize_profile_text(answer)
+        if not re.fullmatch(rf"\s*({_CHAT_EXPERIENCE_DATE})\s*", answer, re.I):
+            continue
+        if not start and not _is_open_ended_experience_value(answer):
+            start = answer
+        elif not end:
+            end = "Present" if _is_open_ended_experience_value(answer) else answer
+
+    if not (title or company or start or end):
+        return None
+    entry = {k: v for k, v in {"title": title, "company": company, "start_date": start, "end_date": end}.items() if v}
+    missing = _incomplete_new_chat_experience({"work_experience": [entry]}, candidate)
+    if missing:
+        return {"reply": "Before I add that work experience, please share the " + ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1] + ".", "updates": None}
+    return {"reply": f"Added your {title} experience at {company} from {start} to {end}.", "updates": {"work_experience": [entry]}}
 
 
 def _latest_profile_guidance_question(history: list[dict]) -> str:
@@ -5720,6 +6209,13 @@ def _profile_guidance_answer(message: str, history: list[dict]) -> Optional[dict
         if years:
             updates["experience_years"] = float(years.group(1))
             reply_subject = "your total experience"
+    elif "which country are you currently based in" in question or "which country is that in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
+        normalized = country_code(value)
+        if normalized:
+            updates["country"] = value
+            updates["country_code"] = normalized
+            reply_subject = "your country"
     elif "city and country are you currently based in" in question:
         value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
         if value:
@@ -5753,6 +6249,9 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     pending_experience = _pending_project_experience_completion(text_value, history)
     if pending_experience:
         return pending_experience
+    pending_work_experience = _pending_chat_work_experience_completion(text_value, candidate, history)
+    if pending_work_experience:
+        return pending_work_experience
     project_experience = _project_at_company_experience(text_value)
     if project_experience:
         missing = ["your job title or role"]
@@ -5938,6 +6437,21 @@ async def _verify_profile_update_persisted(candidate_id: str, updates: dict) -> 
             if isinstance(row, dict)
         ):
             return False
+    if updates.get("projects"):
+        persisted_raw = _parse_raw_data(persisted.get("raw_data"))
+        persisted_projects = _normalize_projects(persisted_raw.get("projects"))
+        persisted_titles = {
+            _normalize_profile_key(project.get("title"))
+            for project in persisted_projects
+            if isinstance(project, dict) and project.get("title")
+        }
+        expected_titles = {
+            _normalize_profile_key(project.get("title"))
+            for project in _normalize_projects(updates.get("projects"))
+            if isinstance(project, dict) and project.get("title")
+        }
+        if not expected_titles.issubset(persisted_titles):
+            return False
     return True
 
 
@@ -6014,6 +6528,9 @@ Return ONLY valid JSON with the exact keys below (omit keys where nothing was fo
   "location": "",
   "bio": "",
   "experience_years": null,
+  "work_experience": [],
+  "education": [],
+  "projects": [],
   "skills": [],
   "preferred_roles": [],
   "preferred_locations": [],
@@ -6031,6 +6548,9 @@ Rules:
 - Only include a field if the candidate explicitly provided that information.
 - Do NOT invent or hallucinate.
 - skills and certifications must be plain name strings, not sentences.
+- work_experience must contain only explicit jobs with a title and company;
+  projects only explicitly named projects/products; education only explicit
+  degrees and institutions.
 - preferred_roles must be job title strings.
 - preferred_locations, preferred_industries, and employment_types must be lists of explicit preferences.
 - remote_preference must be Remote, Hybrid, On-site, or Flexible only when explicitly stated.
@@ -6063,7 +6583,7 @@ async def _extract_multi_field_updates_from_answer(
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
-        return _sanitize_profile_updates(raw)
+        return _correct_profile_categories(_sanitize_profile_updates(raw), candidate_message)
     except Exception as e:
         logger.warning("[chat-multi-field] extraction failed: %s", e)
         return {}
@@ -6076,6 +6596,9 @@ def _merge_profile_updates(base: dict, extra: dict) -> dict:
     result = dict(base)
     for field, value in extra.items():
         if field == "profile_deletions":
+            continue
+        if field == "projects":
+            result[field] = _merge_projects(result.get(field), value)
             continue
         if field in ("availability", "notice_period"):
             if not isinstance(value, str):
@@ -6293,13 +6816,17 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
                 params["education"] = json.dumps(merged)
         elif field in ("headline", "current_role"):
             existing_role = (existing.get("current_role") or existing.get("headline") or "")
-            new_role = str(value)
+            new_role = str(value).strip()
+            if not new_role:
+                continue
             if not current_role_set and new_role != existing_role:
                 set_clauses.append('"current_role" = :current_role')
                 params["current_role"] = new_role
                 current_role_set = True
         elif field == "bio":
-            new_bio = str(value)
+            new_bio = str(value).strip()
+            if not new_bio:
+                continue
             if new_bio != (existing.get("summary") or ""):
                 set_clauses.append("summary = :bio")
                 params["bio"] = new_bio
@@ -6403,7 +6930,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             # Handled separately below; must not be added to SQL SET clauses.
             continue
         else:
-            new_value = str(value)
+            new_value = str(value).strip()
+            # Partial LLM/frontend payloads are not deletion commands. Empty
+            # scalar values must not erase a previously confirmed field.
+            if not new_value:
+                continue
             if field == "location":
                 existing_value = existing.get("location") or ""
             else:
@@ -6802,9 +7333,11 @@ def _format_voice_intake_resume_context(resume: dict) -> str:
 
 
 @api_router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, authorization: Optional[str] = Header(default=None)):
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages is empty")
+    if request.candidate_id:
+        _authorize_candidate(request.candidate_id, authorization)
 
     last_user = next((m for m in reversed(request.messages) if m.role == "user"), None)
     if not last_user:
@@ -6851,6 +7384,18 @@ async def chat(request: ChatRequest):
             voice_resume = frontend_profile.get("voice_intake_resume") or _build_voice_intake_resume(frontend_profile)
             if voice_resume:
                 profile_context += "\n\nVOICE INTAKE RESUME:\n" + _format_voice_intake_resume_context(voice_resume)
+            ledger = await _load_intake_ledger(request.candidate_id)
+            if ledger:
+                answered = [item["topic_id"] for item in ledger if item["status"] == "ANSWERED"]
+                partial = [item["topic_id"] for item in ledger if item["status"] == "PARTIALLY_ANSWERED"]
+                pending = [item["topic_id"] for item in ledger if item["status"] == "ASKED"]
+                profile_context += (
+                    "\n\nAUTHORITATIVE INTAKE LEDGER:"
+                    f"\n- Answered topics: {', '.join(answered) or 'None'}"
+                    f"\n- Partially answered topics: {', '.join(partial) or 'None'}"
+                    f"\n- Pending topics: {', '.join(pending) or 'None'}"
+                    "\nNever ask an ANSWERED topic again. A PARTIALLY_ANSWERED topic may only receive a targeted follow-up."
+                )
             persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
             pass
@@ -6927,6 +7472,7 @@ async def chat(request: ChatRequest):
                 from candidate_job_matching_service import refresh_candidate_job_matches
                 await refresh_candidate_job_matches(request.candidate_id, candidate_row, SessionLocal)
             # Fetch top recommendations joined with job details
+            from candidate_job_matching_service import stored_recommendation_experience_eligibility
             async with SessionLocal() as db:
                 rows = await db.execute(
                     text("""
@@ -6941,10 +7487,25 @@ async def chat(request: ChatRequest):
                         LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                         WHERE cjr.candidate_id = :cid
                           AND cjr.hidden_at IS NULL
+                          AND cjr.id = ANY(CAST(:eligible_ids AS uuid[]))
                         ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
                         LIMIT 10
                     """),
-                    {"cid": request.candidate_id},
+                    {"cid": request.candidate_id, "eligible_ids": [
+                        str(row[0]) for row in (await db.execute(text("""
+                            SELECT cjr.id, jd.title, jd.description, jd.requirements,
+                                   jd.skills, jd.skills_required, jd.experience_required
+                            FROM candidate_job_recommendations cjr
+                            JOIN job_descriptions jd ON jd.id = cjr.job_id
+                            WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                        """), {"cid": request.candidate_id})).fetchall()
+                        if stored_recommendation_experience_eligibility(
+                            candidate_row,
+                            {"title": row[1], "description": row[2], "requirements": row[3],
+                             "skills": row[4], "skills_required": row[5],
+                             "experience_required": row[6]},
+                        )["eligible"]
+                    ]},
                 )
                 job_rows = rows.mappings().fetchall()
             jobs = [
@@ -6979,22 +7540,33 @@ async def chat(request: ChatRequest):
     # the frontend did not send (i.e. messages older than the current request window).
     messages = [{"role": "system", "content": system_prompt}] + combined[-CHAT_WINDOW_SIZE:]
 
+    groq_diagnostic_request_id = str(uuid.uuid4())
+    groq_request_kwargs = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+    }
+    _log_groq_chat_diagnostic(groq_diagnostic_request_id, groq_request_kwargs)
     try:
-        resp = await openai_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.7,
-        )
+        resp = await openai_client.chat.completions.create(**groq_request_kwargs)
         raw_reply = resp.choices[0].message.content or ""
     except Exception as e:
+        _log_groq_chat_exception(e, groq_diagnostic_request_id)
         logger.exception("LLM chat failure")
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
     clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
 
+    # An acknowledgement is conversational state, not new profile evidence.
+    # Apply this backend guard before the optional multi-field extractor so an
+    # accidental LLM update cannot reach persistence or ledger synchronization.
+    acknowledgement_only = _is_acknowledgement_only(last_user.content)
+    if acknowledgement_only:
+        profile_updates = None
+
     # Scan the candidate's answer against ALL missing fields, not just the one asked.
     # This ensures a single answer that covers multiple questions saves all of them.
-    if request.candidate_id and (missing_fields or missing_preference_fields) and last_user.content.strip():
+    if (not acknowledgement_only) and request.candidate_id and (missing_fields or missing_preference_fields) and last_user.content.strip():
         # Skip [PROFILE_QUESTION] instructions — they are not candidate answers
         candidate_text = last_user.content
         if not candidate_text.startswith("[PROFILE_QUESTION]"):
@@ -7054,10 +7626,15 @@ async def chat(request: ChatRequest):
                     "Additional Information, so it was left unchanged."
                 )
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
+            await _sync_profile_updates_to_ledger(request.candidate_id, profile_updates, "chat")
         except Exception as e:
             logger.exception("Profile update failed: %s", e)
             clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
             profile_updates = None
+
+    # Do not show an empty model-generated profile heading after a successful
+    # update; confirm the exact fields that survived persistence instead.
+    clean_reply = _replace_generic_profile_update_reply(clean_reply, profile_updates)
 
     # A direct candidate statement can demonstrate a skill already on their
     # profile even when it does not produce a normal profile field update.
@@ -7078,6 +7655,19 @@ async def chat(request: ChatRequest):
             await _advance_voice_intake_from_chat(request.candidate_id, last_user.content)
         except Exception as e:
             logger.warning("Chat voice intake advance failed: %s", e)
+
+    # Enforce consistency only when the model makes a clear completion claim.
+    # Load the post-update profile so a turn that genuinely crosses 90% is not
+    # rewritten using the pre-turn score.
+    if request.candidate_id and _CONTRADICTORY_PROFILE_COMPLETION_RE.search(clean_reply):
+        try:
+            authoritative_profile = await _get_candidate_profile_payload(request.candidate_id)
+            clean_reply = _sanitize_profile_completion_claim(
+                clean_reply,
+                authoritative_profile.get("profile_strength_detail"),
+            )
+        except Exception as e:
+            logger.warning("Chat completion-claim consistency check failed: %s", e)
 
     # Persist the exact completed turn synchronously.  Deferred saves could
     # finish out of order and let a later request load/replay a stale assistant
@@ -7112,12 +7702,16 @@ class VoiceCandidateIntakeRequest(BaseModel):
     transcript: str
     voice_notes: Optional[List[VoiceNote]] = None
     candidate_id: str  # validated server-side against DB
+    vapi_call_id: Optional[str] = None
+    provider_event_id: Optional[str] = None
 
 
 class VoiceCandidateIntakeProgressRequest(BaseModel):
     transcript: Optional[str] = None
     voice_notes: Optional[List[VoiceNote]] = None
     candidate_id: str
+    vapi_call_id: Optional[str] = None
+    transcript_revision: Optional[str] = None
 
 
 # ---------- Voice intake migration (idempotent) ----------
@@ -7136,6 +7730,52 @@ CREATE TABLE IF NOT EXISTS candidate_voice_intakes (
 
 CREATE_VOICE_INTAKES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_cvi_candidate ON candidate_voice_intakes(candidate_id)
+"""
+
+# Stable, cross-channel state.  A row is the latest state for one semantic
+# profile topic; wording and channel may change without creating a new topic.
+CREATE_CANDIDATE_INTAKE_LEDGER = """
+CREATE TABLE IF NOT EXISTS candidate_intake_ledger (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    topic_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('vapi', 'chat', 'system')),
+    question_text TEXT,
+    answer_text TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('NOT_ASKED','ASKED','ANSWERED','PARTIALLY_ANSWERED','SKIPPED','INVALIDATED')),
+    source_event_id TEXT,
+    evidence_reference TEXT,
+    asked_at TIMESTAMPTZ,
+    answered_at TIMESTAMPTZ,
+    supersedes UUID REFERENCES candidate_intake_ledger(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, topic_id)
+)
+"""
+CREATE_CANDIDATE_INTAKE_LEDGER_EVENT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_cil_source_event
+ON candidate_intake_ledger(candidate_id, source_event_id)
+WHERE source_event_id IS NOT NULL
+"""
+CREATE_VAPI_EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_voice_provider_events (
+    provider_event_id TEXT PRIMARY KEY,
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    vapi_call_id TEXT,
+    transcript_hash TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'processing',
+    processed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+CREATE_VAPI_EVENTS_CALL_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_cvpe_candidate_call
+ON candidate_voice_provider_events(candidate_id, vapi_call_id)
 """
 
 ALTER_CANDIDATE_JOB_RECS_ADD_REASON = """
@@ -7192,6 +7832,33 @@ ALTER TABLE candidate_resume_fix_credit_claims
 ADD COLUMN IF NOT EXISTS credit_source TEXT NOT NULL DEFAULT 'daily'
 """
 
+CREATE_RESUME_FIX_ENTITLEMENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS candidate_resume_fix_entitlements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    job_id UUID NOT NULL REFERENCES job_descriptions(id) ON DELETE CASCADE,
+    recommendation_id UUID REFERENCES candidate_job_recommendations(id) ON DELETE SET NULL,
+    first_claim_id UUID REFERENCES candidate_resume_fix_credit_claims(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, job_id)
+)
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_ENTITLEMENT = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS entitlement_id UUID REFERENCES candidate_resume_fix_entitlements(id) ON DELETE SET NULL
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_KIND = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS claim_kind TEXT NOT NULL DEFAULT 'charged'
+"""
+
+ALTER_RESUME_FIX_CLAIMS_ADD_COST = """
+ALTER TABLE candidate_resume_fix_credit_claims
+ADD COLUMN IF NOT EXISTS credit_cost INTEGER NOT NULL DEFAULT 3
+"""
+
 CREATE_RESUME_FIX_CREDITS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_crfcc_candidate_date
 ON candidate_resume_fix_credit_claims (candidate_id, usage_date)
@@ -7221,6 +7888,10 @@ async def _ensure_voice_intake_table():
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER_EVENT_INDEX))
+        await db.execute(text(CREATE_VAPI_EVENTS_TABLE))
+        await db.execute(text(CREATE_VAPI_EVENTS_CALL_INDEX))
         await db.commit()
 
 
@@ -7235,6 +7906,10 @@ async def _ensure_schema():
         await db.execute(text(CREATE_RESUME_FIX_CREDIT_BALANCES_TABLE))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_CONSUMED_AT))
         await db.execute(text(ALTER_RESUME_FIX_CREDITS_ADD_SOURCE))
+        await db.execute(text(CREATE_RESUME_FIX_ENTITLEMENTS_TABLE))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_ENTITLEMENT))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_KIND))
+        await db.execute(text(ALTER_RESUME_FIX_CLAIMS_ADD_COST))
         await db.execute(text(CREATE_RESUME_FIX_CREDITS_INDEX))
         await db.execute(text(CREATE_APPLICATION_RESUMES_TABLE))
         await db.execute(text(CREATE_APPLICATION_RESUMES_INDEX))
@@ -7273,6 +7948,8 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "expected_salary": "",
   "willing_to_relocate": null,
   "location": "",
+  "country": "",
+  "country_code": "",
   "preferred_roles": [],
   "current_role": "",
   "current_company": "",
@@ -7283,7 +7960,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "additional_information": "",
   "confidence": 0.0
 }
-Only include fields where the candidate actually provided information.
+Only include fields where the candidate actually provided information. Extract country and country_code only when the candidate explicitly states their country; never infer country from a city or state.
 Do NOT invent or hallucinate information.
 For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "Flexible" when stated. For "employment_types" use a list such as ["Full-time"] or ["Contract"]. "willing_to_relocate" must be true or false only when the candidate explicitly states it; otherwise omit it.
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
@@ -7431,7 +8108,9 @@ def _candidate_certification_sources(candidate: dict, extra: Any = None) -> list
 
 def _merge_certifications(existing: Any, new_items: Any) -> list[str]:
     """Merge certification lists with normalized de-duplication."""
-    return _normalize_certifications([*(existing or []), *(new_items or [])])
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
+    return _normalize_certifications([*existing_items, *new_values])
 
 
 def _skill_needs_certification_filter(skill_text: str, cert_text: str) -> bool:
@@ -7855,8 +8534,10 @@ def _merge_work_experience(existing: list, new_items: list) -> list:
     # same matcher.  Previously this copied ``existing`` verbatim and only
     # deduplicated against ``new_items``; once a duplicate reached storage, later
     # Voice Intake/profile saves preserved it forever.
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
     merged: list[dict] = []
-    for item in [*(existing or []), *(new_items or [])]:
+    for item in [*existing_items, *new_values]:
         if not isinstance(item, dict):
             continue
         item = dict(item)
@@ -7927,7 +8608,7 @@ def _normalize_projects(items: Any) -> list[dict]:
     for item in items:
         if isinstance(item, str):
             title = _normalize_profile_text(item)
-            record = {"title": title} if title else {}
+            record = {"title": title, "description": "", "technologies": []} if title else {}
         elif isinstance(item, dict):
             title = _normalize_profile_text(item.get("title") or item.get("name") or item.get("project_name"))
             role = _normalize_profile_text(item.get("role"))
@@ -7980,7 +8661,26 @@ def _normalize_projects(items: Any) -> list[dict]:
 
 def _merge_projects(existing: Any, incoming: Any) -> list[dict]:
     """Merge candidate-provided project records without duplicating titles."""
-    return _normalize_projects([*_normalize_projects(existing), *_normalize_projects(incoming)])
+    current = _normalize_projects(existing)
+    incoming_records = _normalize_projects(incoming)
+    merged = _normalize_projects([*current, *incoming_records])
+    # _normalize_projects preserves the first duplicate record. Merge incoming
+    # non-empty fields without allowing a partial/empty object to erase fields
+    # already present on the canonical project.
+    by_title = {_normalize_profile_key(item.get("title")): item for item in merged}
+    for item in incoming_records:
+        target = by_title.get(_normalize_profile_key(item.get("title")))
+        if not target:
+            continue
+        incoming_description = _normalize_profile_text(item.get("description"))
+        existing_description = _normalize_profile_text(target.get("description"))
+        if incoming_description and not existing_description:
+            target["description"] = incoming_description
+        elif incoming_description and incoming_description.casefold() not in existing_description.casefold():
+            target["description"] = f"{existing_description} {incoming_description}" if existing_description else incoming_description
+        if item.get("technologies"):
+            target["technologies"] = list(dict.fromkeys([*(target.get("technologies") or []), *item["technologies"]]))
+    return merged
 
 
 def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
@@ -8012,10 +8712,12 @@ def _projects_explicitly_named_in_work_experience(items: Any) -> list[dict]:
     return _normalize_projects(projects)
 
 
-def _merge_education(existing: list, new_items: list) -> list:
+def _merge_education(existing: Any, new_items: Any) -> list:
     """Merge education lists, deduplicating by normalized degree + institution."""
-    if not new_items:
-        return existing
+    existing_items = existing if isinstance(existing, list) else []
+    new_values = new_items if isinstance(new_items, list) else []
+    if not new_values:
+        return [dict(e) for e in existing_items if isinstance(e, dict)]
 
     def _education_key(entry: dict) -> str:
         degree = _normalize_profile_key(entry.get("degree") or entry.get("field_of_study") or "")
@@ -8031,12 +8733,12 @@ def _merge_education(existing: list, new_items: list) -> list:
                 merged_entry[field] = new_value
         return merged_entry
 
-    merged = [dict(e) for e in existing if isinstance(e, dict)]
+    merged = [dict(e) for e in existing_items if isinstance(e, dict)]
     index_by_key: dict[str, int] = {}
     for idx, entry in enumerate(merged):
         index_by_key[_education_key(entry)] = idx
 
-    for item in new_items:
+    for item in new_values:
         if not isinstance(item, dict):
             continue
         key = _education_key(item)
@@ -8333,6 +9035,11 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         raw_data["availability"] = _normalize_availability_value(voice["availability"]) or str(voice["availability"]).strip()
     if voice.get("salary_expectation"):
         raw_data["salary_expectation"] = str(voice["salary_expectation"]).strip()
+    explicit_country = _clean_str(voice.get("country"))
+    explicit_country_code = country_code(voice.get("country_code") or explicit_country)
+    if explicit_country and explicit_country_code:
+        raw_data["country"] = explicit_country
+        raw_data["country_code"] = explicit_country_code
     # Keep each stated preference in raw_data as a durable fallback for older
     # candidates, while _upsert_candidate_preferences writes the canonical row.
     preference_fields = (
@@ -8808,7 +9515,7 @@ async def download_application_resume(candidate_id: str, rec_id: str):
 # ---------- Voice intake endpoint ----------
 
 @api_router.post("/voice/candidate-intake")
-async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
+async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authorization: Optional[str] = Header(default=None)):
     """
     Receive voice intake transcript, extract structured info, merge into candidate profile.
     candidate_id is validated against the DB — never trusted blindly from the browser.
@@ -8819,6 +9526,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
     if not request.transcript or not request.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
     transcript = request.transcript.strip()
+    _authorize_candidate(request.candidate_id, authorization)
 
     # Reject malformed UUIDs before they reach the database driver (which may
     # otherwise surface a cast error as an internal server error).
@@ -8932,6 +9640,8 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
         voice_data,
         voice_intake_state,
     )
+    await _sync_voice_ledger(request.candidate_id, voice_intake_state, request.provider_event_id)
+    await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
 
     # 6. Mark intake as completed only when the actual intake questions have all been answered.
     async with SessionLocal() as db:
@@ -8993,9 +9703,10 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest):
 
 
 @api_router.post("/voice/candidate-intake/progress")
-async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest):
+async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest, authorization: Optional[str] = Header(default=None)):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
     transcript = (request.transcript or "").strip()
+    _authorize_candidate(request.candidate_id, authorization)
     if not transcript and not request.voice_notes:
         raise HTTPException(status_code=400, detail="Transcript is empty.")
     candidate = await _get_candidate_row(request.candidate_id)
@@ -9022,6 +9733,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
+    await _sync_voice_ledger(request.candidate_id, resume)
+    await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
     resume_status = resume.get("status")
     if resume_status == "completed":
         logger.info(
@@ -9069,6 +9782,10 @@ async def get_opportunities(candidate_id: str):
                     jd.title,
                     jd.company_name,
                     jd.location,
+                    jd.city,
+                    jd.state,
+                    jd.country,
+                    jd.remote,
                     jd.description,
                     jd.requirements,
                     jd.skills
@@ -9081,6 +9798,10 @@ async def get_opportunities(candidate_id: str):
             {"cid": candidate_id},
         )
         results = rows.mappings().fetchall()
+    # Defense in depth: recommendations are revalidated against the current
+    # candidate location so stale rows cannot bypass the country boundary.
+    results = [r for r in results if country_eligible(candidate, dict(r))]
+    total_matching_jobs = min(total_matching_jobs, len(results))
     return [
         {
             "id": str(r["id"]),
@@ -9505,35 +10226,176 @@ async def _get_resume_fix_credit_balance(candidate_id: str, candidate: dict, usa
     }
 
 
-async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, claim_id: Optional[str]) -> None:
+async def _validate_resume_fix_credit_claim(candidate_id: str, candidate: dict, claim_id: Optional[str], rec_id: Optional[str] = None) -> None:
     """Ensure free-plan saves came from a charged Fix My Resume click."""
     if _has_active_subscription(candidate):
         return
-    if not claim_id:
+    claim_present = bool(claim_id)
+    claim_format_valid = False
+    candidate_match = False
+    already_consumed = False
+
+    if claim_present:
+        try:
+            uuid.UUID(str(claim_id))
+            claim_format_valid = True
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    if claim_format_valid:
+        async with SessionLocal() as db:
+            if rec_id:
+                inspected = await db.execute(text("""
+                    SELECT c.id, c.candidate_id, c.consumed_at,
+                           c.entitlement_id, e.candidate_id AS entitlement_candidate_id,
+                           e.job_id, cjr.job_id AS canonical_job_id
+                    FROM candidate_resume_fix_credit_claims c
+                    JOIN candidate_resume_fix_entitlements e ON e.id = c.entitlement_id
+                    JOIN candidate_job_recommendations cjr ON cjr.id = :rid
+                    WHERE c.id = :claim_id
+                """), {"claim_id": claim_id, "rid": rec_id})
+            else:
+                inspected = await db.execute(text("""
+                    SELECT candidate_id, consumed_at
+                    FROM candidate_resume_fix_credit_claims
+                    WHERE id = :claim_id
+                """), {"claim_id": claim_id})
+            row = inspected.first()
+            if row is not None:
+                row_candidate_id = row[0] if not rec_id else row[1]
+                consumed_at = row[1] if not rec_id else row[2]
+                candidate_match = str(row_candidate_id) == str(candidate_id)
+                already_consumed = consumed_at is not None
+
+    def log_diagnostic(result: str) -> None:
+        logger.info(
+            "resume_fix_claim_diagnostic candidate_id=%s claim_present=%s claim_format_valid=%s "
+            "candidate_match=%s already_consumed=%s validation_result=%s",
+            candidate_id, str(claim_present).lower(), str(claim_format_valid).lower(),
+            str(candidate_match).lower(), str(already_consumed).lower(), result,
+        )
+
+    if not claim_format_valid:
+        log_diagnostic("failure")
         raise HTTPException(status_code=403, detail={
             "code": "resume_fix_credits_insufficient",
             "message": "Upgrade your plan to keep using Fix My Resume.",
         })
+    recommendation_validation = ""
+    if rec_id:
+        recommendation_validation = """
+              AND EXISTS (
+                SELECT 1
+                FROM candidate_resume_fix_entitlements AS e
+                INNER JOIN candidate_job_recommendations AS cjr
+                    ON cjr.id = :rec_id
+                WHERE e.id = c.entitlement_id
+                  AND e.candidate_id = :cid
+                  AND e.job_id = cjr.job_id
+                  AND cjr.candidate_id = :cid
+              )
+        """
     async with SessionLocal() as db:
-        result = await db.execute(text("""
-            UPDATE candidate_resume_fix_credit_claims SET consumed_at = now()
-            WHERE id = :claim_id AND candidate_id = :cid AND consumed_at IS NULL
+        result = await db.execute(text(f"""
+            UPDATE candidate_resume_fix_credit_claims c SET consumed_at = now()
+            WHERE c.id = :claim_id AND c.candidate_id = :cid AND c.consumed_at IS NULL
+              {recommendation_validation}
             RETURNING id
-        """), {"claim_id": claim_id, "cid": candidate_id})
+        """), {"claim_id": claim_id, "cid": candidate_id, "rec_id": rec_id})
         if result.scalar() is None:
+            log_diagnostic("failure")
             raise HTTPException(status_code=403, detail={
                 "code": "resume_fix_credits_insufficient",
                 "message": "Upgrade your plan to keep using Fix My Resume.",
             })
         await db.commit()
+    log_diagnostic("success")
+
+
+async def _claim_resume_fix_entitlement(candidate_id: str, candidate: dict, rec_id: str, usage_date=None) -> dict:
+    """Authorize one editor for the canonical job, charging only its first use."""
+    if _has_active_subscription(candidate):
+        return {"claim_id": None, "remaining_credits": None, "is_subscribed": True}
+    usage_date = usage_date or _product_current_date()
+    async with SessionLocal() as db:
+        canonical = await db.execute(text("""
+            SELECT cjr.id AS recommendation_id, cjr.job_id
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.id = :rid AND cjr.candidate_id = :cid
+            LIMIT 1
+        """), {"rid": rec_id, "cid": candidate_id})
+        job = canonical.mappings().first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Recommendation not found.")
+        job_id, recommendation_id = job["job_id"], job["recommendation_id"]
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
+            "lock_key": f"resume-fix-entitlement:{candidate_id}:{job_id}"
+        })
+        entitlement = (await db.execute(text("""
+            SELECT id FROM candidate_resume_fix_entitlements
+            WHERE candidate_id = :cid AND job_id = :jid
+            FOR UPDATE
+        """), {"cid": candidate_id, "jid": job_id})).scalar()
+        if entitlement:
+            unused = (await db.execute(text("""
+                SELECT id FROM candidate_resume_fix_credit_claims
+                WHERE entitlement_id = :eid AND candidate_id = :cid AND consumed_at IS NULL
+                ORDER BY created_at LIMIT 1
+            """), {"eid": entitlement, "cid": candidate_id})).scalar()
+            if unused:
+                await db.commit()
+                return {"claim_id": str(unused), "remaining_credits": None, "is_subscribed": False}
+            inserted = await db.execute(text("""
+                INSERT INTO candidate_resume_fix_credit_claims
+                    (candidate_id, usage_date, credit_source, entitlement_id, claim_kind, credit_cost)
+                VALUES (:cid, :usage_date, 'entitlement_repeat', :eid, 'editor_repeat', 0)
+                RETURNING id
+            """), {"cid": candidate_id, "usage_date": usage_date, "eid": entitlement})
+            claim_id = inserted.scalar()
+            await db.commit()
+            return {"claim_id": str(claim_id), "remaining_credits": None, "is_subscribed": False}
+
+        # Keep the existing candidate-level balance semantics, inside this same transaction.
+        await db.execute(text("""
+            INSERT INTO candidate_resume_fix_credit_balances (candidate_id, starter_credits_remaining)
+            VALUES (:cid, :starter) ON CONFLICT (candidate_id) DO NOTHING
+        """), {"cid": candidate_id, "starter": INITIAL_RESUME_FIX_CREDITS})
+        starter = (await db.execute(text("""SELECT starter_credits_remaining
+            FROM candidate_resume_fix_credit_balances WHERE candidate_id = :cid FOR UPDATE"""), {"cid": candidate_id})).scalar() or 0
+        source = "starter"
+        remaining = starter
+        if starter >= RESUME_FIX_CREDIT_COST:
+            remaining = (await db.execute(text("""UPDATE candidate_resume_fix_credit_balances
+                SET starter_credits_remaining = starter_credits_remaining - :cost
+                WHERE candidate_id = :cid AND starter_credits_remaining >= :cost
+                RETURNING starter_credits_remaining"""), {"cid": candidate_id, "cost": RESUME_FIX_CREDIT_COST})).scalar()
+        else:
+            used = (await db.execute(text("""SELECT COUNT(*) FROM candidate_resume_fix_credit_claims
+                WHERE candidate_id = :cid AND usage_date = :usage_date AND credit_source = 'daily'"""), {"cid": candidate_id, "usage_date": usage_date})).scalar() or 0
+            remaining = FREE_DAILY_RESUME_FIX_CREDITS - used * RESUME_FIX_CREDIT_COST
+            if remaining < RESUME_FIX_CREDIT_COST:
+                raise HTTPException(status_code=403, detail={"code": "resume_fix_credits_insufficient", "message": "Upgrade your plan to keep using Fix My Resume.", "remaining_credits": max(0, remaining)})
+            source = "daily"
+        if remaining is None:
+            raise HTTPException(status_code=403, detail={"code": "resume_fix_credits_insufficient", "message": "Upgrade your plan to keep using Fix My Resume.", "remaining_credits": 0})
+        entitlement = (await db.execute(text("""INSERT INTO candidate_resume_fix_entitlements
+            (candidate_id, job_id, recommendation_id) VALUES (:cid, :jid, :rid) RETURNING id"""),
+            {"cid": candidate_id, "jid": job_id, "rid": recommendation_id})).scalar()
+        claim_id = (await db.execute(text("""INSERT INTO candidate_resume_fix_credit_claims
+            (candidate_id, usage_date, credit_source, entitlement_id, claim_kind, credit_cost)
+            VALUES (:cid, :usage_date, :source, :eid, 'charged', 3) RETURNING id"""),
+            {"cid": candidate_id, "usage_date": usage_date, "source": source, "eid": entitlement})).scalar()
+        await db.execute(text("UPDATE candidate_resume_fix_entitlements SET first_claim_id = :claim WHERE id = :eid"), {"claim": claim_id, "eid": entitlement})
+        await db.commit()
+    return {"claim_id": str(claim_id), "remaining_credits": remaining - RESUME_FIX_CREDIT_COST if source == "daily" else remaining, "credit_phase": source, "is_subscribed": False}
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/resume-fix-credit-claim")
 async def claim_resume_fix_credits(candidate_id: str, rec_id: str):
     """Charge a free candidate before opening a job-scoped resume editor."""
     candidate = await _get_candidate_row(candidate_id)
-    await _get_job_match_improvement_row(candidate_id, rec_id)  # ownership check
-    return await _claim_resume_fix_credits(candidate_id, candidate)
+    return await _claim_resume_fix_entitlement(candidate_id, candidate, rec_id)
 
 
 @api_router.get("/candidate/{candidate_id}/resume-fix-credits")
@@ -9611,6 +10473,29 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
             detail={"code": "profile_strength_required", "message": "Profile Strength must be at least 90% to view jobs."},
         )
 
+    from candidate_job_matching_service import stored_recommendation_experience_eligibility
+
+    async def eligible_recommendation_ids(db):
+        rows = await db.execute(text("""
+            SELECT cjr.id, jd.title, jd.description, jd.requirements,
+                   jd.skills, jd.skills_required, jd.experience_required
+            FROM candidate_job_recommendations cjr
+            JOIN job_descriptions jd ON jd.id = cjr.job_id
+            WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+        """), {"cid": candidate_id})
+        return [str(row[0]) for row in rows.fetchall()
+                if stored_recommendation_experience_eligibility(
+                    candidate,
+                    {"title": row[1], "description": row[2], "requirements": row[3],
+                     "skills": row[4], "skills_required": row[5],
+                     "experience_required": row[6]},
+                )["eligible"]]
+
+    async with SessionLocal() as db:
+        eligible_ids = await eligible_recommendation_ids(db)
+    eligible_clause = "cjr.id = ANY(CAST(:eligible_ids AS uuid[]))"
+    eligible_params = {"eligible_ids": eligible_ids}
+
     # A free candidate only needs a new match run after exhausting every visible
     # recommendation.  Historical daily-access rows deliberately make a
     # recommendation ineligible for another free allocation, even on a later
@@ -9622,6 +10507,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
                   AND NOT EXISTS (
                     SELECT 1
@@ -9630,11 +10516,14 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                       AND access.recommendation_id = cjr.id
                   )
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         unaccessed_visible_count = available_row.scalar() or 0
 
-    if not _has_active_subscription(candidate) and unaccessed_visible_count == 0:
+    # A stale ineligible row must not cause a refresh solely because it was
+    # filtered.  Refresh remains available when there are eligible stored
+    # recommendations whose access has been exhausted.
+    if not _has_active_subscription(candidate) and unaccessed_visible_count == 0 and eligible_ids:
         try:
             from candidate_job_matching_service import refresh_candidate_job_matches
             await refresh_candidate_job_matches(candidate_id, candidate, SessionLocal)
@@ -9649,9 +10538,10 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 SELECT COUNT(*)
                 FROM candidate_job_recommendations cjr JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         total_matching_jobs = total_row.scalar() or 0
 
@@ -9695,6 +10585,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 LEFT JOIN job_descriptions jd ON jd.id = cjr.job_id
                 WHERE cjr.candidate_id = :cid
                   AND cjr.hidden_at IS NULL
+                  AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
                 -- Return the complete ranked list so the client can render
                 -- locked placeholders.  The access predicate is projected
@@ -9702,7 +10593,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, resp
                 -- must not receive details for rows they have not claimed.
                 ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
             """),
-            {"cid": candidate_id},
+            {"cid": candidate_id, **eligible_params},
         )
         results = rows.mappings().fetchall()
     if response is not None:
@@ -9937,7 +10828,7 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
         symbols such as ``+`` and ``#`` so distinct skills (for example C++
         and C#) are not collapsed together.
         """
-        return re.sub(r"[\s._-]+", "", clean(value).casefold())
+        return canonical_skill_key(clean(value))
 
     def skill_name(skill: Any) -> str:
         return clean(skill.get("name") if isinstance(skill, dict) else skill)
@@ -10004,7 +10895,24 @@ def _resume_editor_payload(candidate: dict) -> dict:
     parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
     raw = _parse_raw_data(candidate.get("raw_data"))
     def value(resume_key: str, candidate_key: str, default=""):
-        return parsed.get(resume_key) if parsed.get(resume_key) not in (None, "") else candidate.get(candidate_key, default)
+        return candidate.get(candidate_key) if candidate.get(candidate_key) not in (None, "") else parsed.get(resume_key, default)
+    skills = _merge_skills(
+        _merge_skills(candidate.get("skills") or [], raw.get("skills") or []),
+        parsed.get("skills") or [],
+    )
+    work_experience = _merge_work_experience(
+        _merge_work_experience(candidate.get("work_experience") or [], raw.get("work_experience") or []),
+        parsed.get("work_experience") or [],
+    )
+    education = _merge_education(
+        _merge_education(candidate.get("education") or [], raw.get("education") or []),
+        parsed.get("education") or [],
+    )
+    certifications = _candidate_certification_sources(candidate)
+    projects = _merge_projects(
+        _merge_projects(candidate.get("projects") or [], raw.get("projects") or []),
+        parsed.get("projects") or [],
+    )
     return {
         "name": value("name", "name"), "email": value("email", "email"),
         "phone": value("phone", "phone"), "location": value("location", "location"),
@@ -10013,11 +10921,11 @@ def _resume_editor_payload(candidate: dict) -> dict:
         # Skills have historically been enriched after the resume was parsed
         # (chat, voice intake, etc.).  The editable document must therefore
         # start with the union, not let an old parse hide canonical skills.
-        "skills": _merge_skills(candidate.get("skills") or [], parsed.get("skills") or []),
-        "work_experience": parsed.get("work_experience") if isinstance(parsed.get("work_experience"), list) else (candidate.get("work_experience") or []),
-        "education": parsed.get("education") if isinstance(parsed.get("education"), list) else (candidate.get("education") or []),
-        "certifications": parsed.get("certifications") if isinstance(parsed.get("certifications"), list) else (raw.get("certifications") or []),
-        "projects": parsed.get("projects") if isinstance(parsed.get("projects"), list) else (raw.get("projects") or []),
+        "skills": skills,
+        "work_experience": work_experience,
+        "education": education,
+        "certifications": certifications,
+        "projects": projects,
         "experience_years": value("experience_years", "experience_years", None),
     }
 
@@ -10038,15 +10946,36 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         raise HTTPException(status_code=422, detail="No resume changes were provided.")
     parsed = _parse_raw_data(candidate.get("parsed_resume_json"))
     raw = _parse_raw_data(candidate.get("raw_data"))
-    next_values = _resume_editor_payload(candidate)
+    existing_values = _resume_editor_payload(candidate)
+    next_values = dict(existing_values)
     next_values.update(supplied)
     for field in ("name", "email", "phone", "location", "headline", "bio"):
         next_values[field] = str(next_values.get(field) or "").strip()
+    # Partial/stale editor payloads may contain null for untouched collections
+    # (notably the missing-skills Save Changes flow).  Null is not a deletion
+    # command; retain the complete current profile before validating/merging.
     for field in ("skills", "work_experience", "education", "certifications", "projects"):
+        if next_values.get(field) is None:
+            next_values[field] = existing_values[field]
         if not isinstance(next_values.get(field), list):
             raise HTTPException(status_code=422, detail=f"{field} must be a list.")
-    # The editor sends the complete skills document. Do not merge stale
-    # canonical values back into it; that was preserving legacy concatenations.
+    # Resume Editor payloads are partial or stale snapshots by design. Empty
+    # collections are not deletion commands, and all supplied collections are
+    # additive merges with the complete current canonical profile.
+    for field, merger in (
+        ("skills", _merge_skills),
+        ("work_experience", _merge_work_experience),
+        ("education", _merge_education),
+        ("projects", _merge_projects),
+    ):
+        if field in supplied and supplied[field]:
+            next_values[field] = merger(existing_values[field], supplied[field])
+        else:
+            next_values[field] = existing_values[field]
+    if "certifications" in supplied and supplied["certifications"]:
+        next_values["certifications"] = _merge_certifications(existing_values["certifications"], supplied["certifications"])
+    else:
+        next_values["certifications"] = existing_values["certifications"]
     next_values["skills"] = _normalize_skills(
         next_values["skills"], certifications=next_values["certifications"]
     )
@@ -10064,8 +10993,13 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         "certifications": next_values["certifications"], "projects": next_values["projects"],
         "experience_years": next_values["experience_years"],
     })
-    raw["certifications"] = next_values["certifications"]
-    raw["projects"] = next_values["projects"]
+    raw["certifications"] = _merge_certifications(raw.get("certifications"), next_values["certifications"])
+    raw["projects"] = _merge_projects(raw.get("projects"), next_values["projects"])
+    raw["skills"] = _normalize_skills(
+        [raw.get("skills") or [], next_values["skills"]], certifications=raw["certifications"]
+    )
+    raw["work_experience"] = _merge_work_experience(raw.get("work_experience"), next_values["work_experience"])
+    raw["education"] = _merge_education(raw.get("education"), next_values["education"])
     # The download button serves this exact artifact, rather than rebuilding a
     # document from a later profile read.  It is generated from the same
     # canonical values that are about to be written to candidates.skills.
@@ -10074,7 +11008,8 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
     pdf_bytes = _build_candidate_profile_pdf(_resume_editor_pdf_profile(next_values, raw))
     updated_resume_path.write_bytes(pdf_bytes)
     raw["updated_resume_file_path"] = str(updated_resume_path)
-    changed = [key for key in supplied if next_values.get(key) != _resume_editor_payload(candidate).get(key)]
+    changed = [key for key in supplied if next_values.get(key) != existing_values.get(key)]
+    logger.info("[profile-integrity] candidate=%s source=resume_editor changed=%s added_only=true", candidate_id, changed)
     async with SessionLocal() as db:
         await db.execute(text("""
             UPDATE candidates SET name=:name, email=:email, phone=:phone, location=:location,
@@ -10144,7 +11079,21 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
-    await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id)
+    await _validate_resume_fix_credit_claim(candidate_id, before, request.fix_credit_claim_id, rec_id)
+    proposed_skills = request.profile_updates.get("skills") if isinstance(request.profile_updates, dict) else None
+    if isinstance(proposed_skills, list):
+        existing_keys = {canonical_skill_key(skill) for skill in _candidate_profile_skills(before)}
+        missing_by_key = {canonical_skill_key(skill): skill for skill in guidance.get("missing_skills", [])}
+        confirmed_keys = {canonical_skill_key(skill) for skill in request.confirmed_skills}
+        unsupported_confirmations = confirmed_keys - set(missing_by_key)
+        if unsupported_confirmations:
+            raise HTTPException(status_code=422, detail="Confirmed skills must come from this job's current missing-skill list.")
+        added_missing = {
+            canonical_skill_key(skill) for skill in proposed_skills
+            if canonical_skill_key(skill) not in existing_keys and canonical_skill_key(skill) in missing_by_key
+        }
+        if not added_missing.issubset(confirmed_keys):
+            raise HTTPException(status_code=422, detail="Confirm each missing job skill before adding it to your resume.")
     # Save the complete, candidate-edited uploaded-resume representation into
     # both its parsed snapshot and the canonical candidate profile.
     profile_updates = request.profile_updates
@@ -10769,7 +11718,15 @@ async def mark_notification_read(candidate_id: str, notif_id: str):
 
 @api_router.post("/webhooks/vapi")
 async def vapi_webhook(request: StarletteRequest):
-    """Acknowledge VAPI events and finalize the intake on the terminal report."""
+    """Authenticate and idempotently process Vapi's authoritative terminal report."""
+    webhook_secret = os.environ.get("VAPI_WEBHOOK_SECRET", "").strip()
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Vapi webhook is not configured.")
+    supplied = request.headers.get("x-vapi-secret", "")
+    if not supplied:
+        supplied = _get_bearer_token(request.headers.get("authorization"))
+    if not hmac.compare_digest(supplied, webhook_secret):
+        raise HTTPException(status_code=401, detail="Invalid Vapi webhook signature.")
     try:
         payload = await request.json()
     except (TypeError, ValueError):
@@ -10780,7 +11737,7 @@ async def vapi_webhook(request: StarletteRequest):
     message = payload.get("message")
     message_type = message.get("type") if isinstance(message, dict) else None
     event_type = payload.get("type") or message_type
-    logger.info("Received VAPI webhook event: %s", event_type)
+    logger.info("Received authenticated VAPI webhook event: %s", event_type)
 
     # speech-update/conversation-update and other intermediate deliveries are
     # acknowledgements only.  VAPI's end-of-call-report is the terminal event.
@@ -10788,49 +11745,67 @@ async def vapi_webhook(request: StarletteRequest):
         event = message if isinstance(message, dict) else payload
         call = event.get("call") if isinstance(event.get("call"), dict) else {}
         metadata = call.get("metadata") or event.get("metadata") or {}
+        overrides = call.get("assistantOverrides") if isinstance(call.get("assistantOverrides"), dict) else {}
+        variable_values = overrides.get("variableValues") if isinstance(overrides.get("variableValues"), dict) else {}
         candidate_id = metadata.get("candidateId") or metadata.get("candidate_id")
+        candidate_id = candidate_id or variable_values.get("candidateId") or variable_values.get("candidate_id")
         artifact = event.get("artifact") if isinstance(event.get("artifact"), dict) else {}
         transcript = artifact.get("transcript") or event.get("transcript")
-        ended_reason = call.get("endedReason") or event.get("endedReason")
+        call_id = str(call.get("id") or event.get("callId") or "").strip()
+        transcript = transcript if isinstance(transcript, str) else ""
+        transcript_hash = hashlib.sha256(transcript.encode()).hexdigest()
+        provider_event_id = str(
+            event.get("id") or payload.get("id") or
+            f"vapi:{call_id or 'unknown'}:{event_type}:{transcript_hash}"
+        )
 
         try:
             uuid.UUID(str(candidate_id))
         except (ValueError, AttributeError, TypeError):
             candidate_id = None
 
-        if candidate_id:
-            candidate = await _get_candidate_row(candidate_id)
-            raw_data = _parse_raw_data(candidate.get("raw_data")) if isinstance(candidate, dict) else {}
-            voice_intake = _parse_raw_data(raw_data.get("voice_intake"))
-            should_complete = (
-                ended_reason == "silence-timed-out"
-                and str(voice_intake.get("status") or "").lower() == "completed"
-            )
-            terminal_status = "completed" if should_complete else "in_progress"
+        if candidate_id and transcript.strip():
             async with SessionLocal() as db:
                 result = await db.execute(
                     text("""
-                        UPDATE candidate_voice_intakes
-                        SET transcript = COALESCE(NULLIF(:transcript, ''), transcript),
-                            status = :status,
-                            completed_at = CASE WHEN :status = 'completed' THEN now() ELSE NULL END
-                        WHERE id = (
-                            SELECT id FROM candidate_voice_intakes
-                            WHERE candidate_id = :candidate_id
-                              AND status <> 'completed'
-                            ORDER BY created_at DESC
-                            LIMIT 1
-                        )
+                        INSERT INTO candidate_voice_provider_events
+                            (provider_event_id, candidate_id, vapi_call_id, transcript_hash, event_type, payload)
+                        VALUES (:event_id, :candidate_id, NULLIF(:call_id, ''), :hash, :event_type, CAST(:payload AS jsonb))
+                        ON CONFLICT (provider_event_id) DO NOTHING
+                        RETURNING provider_event_id
                     """),
-                    {
-                        "candidate_id": candidate_id,
-                        "transcript": transcript or "",
-                        "status": terminal_status,
-                    },
+                    {"event_id": provider_event_id, "candidate_id": candidate_id, "call_id": call_id,
+                     "hash": transcript_hash, "event_type": event_type,
+                     "payload": json.dumps({"type": event_type, "call_id": call_id})},
                 )
                 await db.commit()
-            if result.rowcount and should_complete:
-                _schedule_voice_intake_matching(candidate_id, terminal_status)
+            if not result.fetchone():
+                return {"status": "duplicate", "provider_event_id": provider_event_id}
+            try:
+                outcome = await candidate_voice_intake(
+                    VoiceCandidateIntakeRequest(
+                        transcript=transcript, candidate_id=candidate_id,
+                        vapi_call_id=call_id or None, provider_event_id=provider_event_id,
+                    ),
+                    authorization=f"Bearer {_issue_candidate_session_token(candidate_id)}",
+                )
+                async with SessionLocal() as db:
+                    await db.execute(text("""
+                        UPDATE candidate_voice_provider_events
+                        SET status = 'processed', processed_at = now()
+                        WHERE provider_event_id = :event_id
+                    """), {"event_id": provider_event_id})
+                    await db.commit()
+                return {"status": "processed", "provider_event_id": provider_event_id,
+                        "intake_status": outcome.get("status")}
+            except Exception:
+                async with SessionLocal() as db:
+                    await db.execute(text("""
+                        UPDATE candidate_voice_provider_events SET status = 'failed'
+                        WHERE provider_event_id = :event_id
+                    """), {"event_id": provider_event_id})
+                    await db.commit()
+                raise
     return {"status": "ok"}
 
 

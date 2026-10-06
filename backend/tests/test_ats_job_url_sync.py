@@ -71,18 +71,13 @@ class FakeSession:
             return FakeResult([])
 
         if "update job_descriptions" in sql_lower:
-            forbidden_fields = (
-                "title =",
-                "location =",
-                "company_name =",
-                "department =",
-                "agency_id =",
-                "company_registry_id =",
-                "ats_job_id =",
-                "ats_type =",
-            )
-            for field in forbidden_fields:
-                assert field not in sql_lower, f"Unexpected field update in SQL: {field}"
+            # Existing ATS rows are intentionally refreshed on every
+            # successful observation. Identity fields remain immutable, while
+            # provider metadata and lifecycle timestamps are updated.
+            for field in ("title =", "location =", "department =", "updated_at =", "last_synced_at ="):
+                assert field in sql_lower, f"Expected active-job refresh missing from SQL: {field}"
+            for field in ("company_name =", "agency_id =", "company_registry_id =", "ats_job_id =", "ats_type ="):
+                assert field not in sql_lower, f"Identity field must not be updated: {field}"
 
             row = self.state["job_row"]
             assert row is not None, "UPDATE job_descriptions executed without an existing row"
@@ -90,6 +85,12 @@ class FakeSession:
                 row["job_url"] = params["job_url"]
             if params.get("refresh_description"):
                 row["description"] = params["description"]
+            for field in ("title", "location", "department", "employment_type"):
+                if params.get(field) is not None and str(params[field]).strip():
+                    row[field] = params[field]
+            row["is_active"] = True
+            row["status"] = "active"
+            row["job_status"] = "active"
             row["updated_at"] = "updated-now"
             row["last_synced_at"] = "synced-now"
             self.state["update_statements"].append((sql, params))
@@ -105,8 +106,24 @@ class FakeSession:
                 }
             ])
 
-        if "from company_registry" in sql_lower and "select id" in sql_lower:
-            return FakeResult([("company-1",)])
+            if "from company_registry" in sql_lower and "select id" in sql_lower:
+                return FakeResult([("company-1",)])
+
+            if "from job_descriptions" in sql_lower and "select id, ats_job_id" in sql_lower:
+                row = self.state["job_row"]
+                if row and row["ats_type"] == params.get("ats_type") and row["ats_job_id"] not in self.state.get("seen_ids", set()):
+                    return FakeResult([(row["id"], row["ats_job_id"])])
+                return FakeResult([])
+
+            if "update job_descriptions" in sql_lower:
+                self.state["job_row"]["is_active"] = False
+                self.state["job_row"]["status"] = "closed"
+                self.state["job_row"]["job_status"] = "closed"
+                return FakeResult([])
+
+            if "update candidate_job_recommendations" in sql_lower:
+                self.state["recommendations_hidden"] = True
+                return FakeResult([])
 
         if "update company_registry" in sql_lower:
             self.state["company_registry_updated"] = True
@@ -196,14 +213,14 @@ async def test_upsert_ats_job_refreshes_metadata_and_only_fills_missing_url(monk
         )
 
     assert job_id == "existing-job-id"
-    assert state["job_row"]["title"] == "Original Title"
+    assert state["job_row"]["title"] == "New Title"
     assert state["job_row"]["description"] == "Original description"
-    assert state["job_row"]["location"] == "Original location"
+    assert state["job_row"]["location"] == "New location"
     # Source metadata is deliberately refreshed; identity and core display
     # fields remain stable for an existing ATS record.
     assert state["job_row"]["company_name"] == "Jumio"
-    assert state["job_row"]["department"] == "Engineering"
-    assert state["job_row"]["employment_type"] == "Full-time"
+    assert state["job_row"]["department"] == "Product"
+    assert state["job_row"]["employment_type"] == "Contract"
 
     # Every observed ATS row is synced so fields introduced in newer
     # normalizers can backfill historical records; only URL replacement stays
@@ -271,6 +288,7 @@ async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
 
     async def fake_upsert(db, job):
         state["upsert_called"] = state.get("upsert_called", 0) + 1
+        state.setdefault("seen_ids", set()).add(job["ats_job_id"])
         assert job["ats_job_id"] == "ats-123"
         return "existing-job-id"
 
@@ -294,8 +312,11 @@ async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
                     }
                 ])
 
-            if "from job_descriptions" in sql_lower:
-                raise AssertionError("Scheduler should not pre-skip existing ATS jobs")
+            if "from job_descriptions" in sql_lower and "select id, ats_job_id" in sql_lower:
+                return FakeResult([])
+
+            if "update job_descriptions" in sql_lower or "update candidate_job_recommendations" in sql_lower:
+                return FakeResult([])
 
             if "update company_registry" in sql_lower:
                 self.state["company_registry_updated"] = True
