@@ -7474,7 +7474,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
             from candidate_job_matching_service import stored_recommendation_experience_eligibility
             async with SessionLocal() as db:
                 rows = await db.execute(
-                    text("""
+                    text(f"""
                         SELECT
                             cjr.match_score,
                             jd.title,
@@ -7487,16 +7487,18 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                         WHERE cjr.candidate_id = :cid
                           AND cjr.hidden_at IS NULL
                           AND cjr.id = ANY(CAST(:eligible_ids AS uuid[]))
+                          AND {candidate_visible_where('jd')}
                         ORDER BY cjr.recommendation_rank ASC NULLS LAST, cjr.match_score DESC NULLS LAST
                         LIMIT 10
                     """),
                     {"cid": request.candidate_id, "eligible_ids": [
-                        str(row[0]) for row in (await db.execute(text("""
+                        str(row[0]) for row in (await db.execute(text(f"""
                             SELECT cjr.id, jd.title, jd.description, jd.requirements,
                                    jd.skills, jd.skills_required, jd.experience_required
                             FROM candidate_job_recommendations cjr
                             JOIN job_descriptions jd ON jd.id = cjr.job_id
                             WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
+                              AND {candidate_visible_where('jd')}
                         """), {"cid": request.candidate_id})).fetchall()
                         if stored_recommendation_experience_eligibility(
                             candidate_row,
