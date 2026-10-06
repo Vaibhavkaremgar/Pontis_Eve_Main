@@ -6,12 +6,15 @@ from typing import Any
 
 from app.job_ingestion.normalize import _normalize_skill_values, _html_text
 from skill_normalization import merge_skills, canonical_skill_key
+from groq_client import AllKeysRateLimitedError
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM = (
+    "Extract job metadata and return exactly one JSON object with these keys: "
+    "skills (array of strings), experience_required (string or null), "
+    "salary_range (string or null), employment_type (string or null). "
     "Extract only concise professional or technical skills explicitly required or preferred "
-    "by the job description. Return JSON only as {\"skills\":[\"skill\"]}. "
     "Never return sentences, duties, marketing text, salary, location, education, or generic "
     "soft skills unless clearly a named job competency. Deduplicate the list."
 )
@@ -29,7 +32,7 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
             model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
             temperature=0,
             response_format={"type": "json_object"},
-        messages=[{"role": "system", "content": _SYSTEM + " Also return experience_required, salary_range, and employment_type."}, {"role": "user", "content": json.dumps({"title": job.get("title"), "description": job.get("description"), "requirements": job.get("requirements"), "responsibilities": job.get("responsibilities"), "native_metadata": {k: job.get(k) for k in ("skills", "skills_required", "salary_range", "employment_type", "location", "structured_data")}}, default=str)}],
+        messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": json.dumps({"title": job.get("title"), "description": job.get("description"), "requirements": job.get("requirements"), "responsibilities": job.get("responsibilities"), "native_metadata": {k: job.get(k) for k in ("skills", "skills_required", "salary_range", "employment_type", "location", "structured_data")}}, default=str)}],
         )
         payload = json.loads(response.choices[0].message.content or "{}")
         if not isinstance(payload, dict):
@@ -60,6 +63,14 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
                 "provider_skills": original, "llm_skills": llm_skills,
                 "final_skills": skills, "provenance": provenance,
             }
+            job["structured_data"]["metadata_extraction_status"] = "complete"
+    except (AllKeysRateLimitedError, RuntimeError) as exc:
+        # This is retryable, not an empty extraction. Keep every provider value
+        # untouched so persistence cannot erase metadata while keys recover.
+        if isinstance(job.get("structured_data"), dict):
+            job["structured_data"]["metadata_extraction_status"] = "pending_retry"
+        job["metadata_extraction_status"] = "pending_retry"
+        logger.warning("[job-skills] Groq unavailable for ats_job_id=%s; queued for retry: %s", job.get("ats_job_id"), exc)
     except Exception as exc:
         logger.warning("[job-skills] LLM extraction failed for ats_job_id=%s: %s", job.get("ats_job_id"), exc)
         if original:

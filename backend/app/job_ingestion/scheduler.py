@@ -18,6 +18,7 @@ MAX_LOGGED_JOB_FAILURES = 3
 IST = ZoneInfo("Asia/Kolkata")
 # Run at 00:00, 06:00, 12:00, and 18:00 IST.
 SYNC_HOURS_IST = "0,6,12,18"
+METADATA_RETRY_BATCH_SIZE = 25
 
 _scheduler: AsyncIOScheduler | None = None
 _sync_lock: asyncio.Lock | None = None
@@ -87,6 +88,13 @@ async def sync_jobs() -> None:
     collector = JobCollector()
 
     logger.info("[job-scheduler] sync started")
+
+    try:
+        await retry_pending_metadata_extraction()
+    except Exception as exc:
+        # Metadata retries are auxiliary to the provider sync; one database or
+        # row-level problem must not prevent the normal ATS cycle.
+        logger.error("[job-scheduler] pending metadata retry pass failed: %s", exc, exc_info=True)
 
     async with SessionLocal() as db:
         result = await db.execute(
@@ -211,6 +219,54 @@ async def _sync_jobs_guarded() -> None:
         logger.info("[job-scheduler] Starting ATS job sync")
         await sync_jobs()
         logger.info("[job-scheduler] Job sync completed")
+
+
+async def retry_pending_metadata_extraction() -> int:
+    """Retry a small, FIFO batch of jobs whose optional metadata was deferred.
+
+    This deliberately operates only on rows already in ``job_descriptions``.
+    A failed/unavailable Groq attempt is not persisted, so the existing
+    metadata remains untouched and the row stays eligible for a later cycle.
+    """
+    from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+
+    SessionLocal = _get_session_local()
+    completed = 0
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT id, ats_type, ats_job_id, title, company_name, department,
+                   location, responsibilities, city, state, country, remote,
+                   company_website_url, company_logo_url, industry, valid_through,
+                   employment_type, experience_required, salary_range, description,
+                   requirements, skills_required, skills, experience_level,
+                   structured_data, remote_policy, job_url
+            FROM job_descriptions
+            WHERE structured_data->>'metadata_extraction_status' = 'pending_retry'
+            ORDER BY updated_at NULLS FIRST, id
+            LIMIT :batch_size
+        """), {"batch_size": METADATA_RETRY_BATCH_SIZE})
+        rows = result.mappings().all()
+
+        for row in rows:
+            job = dict(row)
+            try:
+                job = await extract_missing_job_skills(job)
+                structured = job.get("structured_data")
+                # Do not persist an unavailable/failed attempt.  In
+                # particular, this avoids replacing existing metadata with
+                # the incomplete retry payload.
+                if not isinstance(structured, dict) or structured.get("metadata_extraction_status") != "complete":
+                    continue
+                await upsert_ats_job(db, job)
+                completed += 1
+            except Exception as exc:
+                logger.warning("[job-scheduler] metadata retry failed id=%s: %s", row.get("id"), exc)
+                await db.rollback()
+        if completed:
+            await db.commit()
+    logger.info("[job-scheduler] metadata retries completed=%d batch=%d", completed, len(rows))
+    return completed
 
 
 async def sync_fantastic_jobs() -> dict:
