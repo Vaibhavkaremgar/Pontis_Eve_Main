@@ -779,6 +779,11 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
                         {job.company} · {job.location}
                       </p>
+                      {job.opportunity_type === "internship" && (
+                        <span data-testid={`internship-label-${job.id}`} className="mt-1 inline-block text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">
+                          Internship
+                        </span>
+                      )}
                     </div>
                     </div>
                     <div data-testid={`job-metadata-${job.id}`} className="mt-3 grid grid-cols-1 gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48] sm:grid-cols-2">

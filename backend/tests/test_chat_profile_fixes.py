@@ -182,8 +182,9 @@ def test_natural_language_preference_update_persists_canonical_keys_and_improves
         "notice_period": "30 day",
         "expected_salary": "24 LPA",
         "willing_to_relocate": True,
-        "open_to_opportunities": True,
-    }
+            "open_to_opportunities": True,
+            "opportunity_type": "job",
+        }
     assert raw["expected_salary"] == "24 LPA"
     assert raw["notice_period"] == "30 day"
     assert all(canonical[field] not in (None, "", []) for field in (

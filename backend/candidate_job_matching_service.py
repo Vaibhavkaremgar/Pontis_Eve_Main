@@ -845,6 +845,7 @@ def _build_candidate_signals(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "remote_preference": preferences.get("remote_preference") or "",
         "expected_salary": preferences.get("expected_salary") or "",
         "willing_to_relocate": preferences.get("willing_to_relocate"),
+        "opportunity_type": preferences.get("opportunity_type", "job"),
         "total_experience_years": _candidate_total_experience_years(candidate),
         "_candidate": candidate,
     }
@@ -1195,6 +1196,7 @@ async def refresh_candidate_job_matches(
     # Read target intent before retrieval; it is also reused by the existing
     # eligibility and hybrid ranking logic below.
     signals = _build_candidate_signals(candidate)
+    opportunity_type = signals.get("opportunity_type", "job")
     candidate_country = candidate_location(candidate)["country_code"]
     candidate_text = build_candidate_text(candidate)
     if not candidate_text.strip():
@@ -1246,11 +1248,13 @@ async def refresh_candidate_job_matches(
                        department, location, employment_type, experience_required,
                        salary_range, city, state, country, remote, industry,
                        skills_required, structured_data, remote_policy
+                       , opportunity_type
                 FROM job_descriptions
                 WHERE id::text IN ({placeholders})
                   AND {candidate_visible_where('job_descriptions')}
+                  AND COALESCE(job_descriptions.opportunity_type, 'job') = :opportunity_type
             """),
-            params,
+            {**params, "opportunity_type": opportunity_type},
         )
         job_details = {str(r[0]): {
             "title": r[1] or "",
@@ -1269,6 +1273,9 @@ async def refresh_candidate_job_matches(
             "city": r[11] or "", "state": r[12] or "", "country": r[13] or "",
             "remote": r[14], "industry": r[15] or "", "skills_required": r[16] or [],
             "structured_data": r[17] or {}, "remote_policy": r[18] or "",
+            # Legacy test/session adapters and pre-migration rows do not expose
+            # the new column; those are ordinary jobs by definition.
+            "opportunity_type": (r[19] if len(r) > 19 else None) or "job",
         }
                        for r in rows.fetchall()}
 

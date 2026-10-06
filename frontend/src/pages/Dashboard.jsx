@@ -464,7 +464,10 @@ function Dashboard() {
     }
     setJobsError(false);
     axios
-      .get(`${API}/candidate/${candidateId}/jobs`, requestMore ? { params: { request_more: true } } : undefined)
+      .get(`${API}/candidate/${candidateId}/jobs`, { params: {
+        ...(requestMore ? { request_more: true } : {}),
+        type: userProfile?.opportunity_type === "internship" ? "internship" : "job",
+      }})
       .then((res) => {
         setAvailableJobs(res.data || []);
         const total = Number(res.headers?.["x-total-matching-jobs"]);
@@ -481,7 +484,9 @@ function Dashboard() {
         setJobsError(true);
         setJobsLoading(false);
       });
-  }, [candidateId, hasJobsAccess]);
+  }, [candidateId, hasJobsAccess, userProfile?.opportunity_type]);
+
+  const opportunityType = userProfile?.opportunity_type === "internship" ? "internship" : "job";
 
   React.useEffect(() => {
     const onProfileUpdated = (event) => {
@@ -886,9 +891,10 @@ function Dashboard() {
           <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
             {/* Toggle bar */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
-              {hasJobsAccess && (
-                <button
+              <button
                   data-testid="jobs-tab"
+                  aria-disabled={opportunityType !== "job"}
+                  disabled={opportunityType !== "job"}
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
@@ -900,9 +906,27 @@ function Dashboard() {
                       : "text-[#9A9A98] hover:text-[#4A4A48]"
                   }`}
                 >
-                  Jobs for you
-                </button>
-              )}
+                  New Jobs
+              </button>
+              <button
+                  data-testid="internships-tab"
+                  aria-disabled={opportunityType !== "internship"}
+                  disabled={opportunityType !== "internship"}
+                  onClick={() => {
+                    userChoseCenterViewRef.current = true;
+                    setCenterView("swipe");
+                    setRightPanelTab("profile");
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
+                    opportunityType === "internship" && centerView === "swipe"
+                      ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
+                      : opportunityType !== "internship"
+                        ? "text-[#B8B8B4] cursor-not-allowed"
+                        : "text-[#9A9A98] hover:text-[#4A4A48]"
+                  }`}
+                >
+                  Internships
+              </button>
               <button
                 data-testid="chat-tab"
                   onClick={() => {

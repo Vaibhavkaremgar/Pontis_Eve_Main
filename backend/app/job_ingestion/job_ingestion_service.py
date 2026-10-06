@@ -80,6 +80,7 @@ async def upsert_ats_job(
                     department = COALESCE(CAST(:department AS VARCHAR), department), location = COALESCE(CAST(:location AS VARCHAR), location),
                     responsibilities = COALESCE(CAST(:responsibilities AS TEXT), responsibilities), city = COALESCE(CAST(:city AS VARCHAR), city), state = COALESCE(CAST(:state AS VARCHAR), state), country = COALESCE(CAST(:country AS VARCHAR), country), remote = COALESCE(CAST(:remote AS BOOLEAN), remote), company_website_url = COALESCE(CAST(:company_website_url AS VARCHAR), company_website_url), company_logo_url = COALESCE(CAST(:company_logo_url AS VARCHAR), company_logo_url), industry = COALESCE(CAST(:industry AS VARCHAR), industry), valid_through = COALESCE(CAST(:valid_through AS TIMESTAMPTZ), valid_through),
                     employment_type = COALESCE(CAST(:employment_type AS VARCHAR), employment_type),
+                    opportunity_type = COALESCE(CAST(:opportunity_type AS VARCHAR), 'job'),
                     remote_policy = COALESCE(CAST(:remote_policy AS VARCHAR), remote_policy),
                     experience_level = COALESCE(CAST(:experience_level AS VARCHAR), experience_level),
                     experience_required = COALESCE(CAST(:experience_required AS TEXT), experience_required),
@@ -167,6 +168,7 @@ async def upsert_ats_job(
                 city, state, country, remote,
                 company_website_url, company_logo_url, industry, valid_through,
                 employment_type,
+                opportunity_type,
                 experience_required,
                 salary_range,
                 description,
@@ -202,6 +204,7 @@ async def upsert_ats_job(
                 :city, :state, :country, :remote,
                 :company_website_url, :company_logo_url, :industry, :valid_through,
                 :employment_type,
+                :opportunity_type,
                 :experience_required,
                 :salary_range,
                 :description,
@@ -277,6 +280,7 @@ def _metadata_params(job: dict[str, Any]) -> dict[str, Any]:
     safe = _persistence_safe_job(job)
     return {
         "employment_type": safe.get("employment_type"),
+        "opportunity_type": safe.get("opportunity_type", "job"),
         "department": safe.get("department"), "location": safe.get("location"), "responsibilities": safe.get("responsibilities"),
         "city": safe.get("city"), "state": safe.get("state"), "country": safe.get("country"), "remote": safe.get("remote"),
         "company_website_url": _valid_http_url(safe.get("company_website_url")), "company_logo_url": _valid_http_url(safe.get("company_logo_url")), "industry": safe.get("industry"), "valid_through": parse_ats_datetime(safe.get("valid_through")),
@@ -312,6 +316,9 @@ def _persistence_safe_job(job: dict[str, Any]) -> dict[str, Any]:
         value = str(value).strip()
         return value or fallback
     safe["ats_type"] = (text_value("ats_type") or "").lower()
+    safe["opportunity_type"] = text_value("opportunity_type", "job").lower()
+    if safe["opportunity_type"] not in {"job", "internship"}:
+        safe["opportunity_type"] = "job"
     safe["ats_job_id"] = text_value("ats_job_id") or ""
     # These are core persisted text fields.  Empty description/title are an
     # honest representation of an incomplete board response, unlike invented

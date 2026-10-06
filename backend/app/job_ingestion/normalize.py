@@ -16,6 +16,29 @@ def _text(value: Any) -> str | None:
 
 UNKNOWN_EXPERIENCE_LEVEL = "Not specified"
 
+def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> str:
+    """Classify an opportunity conservatively; descriptions alone are weak evidence.
+
+    A normal job mentioning an intern or internal work must remain a job.  A
+    provider's structured employment type or an explicit internship title is
+    authoritative; prose is used only for explicit internship signals.
+    """
+    structured = job.get("structured_data") if isinstance(job.get("structured_data"), dict) else {}
+    raw = structured.get("raw_source", {}).get("payload", {}) if isinstance(structured.get("raw_source"), dict) else {}
+    values = [job.get("employment_type"), job.get("employmentType"), job.get("employment_status"),
+              job.get("job_type"), job.get("type"), raw.get("employmentType"), raw.get("employment_type"),
+              raw.get("jobType"), raw.get("job_type")]
+    explicit = " ".join(str(v) for v in values if v not in (None, "")).casefold()
+    if re.search(r"\b(intern(ship)?|co[- ]?op|student placement|graduate internship)\b", explicit):
+        return "internship"
+    title = str(job.get("title") or "")
+    if re.search(r"\b(intern(ship)?|co[- ]?op|student placement)\b", title, re.I):
+        return "internship"
+    text = _html_text(description)
+    if re.search(r"\b(?:internship|intern position|co[- ]?op program|student placement)\b", text, re.I):
+        return "internship"
+    return "job"
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -278,6 +301,7 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     evidence = _jd_evidence(description)
     metadata_keys = ("employment_type", "remote_policy", "experience_level", "experience_required", "salary_range", "skills_required", "created_at")
     result = {key: _first(explicit.get(key), evidence.get(key)) for key in metadata_keys}
+    result["opportunity_type"] = classify_opportunity_type({**job, **explicit}, description)
     # Preserve an explicit years requirement even when a provider omits its
     # dedicated field. This applies uniformly to all normalized sources.
     result["experience_required"] = _first(_experience_from_text(description), result["experience_required"])
