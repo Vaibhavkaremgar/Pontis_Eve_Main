@@ -256,6 +256,9 @@ def fixed_datetime(monkeypatch):
     # Existing matching tests exercise completed profiles; completion itself is
     # covered explicitly below.
     monkeypatch.setattr(matcher, "voice_intake_completed", lambda candidate: True)
+    # This legacy suite isolates ranking/persistence behavior. Country-boundary
+    # behavior is covered independently in test_matching_deterministic_matrix.
+    monkeypatch.setattr(matcher, "country_eligible", lambda candidate, job: True)
 
 
 def test_candidate_total_experience_years_merges_overlaps_and_counts_present():
@@ -418,7 +421,7 @@ def test_explicit_preferred_roles_prioritize_a_transition_over_current_role(monk
     monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java Backend Developer")
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
     monkeypatch.setattr(
-        matcher, "search_job_chunks", lambda vector, limit: [("python-job", 0.99), ("java-job", 0.70)]
+        matcher, "search_job_chunks", lambda vector, limit, country_code=None: [("python-job", 0.99), ("java-job", 0.70)]
     )
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
@@ -461,7 +464,7 @@ def test_preferred_role_retrieval_adds_java_job_for_python_candidate(monkeypatch
         embedded_texts.append(text)
         return [0.2] if text.startswith("Target job roles:") else [0.1]
 
-    def fake_search(vector, limit):
+    def fake_search(vector, limit, country_code=None):
         assert limit == matcher.QDRANT_TOP_K
         return [("java-job", 0.80)] if vector == [0.2] else [("python-job", 0.99)]
 
@@ -513,7 +516,7 @@ def test_explicit_target_role_priority_beats_higher_python_match_score(monkeypat
     monkeypatch.setattr(
         matcher,
         "search_job_chunks",
-        lambda vector, limit: [("java-job", 0.80)] if vector == [0.2] else [("python-job", 0.99), ("java-job", 0.80)],
+            lambda vector, limit, country_code=None: [("java-job", 0.80)] if vector == [0.2] else [("python-job", 0.99), ("java-job", 0.80)],
     )
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
@@ -556,7 +559,7 @@ def test_specific_java_target_outranks_python_backend_without_changing_final_sco
     monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java Backend Developer")
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
     monkeypatch.setattr(
-        matcher, "search_job_chunks", lambda vector, limit: [("python-job", .99), ("java-job", .80)],
+        matcher, "search_job_chunks", lambda vector, limit, country_code=None: [("python-job", .99), ("java-job", .80)],
     )
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
@@ -601,7 +604,7 @@ def test_refresh_never_marks_previously_generated_recommendations_hidden(monkeyp
     }
     monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java backend engineer")
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
-    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("new-job", 0.9)])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit, country_code=None: [("new-job", 0.9)])
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
     asyncio.run(matcher.refresh_candidate_job_matches(
@@ -625,7 +628,7 @@ def test_refresh_can_recommend_more_than_two_distinct_active_eligible_jobs(monke
     }}
     monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java backend engineer")
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
-    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [(f"job-{i}", 0.9 - i / 100) for i in range(4)])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit, country_code=None: [(f"job-{i}", 0.9 - i / 100) for i in range(4)])
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
     asyncio.run(matcher.refresh_candidate_job_matches(
@@ -642,7 +645,7 @@ def test_refresh_preserves_active_database_filtering(monkeypatch):
     }}
     monkeypatch.setattr(matcher, "build_candidate_text", lambda candidate: "Java engineer")
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
-    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("active", .9), ("inactive", .8)])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit, country_code=None: [("active", .9), ("inactive", .8)])
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
 
     asyncio.run(matcher.refresh_candidate_job_matches(
@@ -670,7 +673,7 @@ def test_refresh_skips_resume_only_candidate_until_voice_intake_completes(monkey
 
     monkeypatch.setattr(matcher, "voice_intake_completed", VOICE_INTAKE_COMPLETED)
     monkeypatch.setattr(matcher, "generate_embedding", lambda text: [0.1])
-    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit: [("java-job", .9)])
+    monkeypatch.setattr(matcher, "search_job_chunks", lambda vector, limit, country_code=None: [("java-job", .9)])
     monkeypatch.setattr(matcher, "_get_candidate_intelligence", lambda candidate: {})
     asyncio.run(matcher.refresh_candidate_job_matches(
         "candidate",
@@ -691,7 +694,7 @@ def _candidate_preferences(**overrides):
     candidate = {
         "experience_years": 2, "current_role": "Java Backend Developer",
         "skills": ["Java", "Spring Boot"],
-        "raw_data": {"preferred_roles": ["Java Backend Developer"]},
+        "raw_data": {"preferred_roles": ["Java Backend Developer"], "country": "India", "country_code": "IN"},
     }
     candidate["raw_data"].update(overrides)
     return matcher._build_candidate_signals(candidate)
@@ -699,7 +702,7 @@ def _candidate_preferences(**overrides):
 
 def _job(**overrides):
     job = {"title": "Java Backend Developer", "description": "Java Spring Boot APIs", "requirements": "",
-           "skills": ["Java", "Spring Boot"]}
+           "skills": ["Java", "Spring Boot"], "country": "India"}
     job.update(overrides)
     return job
 
@@ -733,7 +736,7 @@ def test_explicit_preferences_company_location_salary_and_missing_metadata_are_n
     assert startup_pref > enterprise_pref
     assert not matcher._preference_eligibility(signals, enterprise, 2)[0]  # explicit location
     neutral, components = matcher._preference_score(_candidate_preferences(), _job())
-    assert neutral == .5 and components == {}
+    assert neutral == .5 and components == {"country_location": .5}
 
 
 def test_remote_only_and_employment_type_are_explicit_eligibility_constraints():

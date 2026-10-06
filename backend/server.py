@@ -33,7 +33,7 @@ import textwrap
 import mimetypes
 from importlib.metadata import PackageNotFoundError, version as package_version
 from app.job_ingestion.lifecycle import candidate_visible_where
-from location_matching import country_eligible
+from location_matching import country_eligible, country_code
 from skill_normalization import canonical_skill_key
 
 try:  # pragma: no cover - optional dependency
@@ -506,6 +506,8 @@ PARSE_SYSTEM = """You are a resume parser. Extract structured data from the resu
   "current_role": "",
   "current_company": "",
   "location": "",
+  "country": "",
+  "country_code": "",
   "bio": "",
   "experience_years": 0,
   "skills": ["skill1"],
@@ -2861,6 +2863,24 @@ def _build_voice_intake_resume_from_notes(
     promoted_current = _choose_active_current_question(current_question or "", next_question or "")
     if promoted_current and promoted_current != current_question:
         current_question = promoted_current
+    # Never infer a country from a city or state. Once a location answer has
+    # been collected, require an explicit country confirmation unless one is
+    # already present in the canonical profile/raw data.
+    profile_raw = _parse_raw_data((candidate_profile or {}).get("raw_data"))
+    known_country = ((candidate_profile or {}).get("country_code")
+                     or (candidate_profile or {}).get("country")
+                     or profile_raw.get("country_code")
+                     or profile_raw.get("country"))
+    location_turn = next((turn for turn in reversed(completed_turns)
+                          if "location" in _normalize_profile_key(turn.get("question"))
+                          or ("city" in _normalize_profile_key(turn.get("question"))
+                              and "country" in _normalize_profile_key(turn.get("question")))), None)
+    if location_turn and _clean_str(location_turn.get("answer")) and not known_country:
+        current_question = ("And which country is that in?"
+                            if "city" in _normalize_profile_key(location_turn.get("question"))
+                            else "Which country are you currently based in?")
+        next_question = ""
+        is_completed = False
     if (
         current_question
         and next_question
@@ -4463,6 +4483,8 @@ Return ONLY valid JSON with these keys (omit keys where no information was found
   "career_goals": "",
   "target_industries": [],
   "location_preferences": "",
+  "country": "",
+  "country_code": "",
   "salary_expectation": "",
   "availability": "",
   "notice_period": "",
@@ -5775,7 +5797,7 @@ def _is_acknowledgement_only(message: str) -> bool:
 
 
 VALID_UPDATE_FIELDS = {
-    "name", "email", "phone", "location", "headline", "bio",
+    "name", "email", "phone", "location", "country", "country_code", "headline", "bio",
     "current_role", "experience_years", "skills", "work_experience", "education",
     "preferred_roles", "availability", "notice_period", "salary_expectation", "certifications",
     "projects", "preferred_locations", "preferred_industries", "employment_types",
@@ -6160,6 +6182,13 @@ def _profile_guidance_answer(message: str, history: list[dict]) -> Optional[dict
         if years:
             updates["experience_years"] = float(years.group(1))
             reply_subject = "your total experience"
+    elif "which country are you currently based in" in question or "which country is that in" in question:
+        value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
+        normalized = country_code(value)
+        if normalized:
+            updates["country"] = value
+            updates["country_code"] = normalized
+            reply_subject = "your country"
     elif "city and country are you currently based in" in question:
         value = _strip_guidance_answer_prefix(answer, (r"^i(?:'m| am)?\s+(?:based|located|living)\s+in\s+", r"^i\s+live\s+in\s+"))
         if value:
@@ -7888,6 +7917,8 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "expected_salary": "",
   "willing_to_relocate": null,
   "location": "",
+  "country": "",
+  "country_code": "",
   "preferred_roles": [],
   "current_role": "",
   "current_company": "",
@@ -7898,7 +7929,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
   "additional_information": "",
   "confidence": 0.0
 }
-Only include fields where the candidate actually provided information.
+Only include fields where the candidate actually provided information. Extract country and country_code only when the candidate explicitly states their country; never infer country from a city or state.
 Do NOT invent or hallucinate information.
 For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "Flexible" when stated. For "employment_types" use a list such as ["Full-time"] or ["Contract"]. "willing_to_relocate" must be true or false only when the candidate explicitly states it; otherwise omit it.
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
@@ -8973,6 +9004,11 @@ def _merge_voice_into_profile(existing: dict, voice: dict) -> dict:
         raw_data["availability"] = _normalize_availability_value(voice["availability"]) or str(voice["availability"]).strip()
     if voice.get("salary_expectation"):
         raw_data["salary_expectation"] = str(voice["salary_expectation"]).strip()
+    explicit_country = _clean_str(voice.get("country"))
+    explicit_country_code = country_code(voice.get("country_code") or explicit_country)
+    if explicit_country and explicit_country_code:
+        raw_data["country"] = explicit_country
+        raw_data["country_code"] = explicit_country_code
     # Keep each stated preference in raw_data as a durable fallback for older
     # candidates, while _upsert_candidate_preferences writes the canonical row.
     preference_fields = (

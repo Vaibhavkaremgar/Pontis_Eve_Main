@@ -19,6 +19,35 @@ from server import (
     _merge_voice_into_profile,
     _normalize_certifications,
 )
+from location_matching import country_code, country_eligible
+
+
+def test_explicit_country_is_persisted_without_city_inference():
+    merged = _merge_voice_into_profile(
+        {"location": "", "raw_data": {}},
+        {"location": "Hyderabad", "country": "India"},
+    )
+    assert merged["location"] == "Hyderabad"
+    assert merged["raw_data"]["country"] == "India"
+    assert merged["raw_data"]["country_code"] == "IN"
+
+
+def test_city_only_does_not_infer_country():
+    merged = _merge_voice_into_profile(
+        {"location": "", "raw_data": {}},
+        {"location": "Hyderabad"},
+    )
+    assert merged["location"] == "Hyderabad"
+    assert "country" not in merged["raw_data"]
+    assert "country_code" not in merged["raw_data"]
+
+
+def test_country_code_answers_use_matching_boundary():
+    assert country_code("India") == "IN"
+    assert country_code("USA") == "US"
+    candidate = {"location": "Hyderabad", "raw_data": {"country": "India", "country_code": "IN"}}
+    assert country_eligible(candidate, {"country": "India", "location": "Hyderabad"})
+    assert not country_eligible(candidate, {"country": "United States", "location": "New York", "remote": True})
 
 
 class TestMergeList:
