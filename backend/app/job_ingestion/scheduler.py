@@ -306,6 +306,7 @@ async def sync_fantastic_jobs() -> dict:
 async def sync_theirstack_jobs() -> dict[str, int]:
     from app.job_ingestion.connectors.theirstack import TheirStackClient
     from app.job_ingestion.job_ingestion_service import upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
     from app.job_ingestion.normalize import normalize_theirstack
     if os.getenv("THEIRSTACK_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
