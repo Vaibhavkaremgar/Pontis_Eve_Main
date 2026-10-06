@@ -30,7 +30,16 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
     The registry foreign key scopes this to one configured board, avoiding
     accidental cross-company deactivation where display names collide.
     """
-    if ats_type not in {"ashby", "lever"}:
+    # These collectors return the complete public board in one response.  Do
+    # not add bounded/search-feed providers here: absence from those feeds is
+    # not evidence that a stored job closed.
+    if ats_type not in {"ashby", "lever", "greenhouse", "workable"}:
+        logger.info(
+            "[job-lifecycle] provider=%s snapshot_status=unsupported_for_reconciliation "
+            "pages_fetched=0 jobs_seen=%d jobs_closed=0 jobs_reactivated=0 jobs_skipped=0 "
+            "reason=provider_response_is_not_a_complete_board_snapshot",
+            ats_type, len(current_ats_ids),
+        )
         return []
     stored = await db.execute(text("""
         SELECT id, ats_job_id
@@ -41,12 +50,22 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
     """), {"company_registry_id": company_registry_id, "ats_type": ats_type})
     missing = [str(row[0]) for row in stored.fetchall() if str(row[1] or "").strip() not in current_ats_ids]
     if not missing:
+        logger.info(
+            "[job-lifecycle] provider=%s snapshot_status=complete pages_fetched=1 "
+            "jobs_seen=%d jobs_closed=0 jobs_reactivated=0 jobs_skipped=0 reason=none",
+            ats_type, len(current_ats_ids),
+        )
         return []
     await db.execute(text("""
         UPDATE job_descriptions
         SET is_active = FALSE, status = 'closed', job_status = 'closed', updated_at = NOW()
         WHERE id = ANY(CAST(:job_ids AS uuid[]))
     """), {"job_ids": missing})
+    logger.info(
+        "[job-lifecycle] provider=%s snapshot_status=complete pages_fetched=1 "
+        "jobs_seen=%d jobs_closed=%d jobs_reactivated=0 jobs_skipped=0 reason=missing_from_complete_board",
+        ats_type, len(current_ats_ids), len(missing),
+    )
     # Preserve recommendation/application history while removing it from all
     # candidate-visible paths.
     await db.execute(text("""
@@ -55,6 +74,97 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
         WHERE job_id = ANY(CAST(:job_ids AS uuid[]))
     """), {"job_ids": missing})
     return missing
+
+
+async def _close_confirmed_jobs(db, *, ats_type: str, ats_job_ids: set[str]) -> list[str]:
+    """Close only provider-confirmed jobs and preserve their history."""
+    if not ats_job_ids:
+        return []
+    result = await db.execute(text("""
+        SELECT id, ats_job_id
+        FROM job_descriptions
+        WHERE LOWER(ats_type) = :ats_type
+          AND is_active IS TRUE
+          AND ats_job_id = ANY(:ats_job_ids)
+    """), {"ats_type": ats_type, "ats_job_ids": list(ats_job_ids)})
+    db_ids = [str(row[0]) for row in result.fetchall()]
+    if not db_ids:
+        return []
+    await db.execute(text("""
+        UPDATE job_descriptions
+        SET is_active = FALSE, status = 'closed', job_status = 'closed', updated_at = NOW()
+        WHERE id = ANY(CAST(:job_ids AS uuid[]))
+    """), {"job_ids": db_ids})
+    await db.execute(text("""
+        UPDATE candidate_job_recommendations
+        SET hidden_at = COALESCE(hidden_at, NOW())
+        WHERE job_id = ANY(CAST(:job_ids AS uuid[]))
+    """), {"job_ids": db_ids})
+    return db_ids
+
+
+async def cleanup_fantastic_expired_jobs() -> dict[str, int]:
+    """Apply only IDs explicitly returned by Fantastic's expiration feed."""
+    from app.job_ingestion.connectors.fantastic import FantasticClient
+    checked = confirmed = already_closed = unresolved = 0
+    try:
+        expired_ids = await FantasticClient().fetch_expired_ats_ids("1d")
+        checked = len(expired_ids)
+        SessionLocal = _get_session_local()
+        async with SessionLocal() as db:
+            closed_db_ids = await _close_confirmed_jobs(db, ats_type="fantastic", ats_job_ids=set(expired_ids))
+            await db.commit()
+            confirmed = len(closed_db_ids)
+            unresolved = max(0, checked - confirmed)
+            for job_id in closed_db_ids:
+                try:
+                    from app.job_ingestion.qdrant_service import delete_job_embedding
+                    delete_job_embedding(job_id)
+                except Exception as exc:
+                    logger.warning("[job-lifecycle] provider=fantastic qdrant_cleanup_failed job_id=%s error=%s", job_id, exc)
+    except Exception as exc:
+        logger.error("[job-lifecycle] provider=fantastic checked_at=%s jobs_checked=%d jobs_confirmed_closed=0 jobs_already_closed=0 jobs_unresolved=0 errors=1 reason=%s", datetime.now(IST).isoformat(), checked, exc)
+        return {"jobs_checked": checked, "jobs_confirmed_closed": 0, "jobs_already_closed": 0, "jobs_unresolved": 0, "errors": 1}
+    logger.info("[job-lifecycle] provider=fantastic checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=0", datetime.now(IST).isoformat(), checked, confirmed, unresolved)
+    return {"jobs_checked": checked, "jobs_confirmed_closed": confirmed, "jobs_already_closed": already_closed, "jobs_unresolved": unresolved, "errors": 0}
+
+
+async def cleanup_theirstack_closed_jobs() -> dict[str, int]:
+    """Batch exact TheirStack ID lookups and close explicit closed_at rows only."""
+    from app.job_ingestion.connectors.theirstack import TheirStackClient
+    SessionLocal = _get_session_local()
+    async with SessionLocal() as db:
+        result = await db.execute(text("""
+            SELECT ats_job_id FROM job_descriptions
+            WHERE LOWER(ats_type) = 'theirstack' AND is_active IS TRUE AND ats_job_id IS NOT NULL
+        """))
+        stored_ids = [str(row[0]).strip() for row in result.fetchall() if str(row[0]).strip().isdigit()]
+    checked = confirmed = unresolved = errors = 0
+    try:
+        client = TheirStackClient()
+        for offset in range(0, len(stored_ids), 100):
+            batch = stored_ids[offset:offset + 100]
+            jobs = await client.fetch_jobs_by_ids(batch)
+            checked += len(batch)
+            closed_ids = {str(job.get("id")).strip() for job in jobs if job.get("closed_at") is not None}
+            if closed_ids:
+                async with SessionLocal() as db:
+                    closed_db_ids = await _close_confirmed_jobs(db, ats_type="theirstack", ats_job_ids=closed_ids)
+                    await db.commit()
+                    confirmed += len(closed_db_ids)
+                    for job_id in closed_db_ids:
+                        try:
+                            from app.job_ingestion.qdrant_service import delete_job_embedding
+                            delete_job_embedding(job_id)
+                        except Exception as exc:
+                            logger.warning("[job-lifecycle] provider=theirstack qdrant_cleanup_failed job_id=%s error=%s", job_id, exc)
+            unresolved += len(set(batch) - closed_ids)
+    except Exception as exc:
+        errors = 1
+        logger.error("[job-lifecycle] provider=theirstack checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=1 reason=%s", datetime.now(IST).isoformat(), checked, confirmed, unresolved, exc)
+    else:
+        logger.info("[job-lifecycle] provider=theirstack checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=0", datetime.now(IST).isoformat(), checked, confirmed, unresolved)
+    return {"jobs_checked": checked, "jobs_confirmed_closed": confirmed, "jobs_already_closed": 0, "jobs_unresolved": unresolved, "errors": errors}
 
 
 def _complete_board_payload(jobs) -> tuple[bool, set[str]]:
@@ -355,6 +465,12 @@ async def sync_fantastic_jobs() -> dict:
                 await db.rollback()
     for feed_name, feed_stats in per_feed.items():
         logger.info("[fantastic] feed=%s stats=%s", feed_name, feed_stats)
+    logger.info(
+        "[job-lifecycle] provider=fantastic snapshot_status=bounded_non_snapshot "
+        "pages_fetched=%d jobs_seen=%d jobs_closed=0 jobs_reactivated=0 jobs_skipped=%d "
+        "reason=bounded_active_feed_absence_is_not_safe_to_reconcile",
+        stats["pages_requested"], stats["fetched"], stats["skipped"],
+    )
     logger.info("[fantastic] sync completed stats=%s", stats)
     stats["feeds"] = per_feed
     return stats
@@ -385,6 +501,12 @@ async def sync_theirstack_jobs() -> dict[str, int]:
                 await upsert_ats_job(db, job); stats["updated" if row else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc); await db.rollback()
+    logger.info(
+        "[job-lifecycle] provider=theirstack snapshot_status=bounded_search_non_snapshot "
+        "pages_fetched=unknown jobs_seen=%d jobs_closed=0 jobs_reactivated=0 jobs_skipped=%d "
+        "reason=search_response_is_not_proven_complete",
+        stats["fetched"], stats["skipped"],
+    )
     logger.info("[theirstack] sync completed %s", stats); return stats
 
 async def _sync_theirstack_guarded() -> None:
@@ -480,6 +602,10 @@ def start_scheduler() -> None:
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
     if os.getenv("THEIRSTACK_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
         _scheduler.add_job(_sync_theirstack_guarded, trigger=_fantastic_sync_trigger(), id="theirstack_job_sync", replace_existing=True)
+    if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        _scheduler.add_job(cleanup_fantastic_expired_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="fantastic_expiration_cleanup", replace_existing=True)
+    if os.getenv("THEIRSTACK_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        _scheduler.add_job(cleanup_theirstack_closed_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="theirstack_expiration_cleanup", replace_existing=True)
     next_run = job.next_run_time
     if next_run is not None:
         logger.info(

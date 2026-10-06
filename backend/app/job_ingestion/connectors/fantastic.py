@@ -132,3 +132,36 @@ class FantasticClient:
 
     async def fetch_active_job_boards(self) -> list[dict[str, Any]]:
         return await self._fetch_feed("active-jb")
+
+    async def fetch_expired_ats_ids(self, time_frame: str = "1d") -> list[str]:
+        """Return Fantastic-confirmed expired ATS IDs for the requested window."""
+        if not self.config.api_key:
+            raise FantasticAPIError("FANTASTIC_JOBS_API_KEY is not configured")
+        owned_client = self.client is None
+        client = self.client or httpx.AsyncClient(timeout=self.config.timeout)
+        try:
+            response = await client.get(
+                f"{BASE_URL}/expired-ats",
+                params={"time_frame": time_frame},
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+            )
+            if response.status_code == 429:
+                raise FantasticAPIError("Fantastic rate limit reached")
+            if response.status_code in {401, 403}:
+                raise FantasticAPIError(f"Fantastic authorization failed (HTTP {response.status_code})")
+            if response.status_code >= 500:
+                raise FantasticAPIError(f"Fantastic server error (HTTP {response.status_code})")
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise FantasticAPIError("Fantastic expired response was malformed")
+            return [str(value).strip() for value in payload if str(value).strip()]
+        except FantasticAPIError:
+            raise
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            raise FantasticAPIError("Fantastic expiration request failed") from exc
+        except (httpx.HTTPStatusError, ValueError) as exc:
+            raise FantasticAPIError("Fantastic expired response was malformed") from exc
+        finally:
+            if owned_client:
+                await client.aclose()

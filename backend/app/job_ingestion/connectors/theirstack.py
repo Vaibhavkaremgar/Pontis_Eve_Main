@@ -42,3 +42,26 @@ class TheirStackClient:
             return jobs[:self.config.max_jobs_per_run]
         finally:
             if owned: await client.aclose()
+
+    async def fetch_jobs_by_ids(self, job_ids: list[str]) -> list[dict[str, Any]]:
+        """Look up stored jobs in one exact-ID batch."""
+        if not self.config.api_key: raise TheirStackAPIError("THEIRSTACK_API_KEY is not configured")
+        if not job_ids: return []
+        owned = self.client is None; client = self.client or httpx.AsyncClient(timeout=self.config.timeout)
+        try:
+            payload = {"job_id_or": [int(job_id) for job_id in job_ids], "limit": len(job_ids), "page": 0}
+            try:
+                response = await client.post(f"{BASE_URL}/v1/jobs/search", json=payload, headers={"Authorization": f"Bearer {self.config.api_key}", "Accept": "application/json", "Content-Type": "application/json"})
+            except httpx.TimeoutException as exc: raise TheirStackAPIError("TheirStack request timed out") from exc
+            except httpx.RequestError as exc: raise TheirStackAPIError("TheirStack request failed") from exc
+            if response.status_code == 429: raise TheirStackAPIError("TheirStack rate limit reached")
+            if response.status_code in (401, 403): raise TheirStackAPIError(f"TheirStack authorization failed (HTTP {response.status_code})")
+            if response.status_code >= 500: raise TheirStackAPIError(f"TheirStack server error (HTTP {response.status_code})")
+            response.raise_for_status(); data = response.json()
+            jobs = data.get("jobs", data.get("data", [])) if isinstance(data, dict) else []
+            if not isinstance(jobs, list): raise TheirStackAPIError("TheirStack returned a malformed response")
+            return [job for job in jobs if isinstance(job, dict)]
+        except TheirStackAPIError: raise
+        except (httpx.HTTPStatusError, ValueError) as exc: raise TheirStackAPIError("TheirStack returned a malformed response") from exc
+        finally:
+            if owned: await client.aclose()
