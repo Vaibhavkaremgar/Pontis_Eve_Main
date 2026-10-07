@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
 from zoneinfo import ZoneInfo
-from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError, BadRequestError
 from groq_client import GroqClientPool, AllKeysRateLimitedError
 import pypdf
 import io
@@ -85,6 +85,20 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _configured_cors_origins() -> list[str]:
+    """Return normalized, explicit browser origins; never combine credentials with '*'."""
+    raw = os.environ.get("CORS_ORIGINS") or os.environ.get("ALLOWED_ORIGINS") or ""
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    if not origins:
+        # Safe local default. Production must set CORS_ORIGINS explicitly.
+        origins = ["http://localhost:3000"]
+    return list(dict.fromkeys(origins))
+
+
+CORS_ORIGINS = _configured_cors_origins()
+logger.info("Configured CORS origins: %s", CORS_ORIGINS)
 
 
 def _groq_sdk_version() -> str:
@@ -523,18 +537,35 @@ Return only the JSON object, no markdown, no explanation."""
 
 
 async def _parse_resume_with_llm(resume_text: str) -> dict:
+    request_kwargs = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": PARSE_SYSTEM},
+            {"role": "user", "content": resume_text[:12000]},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
     try:
-        resp = await openai_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": PARSE_SYSTEM},
-                {"role": "user", "content": resume_text[:12000]},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
+        resp = await openai_client.chat.completions.create(**request_kwargs)
         raw = resp.choices[0].message.content or "{}"
         return _sanitize_profile_field_mapping(json.loads(raw))
+    except BadRequestError as exc:
+        # Some Groq model deployments reject structured-output parameters even
+        # though the chat request itself is valid. Retry as plain JSON and keep
+        # the provider error observable if that request also fails.
+        request_kwargs.pop("response_format", None)
+        try:
+            resp = await openai_client.chat.completions.create(**request_kwargs)
+            raw = resp.choices[0].message.content or "{}"
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+            return _sanitize_profile_field_mapping(json.loads(raw))
+        except Exception as retry_exc:
+            _log_groq_chat_exception(retry_exc, str(uuid.uuid4()))
+            raise HTTPException(status_code=502, detail="Resume parsing provider rejected the request.") from retry_exc
+    except (json.JSONDecodeError, IndexError, AttributeError) as exc:
+        logger.warning("[parse-resume] malformed Groq response: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Resume parsing returned an invalid response. Please retry.") from exc
     except (OpenAIRateLimitError, AllKeysRateLimitedError) as exc:
         logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
         raise HTTPException(
@@ -12345,7 +12376,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Total-Matching-Jobs"],
