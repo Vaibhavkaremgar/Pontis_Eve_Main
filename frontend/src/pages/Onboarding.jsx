@@ -586,33 +586,50 @@ export function buildSummary(profile = {}) {
   const voice = voiceSummarySource(profile);
   const hasVoiceSource = Object.keys(voice).length > 0;
   const current = Array.isArray(profile.experience) ? profile.experience[0] : {};
-  const role = nonEmptyText(hasVoiceSource
-    ? (voice.current_role || voice.headline)
-    : (profile.current_role || profile.headline || current?.title));
-  const company = nonEmptyText(hasVoiceSource
-    ? voice.current_company
-    : (profile.current_company || current?.company));
+  // Voice extraction is an optional, candidate-provided supplement. It can be
+  // sparse when Groq fails, so never let an empty extracted field mask the
+  // canonical profile/work-history value returned by the API.
+  const firstNonEmpty = (...values) => values.map(nonEmptyText).find(Boolean) || "";
+  const role = firstNonEmpty(
+    voice.current_role,
+    voice.headline,
+    profile.current_role,
+    profile.headline,
+    current?.title,
+  );
+  const company = firstNonEmpty(
+    voice.current_company,
+    profile.current_company,
+    current?.company,
+  );
   const roleAndCompany = [role, company].filter(Boolean).join(" at ");
   const responsibilities = hasVoiceSource
     ? currentWorkSummary(voice).trim()
     : currentWorkSummary(profile);
-  const lookingFor = listValue(hasVoiceSource
-    ? (voice.preferred_roles || voice.raw_data?.preferred_roles)
-    : (profile.preferred_roles || profile.raw_data?.preferred_roles));
-  const skills = summarySkills(hasVoiceSource
-    ? (voice.keySkills || voice.skills)
-    : (profile.keySkills || profile.skills));
-  const certifications = listValue(hasVoiceSource
-    ? (voice.certifications || voice.raw_data?.certifications)
-    : (profile.certifications || profile.raw_data?.certifications));
-  const additionalInformation = nonEmptyText(hasVoiceSource
-    ? (voice.additional_information || voice.raw_data?.additional_information)
-    : (profile.additional_information || profile.raw_data?.additional_information));
+  const lookingFor = listValue(
+    voice.preferred_roles?.length ? voice.preferred_roles : voice.raw_data?.preferred_roles?.length
+      ? voice.raw_data.preferred_roles
+      : (profile.preferred_roles || profile.raw_data?.preferred_roles),
+  );
+  const skills = summarySkills(
+    (voice.keySkills?.length || voice.skills?.length)
+      ? (voice.keySkills || voice.skills)
+      : (profile.keySkills || profile.skills),
+  );
+  const certifications = listValue(
+    voice.certifications?.length ? voice.certifications : voice.raw_data?.certifications?.length
+      ? voice.raw_data.certifications
+      : hasVoiceSource ? [] : (profile.certifications || profile.raw_data?.certifications),
+  );
+  const additionalInformation = firstNonEmpty(
+    voice.additional_information,
+    voice.raw_data?.additional_information,
+    profile.additional_information,
+    profile.raw_data?.additional_information,
+  );
   const items = [];
 
-  const overview = nonEmptyText(hasVoiceSource
-    ? (voice.summary || voice.bio)
-    : (profile.summary || profile.bio));
+  const overview = firstNonEmpty(voice.summary, voice.bio, profile.summary, profile.bio);
   const professionalSummary = dynamicProfessionalSummary({ overview, roleAndCompany, responsibilities, lookingFor });
   if (professionalSummary) items.push({ label: "Summary", value: professionalSummary });
 
