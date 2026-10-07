@@ -6,6 +6,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server
 
 
+def test_resume_opportunity_type_defaults_to_jobs_for_missing_values():
+    for value in (None, "", "   "):
+        assert server._resume_candidate_opportunity_type(value) == "jobs"
+
+
+def test_resume_opportunity_type_preserves_valid_values():
+    assert server._resume_candidate_opportunity_type("job") == "jobs"
+    assert server._resume_candidate_opportunity_type("jobs") == "jobs"
+    assert server._resume_candidate_opportunity_type("intern") == "intern"
+
+
 def test_explicit_internship_preference_is_extracted():
     assert server._infer_profile_updates_from_message(
         "I'm looking for a Python internship."

@@ -3509,6 +3509,10 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
     normalized_certs = _normalize_certifications(parsed.get("certifications") or [])
     normalized_skills = _normalize_skills(parsed.get("skills") or [], certifications=normalized_certs)
     parsed = dict(parsed)
+    # Candidate storage uses the legacy constraint values (``jobs``/``intern``).
+    # Normalize the parser output before either persisting the parsed snapshot
+    # or inserting a new candidate, so an omitted/blank preference is safe.
+    parsed["opportunity_type"] = _resume_candidate_opportunity_type(parsed.get("opportunity_type"))
     parsed["skills"] = normalized_skills
     parsed["certifications"] = normalized_certs
     skills_json = json.dumps(normalized_skills)
@@ -3683,14 +3687,14 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                          location, summary, skills, work_experience, education,
                          experience_years, source, created_by_source, updated_by_source,
                          parsing_status, resume_file_path, resume_text, resume_received_at, raw_data,
-                         parsed_resume_json, parsed_resume_text,
+                         parsed_resume_json, parsed_resume_text, opportunity_type,
                          created_at, updated_at)
                     VALUES
                         (:cid, :name, :email, :phone, :current_role, :current_company,
                          :location, :summary, CAST(:skills AS json), CAST(:work_experience AS json), CAST(:education AS json),
                          :exp_years, 'eve', 'eve', 'eve',
                          'completed', :resume_file_path, :resume_text, now(), CAST(:raw_data AS jsonb),
-                         CAST(:parsed_resume_json AS jsonb), :parsed_resume_text,
+                         CAST(:parsed_resume_json AS jsonb), :parsed_resume_text, :opportunity_type,
                          now(), now())
                 """),
                 {
@@ -3720,6 +3724,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                     ), "resume")),
                     "parsed_resume_json": json.dumps(parsed),
                     "parsed_resume_text": resume_text,
+                    "opportunity_type": parsed["opportunity_type"],
                 },
             )
 
@@ -5484,6 +5489,11 @@ def _normalize_candidate_opportunity_type(value: Any) -> str | None:
     Keep that storage compatibility localized to candidate writes.
     """
     return _normalize_opportunity_type(value)
+
+
+def _resume_candidate_opportunity_type(value: Any) -> str:
+    """Return a constraint-safe opportunity type for resume onboarding."""
+    return _normalize_candidate_opportunity_type(value) or "jobs"
 
 
 def _infer_opportunity_type_from_text(message: str) -> str | None:
