@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const plain = (value) => (value == null ? "" : String(value));
 const list = (value) => Array.isArray(value) ? value : [];
+const skillKey = (value) => plain(value).trim().toLowerCase();
 const parseSkills = (value) => plain(value).split(/[,;|\n\u2022]+/).map((item) => item.trim()).filter(Boolean);
 const score = (value) => value == null || !Number.isFinite(Number(value)) ? null : Math.round(Number(value) * (Number(value) <= 1 ? 100 : 1));
 
@@ -86,6 +87,9 @@ export default function ResumeEditor() {
   }, [params]);
   const [resume, setResume] = React.useState(null);
   const [guidance, setGuidance] = React.useState(null);
+  // This is the server-authoritative list used for confirmation payloads.
+  // guidance.missing_skills may intentionally hide skills selected in the UI.
+  const [missingSkills, setMissingSkills] = React.useState([]);
   const [saving, setSaving] = React.useState(false);
   const savingRef = React.useRef(false);
   const [result, setResult] = React.useState(null);
@@ -116,7 +120,8 @@ export default function ResumeEditor() {
         const missingSkills = list(data.missing_skills).length
           ? list(data.missing_skills)
           : jdSkills.filter((skill) => !mergedSkills.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase()));
-        setGuidance({ ...data, required_skills: jdSkills, missing_skills: selectedSections.skills ? missingSkills.filter((skill) => !selectedSkills.includes(skill)) : missingSkills });
+        setMissingSkills(missingSkills);
+        setGuidance({ ...data, required_skills: jdSkills, missing_skills: selectedSections.skills ? missingSkills.filter((skill) => !selectedSkills.some((selected) => skillKey(selected) === skillKey(skill))) : missingSkills });
         if (params.get("selected_sections") || params.get("selected_skills")) {
           window.setTimeout(() => setGenerating(false), 900);
         } else {
@@ -131,10 +136,10 @@ export default function ResumeEditor() {
     const current = list(skillsDraftRef.current || resume?.skills);
     if (current.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase())) return;
     const next = [...current, skill];
-    setConfirmedSkills((old) => old.some((item) => plain(item).trim().toLowerCase() === plain(skill).trim().toLowerCase()) ? old : [...old, skill]);
+    setConfirmedSkills((old) => old.some((item) => skillKey(item) === skillKey(skill)) ? old : [...old, skill]);
     skillsDraftRef.current = next;
     update("skills", next);
-    setGuidance((old) => old ? { ...old, missing_skills: list(old.missing_skills).filter((item) => plain(item).trim().toLowerCase() !== plain(skill).trim().toLowerCase()) } : old);
+    setGuidance((old) => old ? { ...old, missing_skills: list(old.missing_skills).filter((item) => skillKey(item) !== skillKey(skill)) } : old);
   };
   const addSuggestedDetail = (detail) => {
     const text = plain(detail).trim();
@@ -157,7 +162,11 @@ export default function ResumeEditor() {
         claimId = credit.claim_id;
         setFixCreditClaimId(claimId);
       }
-      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: claimId, confirmed_skills: confirmedSkills });
+      const currentMissing = list(missingSkills);
+      const currentMissingKeys = new Set(currentMissing.map(skillKey));
+      const validConfirmedSkills = confirmedSkills.filter((skill) => currentMissingKeys.has(skillKey(skill)));
+      setConfirmedSkills(validConfirmedSkills);
+      const { data } = await axios.post(`${API}/candidate/${candidateId}/jobs/${recommendationId}/match-improvement`, { profile_updates: { ...resume, skills: skillsDraftRef.current }, fix_credit_claim_id: claimId, confirmed_skills: validConfirmedSkills });
       // The API re-reads candidates.skills after saving and returns that
       // canonical profile. Keep the document in sync with it so a combined
       // value entered here is immediately rendered as individual skills.
@@ -166,8 +175,12 @@ export default function ResumeEditor() {
         skillsDraftRef.current = canonicalSkills;
         setResume((old) => ({ ...old, skills: canonicalSkills }));
       }
-      if (Array.isArray(data?.remaining_missing_skills)) {
-        setGuidance((old) => old ? { ...old, match_score: data.match_score, missing_skills: data.remaining_missing_skills, remaining_missing_skills: data.remaining_missing_skills, remaining_requirements: data.remaining_requirements } : old);
+      const nextMissingSkills = Array.isArray(data?.missing_skills) ? data.missing_skills : data?.remaining_missing_skills;
+      const nextRequirements = Array.isArray(data?.missing_requirements) ? data.missing_requirements : data?.remaining_requirements;
+      if (Array.isArray(nextMissingSkills)) {
+        setMissingSkills(nextMissingSkills);
+        setConfirmedSkills((old) => old.filter((skill) => nextMissingSkills.some((item) => skillKey(item) === skillKey(skill))));
+        setGuidance((old) => old ? { ...old, match_score: data.match_score, missing_skills: nextMissingSkills, remaining_missing_skills: nextMissingSkills, remaining_requirements: nextRequirements } : old);
       }
       // The claim used above is consumed by the successful save. Do not leave
       // it available for a later attempt if rotation cannot issue a new one.

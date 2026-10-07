@@ -11259,6 +11259,10 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "changes_applied": update_result.get("changed", []),
         "remaining_missing_skills": remaining["missing_skills"],
         "remaining_requirements": remaining["requirements"],
+        # Authoritative current state for clients that keep an editor open
+        # across multiple saves.
+        "missing_skills": remaining["missing_skills"],
+        "missing_requirements": remaining["requirements"],
         "experience_requirement": remaining["experience_requirement"],
         "required_skills": _job_required_skills(
             job_context.get("skills"), job_context.get("skills_required"),
