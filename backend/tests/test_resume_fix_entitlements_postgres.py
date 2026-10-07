@@ -136,3 +136,19 @@ def test_save_validation_schema_idempotence_and_active_lock(db, data):
             return unique, lock, preserved
     unique, lock, preserved = asyncio.run(verify())
     assert unique is not None and lock is not None and preserved == 1
+
+
+def test_editor_repeat_claims_are_single_use_and_job_scoped(db, data):
+    """A charged claim is consumed once; each intentional repeat gets a new claim."""
+    first = call(server._claim_resume_fix_entitlement, data["a"], {}, data["r1"], date.today())["claim_id"]
+    call(server._validate_resume_fix_credit_claim, data["a"], {}, first, data["r1"])
+    second = call(server._claim_resume_fix_entitlement, data["a"], {}, data["r1"], date.today())["claim_id"]
+    assert second != first
+    call(server._validate_resume_fix_credit_claim, data["a"], {}, second, data["r1"])
+    third = call(server._claim_resume_fix_entitlement, data["a"], {}, data["r1"], date.today())["claim_id"]
+    assert third not in {first, second}
+    call(server._validate_resume_fix_credit_claim, data["a"], {}, third, data["r1"])
+    with pytest.raises(server.HTTPException):
+        call(server._validate_resume_fix_credit_claim, data["a"], {}, second, data["r1"])
+    with pytest.raises(server.HTTPException):
+        call(server._validate_resume_fix_credit_claim, data["b"], {}, third, data["r1"])
