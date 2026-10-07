@@ -27,7 +27,8 @@ def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> s
     raw = structured.get("raw_source", {}).get("payload", {}) if isinstance(structured.get("raw_source"), dict) else {}
     values = [job.get("employment_type"), job.get("employmentType"), job.get("employment_status"),
               job.get("job_type"), job.get("type"), raw.get("employmentType"), raw.get("employment_type"),
-              raw.get("jobType"), raw.get("job_type")]
+              raw.get("jobType"), raw.get("job_type"), job.get("opportunity_type"),
+              job.get("position_type"), raw.get("opportunity_type"), raw.get("position_type")]
     explicit = " ".join(str(v) for v in values if v not in (None, "")).casefold()
     if re.search(r"\b(intern(ship)?|co[- ]?op|student placement|graduate internship)\b", explicit):
         return "internship"
@@ -35,7 +36,14 @@ def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> s
     if re.search(r"\b(intern(ship)?|co[- ]?op|student placement)\b", title, re.I):
         return "internship"
     text = _html_text(description)
-    if re.search(r"\b(?:internship|intern position|co[- ]?op program|student placement)\b", text, re.I):
+    # Description prose is authoritative only when it describes the candidate's
+    # role, not when it mentions prior experience or a program being managed.
+    if re.search(
+        r"\b(?:join|work|serve|be employed|hired)\b[^.\n]{0,100}\b(?:as an intern|internship role|intern position|co[- ]?op|student placement)\b"
+        r"|\b(?:as an intern|internship role|intern position|co[- ]?op|student placement)\b[^.\n]{0,100}\b(?:join|work|serve|be employed|hired)\b",
+        text,
+        re.I,
+    ):
         return "internship"
     return "job"
 
