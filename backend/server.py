@@ -215,6 +215,10 @@ class RazorpayVerificationRequest(BaseModel):
     razorpay_payment_id: str
     razorpay_signature: str
 
+class CouponApplyRequest(BaseModel):
+    coupon_code: str = ""
+    plan_id: str = "candidate_3_month"
+
 
 # ---------- Helpers ----------
 
@@ -10150,6 +10154,7 @@ async def _claim_resume_fix_credits(candidate_id: str, candidate: dict, usage_da
 
 RAZORPAY_PLAN_AMOUNT_PAISE = 300000
 RAZORPAY_PLAN_NAME = "Eve Candidate — 3 months"
+RAZORPAY_PLAN_ID = "candidate_3_month"
 
 
 async def _ensure_candidate_billing_tables() -> None:
@@ -10172,6 +10177,16 @@ async def _ensure_candidate_billing_tables() -> None:
               created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
             )
         """))
+        await db.execute(text("""CREATE TABLE IF NOT EXISTS subscription_coupons (
+          id uuid PRIMARY KEY, code text UNIQUE NOT NULL, active boolean NOT NULL DEFAULT true,
+          price_paise integer NOT NULL, duration_months integer NOT NULL, plan_id text NOT NULL,
+          per_candidate_usage integer NOT NULL DEFAULT 1, starts_at timestamptz, ends_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())"""))
+        await db.execute(text("""CREATE TABLE IF NOT EXISTS subscription_coupon_redemptions (
+          id uuid PRIMARY KEY, coupon_id uuid NOT NULL REFERENCES subscription_coupons(id), candidate_id uuid NOT NULL,
+          payment_attempt_id uuid UNIQUE, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(coupon_id, candidate_id))"""))
+        await db.execute(text("""INSERT INTO subscription_coupons (id, code, price_paise, duration_months, plan_id)
+          VALUES (:id, 'NEWUSER', 59900, 2, :plan) ON CONFLICT (code) DO NOTHING"""), {"id": str(uuid.uuid4()), "plan": RAZORPAY_PLAN_ID})
         await db.commit()
 
 
@@ -10191,34 +10206,60 @@ async def _activate_candidate_subscription(candidate_id: str, order_id: str, pay
             UPDATE candidate_payment_attempts SET status = 'paid', razorpay_payment_id = :payment_id,
               razorpay_signature = :signature, provider_payload = CAST(:payload AS jsonb), updated_at = now()
             WHERE candidate_id = :cid AND razorpay_order_id = :order_id
-            RETURNING subscription_id
+            RETURNING subscription_id, amount_paise
         """), {"cid": candidate_id, "order_id": order_id, "payment_id": payment_id,
                "signature": signature, "payload": json.dumps(payload, default=str)})
-        subscription_id = attempt.scalar()
+        attempt_row = attempt.mappings().first()
+        subscription_id = attempt_row["subscription_id"] if attempt_row else None
         if not subscription_id:
             raise HTTPException(status_code=400, detail="Unknown payment order.")
+        if attempt_row and attempt_row["amount_paise"] == 59900:
+            expires = now + timedelta(days=60)
         await db.execute(text("""
             UPDATE candidate_subscriptions SET status = 'active', starts_at = COALESCE(starts_at, :starts_at),
               expires_at = GREATEST(COALESCE(expires_at, :starts_at), :expires_at),
               razorpay_payment_id = :payment_id, updated_at = now()
             WHERE id = :subscription_id
         """), {"subscription_id": subscription_id, "starts_at": now, "expires_at": expires, "payment_id": payment_id})
+        if attempt_row and attempt_row["amount_paise"] == 59900:
+            await db.execute(text("""INSERT INTO subscription_coupon_redemptions (id, coupon_id, candidate_id, payment_attempt_id)
+              SELECT :id, c.id, :cid, a.id FROM subscription_coupons c JOIN candidate_payment_attempts a ON a.razorpay_order_id=:order
+              WHERE c.code='NEWUSER' ON CONFLICT (coupon_id, candidate_id) DO NOTHING"""), {"id": str(uuid.uuid4()), "cid": candidate_id, "order": order_id})
         await db.commit()
     return {"status": "active", "starts_at": now.isoformat(), "expires_at": expires.isoformat()}
 
 
+@api_router.post("/candidate/{candidate_id}/billing/coupons/apply")
+async def apply_candidate_coupon(candidate_id: str, body: CouponApplyRequest, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
+    await _get_candidate_row(candidate_id); await _ensure_candidate_billing_tables()
+    async with SessionLocal() as db:
+        coupon = (await db.execute(text("SELECT * FROM subscription_coupons WHERE code=:code AND plan_id=:plan AND active AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>=now())"), {"code": body.coupon_code.strip().upper(), "plan": body.plan_id})).mappings().first()
+        used = coupon and (await db.execute(text("SELECT 1 FROM subscription_coupon_redemptions WHERE coupon_id=:coupon AND candidate_id=:cid"), {"coupon": coupon["id"], "cid": candidate_id})).first()
+    if not coupon: raise HTTPException(status_code=400, detail="Invalid coupon code.")
+    if used: raise HTTPException(status_code=400, detail="This coupon has already been used.")
+    return {"valid": True, "coupon_code": coupon["code"], "original_price": 3000, "discounted_price": coupon["price_paise"] / 100, "original_duration_months": 3, "discounted_duration_months": coupon["duration_months"]}
+
 @api_router.post("/candidate/{candidate_id}/billing/orders")
-async def create_candidate_billing_order(candidate_id: str):
+async def create_candidate_billing_order(candidate_id: str, body: CouponApplyRequest = CouponApplyRequest(), authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     candidate = await _get_candidate_row(candidate_id)
     if _has_active_subscription(candidate):
         raise HTTPException(status_code=409, detail="An active subscription already exists.")
     await _ensure_candidate_billing_tables()
     key_id, key_secret = _razorpay_credentials()
+    amount = RAZORPAY_PLAN_AMOUNT_PAISE; duration = 3
+    if body.coupon_code:
+        async with SessionLocal() as db:
+            coupon = (await db.execute(text("SELECT * FROM subscription_coupons WHERE code=:code AND plan_id=:plan AND active"), {"code": body.coupon_code.strip().upper(), "plan": body.plan_id})).mappings().first()
+            used = coupon and (await db.execute(text("SELECT 1 FROM subscription_coupon_redemptions WHERE coupon_id=:coupon AND candidate_id=:cid"), {"coupon": coupon["id"], "cid": candidate_id})).first()
+        if not coupon or used: raise HTTPException(status_code=400, detail="Coupon is not available for this account.")
+        amount, duration = coupon["price_paise"], coupon["duration_months"]
     receipt = f"eve_{candidate_id.replace('-', '')[:18]}_{uuid.uuid4().hex[:10]}"
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post("https://api.razorpay.com/v1/orders", auth=(key_id, key_secret), json={
-            "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "currency": "INR", "receipt": receipt,
-            "notes": {"candidate_id": candidate_id, "plan": "candidate_3_month"},
+            "amount": amount, "currency": "INR", "receipt": receipt,
+            "notes": {"candidate_id": candidate_id, "plan": RAZORPAY_PLAN_ID, "coupon": body.coupon_code or ""},
         })
     if response.is_error:
         logger.error("Razorpay order creation failed: %s", response.text)
@@ -10229,19 +10270,20 @@ async def create_candidate_billing_order(candidate_id: str):
         await db.execute(text("""INSERT INTO candidate_subscriptions
             (id, candidate_id, plan_name, amount_paise, status, razorpay_order_id)
             VALUES (:id, :cid, :plan, :amount, 'pending', :order_id)"""),
-            {"id": subscription_id, "cid": candidate_id, "plan": RAZORPAY_PLAN_NAME, "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "order_id": order["id"]})
+            {"id": subscription_id, "cid": candidate_id, "plan": RAZORPAY_PLAN_NAME, "amount": amount, "order_id": order["id"]})
         await db.execute(text("""INSERT INTO candidate_payment_attempts
             (id, candidate_id, subscription_id, amount_paise, status, razorpay_order_id, receipt, provider_payload)
             VALUES (:id, :cid, :subscription_id, :amount, 'created', :order_id, :receipt, CAST(:payload AS jsonb))"""),
             {"id": str(uuid.uuid4()), "cid": candidate_id, "subscription_id": subscription_id,
-             "amount": RAZORPAY_PLAN_AMOUNT_PAISE, "order_id": order["id"], "receipt": receipt, "payload": json.dumps(order)})
+             "amount": amount, "order_id": order["id"], "receipt": receipt, "payload": json.dumps(order)})
         await db.commit()
-    return {"key_id": key_id, "order_id": order["id"], "amount": RAZORPAY_PLAN_AMOUNT_PAISE,
-            "currency": "INR", "name": "Eve", "description": "₹3,000 / 3 months", "prefill": {"name": candidate.get("name") or "", "email": candidate.get("email") or ""}}
+    return {"key_id": key_id, "order_id": order["id"], "amount": amount,
+            "currency": "INR", "name": "Eve", "description": f"₹{amount / 100:,.0f} / {duration} months", "prefill": {"name": candidate.get("name") or "", "email": candidate.get("email") or ""}}
 
 
 @api_router.post("/candidate/{candidate_id}/billing/verify")
-async def verify_candidate_billing_payment(candidate_id: str, body: RazorpayVerificationRequest):
+async def verify_candidate_billing_payment(candidate_id: str, body: RazorpayVerificationRequest, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     await _ensure_candidate_billing_tables()
     key_id, secret = _razorpay_credentials()
     expected = hmac.new(secret.encode(), f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode(), hashlib.sha256).hexdigest()
@@ -10252,7 +10294,9 @@ async def verify_candidate_billing_payment(candidate_id: str, body: RazorpayVeri
     if payment_response.is_error:
         raise HTTPException(status_code=502, detail="Unable to confirm payment status.")
     payment = payment_response.json()
-    if payment.get("order_id") != body.razorpay_order_id or payment.get("status") != "captured" or payment.get("amount") != RAZORPAY_PLAN_AMOUNT_PAISE or payment.get("currency") != "INR":
+    async with SessionLocal() as db:
+        expected_amount = (await db.execute(text("SELECT amount_paise FROM candidate_payment_attempts WHERE candidate_id=:cid AND razorpay_order_id=:order"), {"cid": candidate_id, "order": body.razorpay_order_id})).scalar()
+    if payment.get("order_id") != body.razorpay_order_id or payment.get("status") != "captured" or payment.get("amount") != expected_amount or payment.get("currency") != "INR":
         raise HTTPException(status_code=400, detail="Payment is not captured for this subscription.")
     return await _activate_candidate_subscription(candidate_id, body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature, payment)
 

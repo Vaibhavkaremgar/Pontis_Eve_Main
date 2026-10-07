@@ -161,6 +161,9 @@ function Dashboard() {
   const [showSubscriptionPopup, setShowSubscriptionPopup] = React.useState(false);
   const [showSubscriptionPlanPopup, setShowSubscriptionPlanPopup] = React.useState(false);
   const [paymentStarting, setPaymentStarting] = React.useState(false);
+  const [couponCode, setCouponCode] = React.useState("");
+  const [couponOffer, setCouponOffer] = React.useState(null);
+  const [couponApplying, setCouponApplying] = React.useState(false);
   const [resumeFixCreditBalance, setResumeFixCreditBalance] = React.useState(null);
 
   const [centerView, setCenterView] = React.useState("swipe"); // "swipe" | "chat" | "voice"
@@ -727,7 +730,7 @@ function Dashboard() {
     if (!candidateId || paymentStarting) return;
     setPaymentStarting(true);
     try {
-      const { data: order } = await axios.post(`${API}/candidate/${candidateId}/billing/orders`);
+      const { data: order } = await axios.post(`${API}/candidate/${candidateId}/billing/orders`, { coupon_code: couponOffer ? couponCode : "", plan_id: "candidate_3_month" });
       if (!window.Razorpay) await new Promise((resolve, reject) => {
         const script = document.createElement("script"); script.src = "https://checkout.razorpay.com/v1/checkout.js";
         script.onload = resolve; script.onerror = reject; document.body.appendChild(script);
@@ -784,7 +787,12 @@ function Dashboard() {
               </ul>
             </div>
             <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
-              <button type="button" data-testid="subscription-pay-now" disabled={paymentStarting} onClick={startRazorpayPayment} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">{paymentStarting ? "Opening secure checkout…" : "Pay Now"}</button>
+              <div className="sm:col-span-2">
+                <p className="mb-2 text-sm font-medium text-[#4A4A48]">Have a coupon code?</p>
+                <div className="flex gap-2"><input aria-label="Coupon code" value={couponCode} onChange={(e) => setCouponCode(e.target.value)} placeholder="Enter coupon code" className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm" /><button type="button" disabled={couponApplying || !couponCode.trim()} onClick={async () => { setCouponApplying(true); try { const { data } = await axios.post(`${API}/candidate/${candidateId}/billing/coupons/apply`, { coupon_code: couponCode, plan_id: "candidate_3_month" }); setCouponOffer(data); toast.success("NEWUSER applied successfully."); } catch (e) { setCouponOffer(null); toast.error(e?.response?.data?.detail || "Unable to apply coupon. Please try again."); } finally { setCouponApplying(false); } }} className="rounded-xl border px-4 py-2 text-sm font-semibold">{couponApplying ? "Applying…" : "Apply"}</button></div>
+                {couponOffer && <p className="mt-2 text-sm text-green-700">✓ {couponOffer.coupon_code} applied — ₹{couponOffer.discounted_price} / {couponOffer.discounted_duration_months} months</p>}
+              </div>
+              <button type="button" data-testid="subscription-pay-now" disabled={paymentStarting} onClick={startRazorpayPayment} className="w-full rounded-xl bg-[#62578F] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#514875] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">{paymentStarting ? "Opening secure checkout…" : couponOffer ? `Pay ₹${couponOffer.discounted_price}` : "Pay Now"}</button>
               <button type="button" onClick={() => setShowSubscriptionPlanPopup(false)} className="w-full rounded-xl px-5 py-3 text-sm font-medium text-[#4A4A48] transition-colors hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]">Cancel</button>
             </div>
           </div>
