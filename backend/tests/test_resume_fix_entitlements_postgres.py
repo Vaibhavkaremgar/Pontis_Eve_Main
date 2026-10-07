@@ -152,3 +152,5 @@ def test_editor_repeat_claims_are_single_use_and_job_scoped(db, data):
         call(server._validate_resume_fix_credit_claim, data["a"], {}, second, data["r1"])
     with pytest.raises(server.HTTPException):
         call(server._validate_resume_fix_credit_claim, data["b"], {}, third, data["r1"])
+    with pytest.raises(server.HTTPException):
+        call(server._validate_resume_fix_credit_claim, data["a"], {}, third, data["r2"])

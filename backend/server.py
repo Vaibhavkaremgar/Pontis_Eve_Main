@@ -11235,8 +11235,9 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
             WHERE id = :rid AND candidate_id = :cid LIMIT 1
         """), {"rid": rec_id, "cid": candidate_id})
         score = result.scalar()
-    current_skills = {str(skill).strip().lower() for skill in (before.get("skills") or []) if str(skill).strip()}
-    changed_skills = [str(skill) for skill in (candidate.get("skills") or []) if str(skill).strip().lower() not in current_skills]
+    current_skills = {canonical_skill_key(skill) for skill in _candidate_profile_skills(before) if str(skill).strip()}
+    changed_skills = [str(skill) for skill in (candidate.get("skills") or [])
+                      if str(skill).strip() and canonical_skill_key(skill) not in current_skills]
     remaining = _job_missing_requirements(
         # Re-use the selected job's guidance rather than creating a new job or
         # substituting a recommendation from a fresh retrieval.
@@ -11253,6 +11254,8 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
         "previous_match_score": previous_score,
         "match_score": float(score) if score is not None else None,
         "changed_skills": changed_skills,
+        "newly_added_skills": changed_skills,
+        "changes": {"skills_added": changed_skills},
         "changes_applied": update_result.get("changed", []),
         "remaining_missing_skills": remaining["missing_skills"],
         "remaining_requirements": remaining["requirements"],

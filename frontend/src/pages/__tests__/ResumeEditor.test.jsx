@@ -4,11 +4,77 @@ import axios from "axios";
 import ResumeEditor from "../ResumeEditor";
 
 jest.mock("axios");
-jest.mock("react-router-dom", () => ({ useSearchParams: () => [new URLSearchParams("candidate_id=candidate-1&recommendation_id=rec-1")] }), { virtual: true });
+jest.mock("react-router-dom", () => {
+  const stableSearchParams = new URLSearchParams("candidate_id=candidate-1&recommendation_id=rec-1&fix_credit_claim_id=claim-initial");
+  return { useSearchParams: () => [stableSearchParams] };
+}, { virtual: true });
 
 const resume = { name: "Candidate", headline: "Engineer", skills: ["Python", "FastAPI"], work_experience: [], education: [], certifications: [], projects: [] };
 
 describe("ResumeEditor profile refresh", () => {
+  it("rotates claims across three saves without skipping the stored claim", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const claimResponses = ["claim-B", "claim-C", "claim-D"].map((claim_id) => ({ data: { claim_id } }));
+    axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
+    axios.post
+      .mockImplementationOnce(async () => ({ data: { match_score: 60, profile: { candidate_id: "candidate-1" } } }))
+      .mockImplementationOnce(async () => claimResponses[0])
+      .mockImplementationOnce(async () => ({ data: { match_score: 70, profile: { candidate_id: "candidate-1" } } }))
+      .mockImplementationOnce(async () => claimResponses[1])
+      .mockImplementationOnce(async () => ({ data: { match_score: 80, profile: { candidate_id: "candidate-1" } } }))
+      .mockImplementationOnce(async () => claimResponses[2]);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    const saveButton = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes");
+    for (let i = 0; i < 3; i += 1) await act(async () => { saveButton().click(); await Promise.resolve(); });
+    const matchCalls = axios.post.mock.calls.filter(([url]) => url.includes("match-improvement"));
+    expect(matchCalls.map(([, body]) => body.fix_credit_claim_id)).toEqual(["claim-initial", "claim-B", "claim-C"]);
+    expect(axios.post.mock.calls.filter(([url]) => url.includes("resume-fix-credit-claim"))).toHaveLength(3);
+    await act(async () => { root.unmount(); });
+  });
+
+  it("shows the successful save when claim rotation fails and fetches a fresh claim next time", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
+    axios.post
+      .mockResolvedValueOnce({ data: { match_score: 60, profile: { candidate_id: "candidate-1" } } })
+      .mockRejectedValueOnce(new Error("rotation failed"))
+      .mockResolvedValueOnce({ data: { claim_id: "claim-fresh" } })
+      .mockResolvedValueOnce({ data: { match_score: 70, profile: { candidate_id: "candidate-1" } } })
+      .mockResolvedValueOnce({ data: { claim_id: "claim-next" } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes").click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="resume-save-result"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="resume-claim-warning"]')?.textContent).toContain("changes were saved");
+    await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes").click(); await Promise.resolve(); });
+    const matchCalls = axios.post.mock.calls.filter(([url]) => url.includes("match-improvement"));
+    expect(matchCalls.map(([, body]) => body.fix_credit_claim_id)).toEqual(["claim-initial", "claim-fresh"]);
+    await act(async () => { root.unmount(); });
+  });
+
+  it("prevents a second save request while the first save is pending", async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    let resolveMatch;
+    axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
+    axios.post
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveMatch = resolve; }));
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<ResumeEditor />); });
+    await act(async () => { await Promise.resolve(); });
+    const saveButton = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes");
+    await act(async () => { saveButton().click(); saveButton().click(); });
+    expect(axios.post.mock.calls.filter(([url]) => url.includes("match-improvement"))).toHaveLength(1);
+    resolveMatch({ data: { match_score: 60, profile: { candidate_id: "candidate-1" } } });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { root.unmount(); });
+  });
+
   it("renders separate skills with bullet separators", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume: { ...resume, skills: ["React.js", "Node.js", "Frontend Development"] }, match_score: 50, missing_skills: [] } });
@@ -90,7 +156,9 @@ describe("ResumeEditor profile refresh", () => {
   it("notifies the dashboard to refetch the canonical profile after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
-    axios.post.mockResolvedValue({ data: { match_score: 60, profile: { candidate_id: "candidate-1", keySkills: ["Python", "FastAPI", "Java"] } } });
+    axios.post
+      .mockResolvedValueOnce({ data: { match_score: 60, profile: { candidate_id: "candidate-1", keySkills: ["Python", "FastAPI", "Java"] } } })
+      .mockResolvedValueOnce({ data: { claim_id: "claim-next" } });
     // jsdom normally has no opener; give this independent editor tab one.
     Object.defineProperty(window, "opener", { configurable: true, value: window });
     const postMessage = jest.spyOn(window, "postMessage").mockImplementation(() => {});
@@ -106,8 +174,12 @@ describe("ResumeEditor profile refresh", () => {
 
   it("renders the freshly recalculated match score returned after save", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    const raf = global.requestAnimationFrame;
+    global.requestAnimationFrame = (callback) => { callback(performance.now() + 1000); return 1; };
     axios.get.mockResolvedValue({ data: { resume, match_score: 42, missing_skills: [] } });
-    axios.post.mockResolvedValue({ data: { previous_match_score: 42, match_score: 87, profile: { candidate_id: "candidate-1" } } });
+    axios.post
+      .mockResolvedValueOnce({ data: { previous_match_score: 42, match_score: 87, profile: { candidate_id: "candidate-1" } } })
+      .mockResolvedValueOnce({ data: { claim_id: "claim-next" } });
     const container = document.createElement("div");
     const root = createRoot(container);
     await act(async () => { root.render(<ResumeEditor />); });
@@ -115,6 +187,7 @@ describe("ResumeEditor profile refresh", () => {
     await act(async () => { Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save Changes").click(); });
     expect(container.querySelector('[data-testid="resume-save-result"]').textContent).toContain("87%");
     await act(async () => { root.unmount(); });
+    global.requestAnimationFrame = raf;
   });
 
   it("returns to the previous Align Your Resume step without replacing browser history", async () => {
@@ -135,11 +208,19 @@ describe("ResumeEditor profile refresh", () => {
   it("downloads the persisted updated-resume endpoint without duplicating the API prefix", async () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     axios.get.mockResolvedValue({ data: { resume, match_score: 50, missing_skills: [] } });
-    axios.post.mockResolvedValue({ data: {
+    axios.post
+      .mockResolvedValueOnce({ data: {
       match_score: 60,
       profile: { candidate_id: "candidate-1", keySkills: ["Python", "FastAPI"] },
       resume_download_url: "/candidate/candidate-1/resume/updated/download",
-    } });
+      } })
+      .mockResolvedValueOnce({ data: { claim_id: "claim-next" } });
+    axios.get.mockResolvedValueOnce({ data: { resume, match_score: 50, missing_skills: [] } })
+      .mockResolvedValueOnce({ data: new Blob(["pdf"]) });
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = jest.fn(() => "blob:resume");
+    URL.revokeObjectURL = jest.fn();
     const open = jest.spyOn(window, "open").mockImplementation(() => null);
     const container = document.createElement("div");
     const root = createRoot(container);
@@ -149,12 +230,13 @@ describe("ResumeEditor profile refresh", () => {
     const downloadButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent === "Download Updated Resume");
     await act(async () => { downloadButton.click(); });
-    expect(open).toHaveBeenCalledWith(
+    expect(axios.get).toHaveBeenCalledWith(
       expect.stringMatching(/\/api\/candidate\/candidate-1\/resume\/updated\/download$/),
-      "_blank",
-      "noopener,noreferrer",
+      { responseType: "blob" },
     );
     await act(async () => { root.unmount(); });
     open.mockRestore();
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
   });
 });
