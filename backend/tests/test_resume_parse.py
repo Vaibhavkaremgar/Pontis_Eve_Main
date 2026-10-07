@@ -15,6 +15,26 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL").rstrip("/")
 PARSE_URL = f"{BASE_URL}/api/onboarding/parse-resume"
 
 
+@pytest.mark.asyncio
+async def test_llm_resume_parse_returns_sanitized_groq_response():
+    """A successful Groq response must survive the post-response processing step."""
+    import server
+    from types import SimpleNamespace
+
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"name": "Jane Doe", "skills": ["Python"]}'))]
+    )
+    with patch.object(
+        server.openai_client.chat.completions._pool,
+        "chat_completions_create",
+        new=AsyncMock(return_value=response),
+    ):
+        parsed = await server._parse_resume_with_llm("Jane Doe\nPython developer")
+
+    assert parsed["name"] == "Jane Doe"
+    assert parsed["skills"] == ["Python"]
+
+
 def _build_text_pdf(lines):
     buf = io.BytesIO()
     c = canvas.Canvas(buf)

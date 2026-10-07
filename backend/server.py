@@ -534,11 +534,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or "{}"
-        extracted = _sanitize_profile_field_mapping(json.loads(raw))
-        explicit_type = _infer_opportunity_type_from_text(transcript)
-        if explicit_type:
-            extracted["opportunity_type"] = explicit_type
-        return extracted
+        return _sanitize_profile_field_mapping(json.loads(raw))
     except (OpenAIRateLimitError, AllKeysRateLimitedError) as exc:
         logger.warning("[parse-resume] Groq rate limit hit: %s", exc)
         raise HTTPException(
