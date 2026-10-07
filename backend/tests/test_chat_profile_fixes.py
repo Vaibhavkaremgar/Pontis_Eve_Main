@@ -119,6 +119,8 @@ def _run_apply(candidate_state, updates):
                     candidate_state["education"] = json.loads(params["education"])
                 if "raw_data" in params:
                     candidate_state["raw_data"] = json.loads(params["raw_data"])
+                if "opportunity_type" in params:
+                    candidate_state["opportunity_type"] = params["opportunity_type"]
                 if "parsed_resume_json" in params:
                     candidate_state["parsed_resume_json"] = json.loads(
                         params["parsed_resume_json"]
@@ -156,6 +158,20 @@ def _run_apply(candidate_state, updates):
         asyncio.run(server._apply_profile_updates("cand-regression-test", updates))
 
     return candidate_state
+
+
+def test_chat_job_profile_update_uses_candidates_constraint_value():
+    """Chat's public ``job`` value must not violate the legacy candidates check."""
+    state = _make_candidate(opportunity_type="intern")
+    clean, updates = server._extract_profile_updates(
+        '{"profile_updates": {"opportunity_type": "job"}}',
+        "",
+    )
+
+    assert "updated your profile" in clean
+    assert updates == {"opportunity_type": "job"}
+    _run_apply(state, updates)
+    assert state["opportunity_type"] == "jobs"
 
 
 def test_natural_language_preference_update_persists_canonical_keys_and_improves_score():

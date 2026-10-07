@@ -5444,6 +5444,17 @@ def _normalize_opportunity_type(value: Any) -> str | None:
     return None
 
 
+def _normalize_candidate_opportunity_type(value: Any) -> str | None:
+    """Map public opportunity types to the legacy candidates enum values.
+
+    ``job_descriptions`` and candidate-facing APIs use ``job``/``internship``;
+    the existing candidates check constraint uses ``jobs``/``intern``.
+    Keep that storage compatibility localized to candidate writes.
+    """
+    normalized = _normalize_opportunity_type(value)
+    return {"job": "jobs", "internship": "intern"}.get(normalized)
+
+
 def _infer_opportunity_type_from_text(message: str) -> str | None:
     """Return a type only when the candidate explicitly states that intent."""
     if not isinstance(message, str):
@@ -6772,9 +6783,11 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
     for field, value in safe.items():
         if field == "opportunity_type":
             normalized = _normalize_opportunity_type(value)
-            if normalized and normalized != (existing.get("opportunity_type") or "job"):
+            candidate_type = _normalize_candidate_opportunity_type(normalized)
+            existing_type = _normalize_candidate_opportunity_type(existing.get("opportunity_type"))
+            if candidate_type and candidate_type != existing_type:
                 set_clauses.append("opportunity_type = :opportunity_type")
-                params["opportunity_type"] = normalized
+                params["opportunity_type"] = candidate_type
         elif field == "profile_record_replacements":
             if not isinstance(value, list):
                 continue
@@ -9315,9 +9328,11 @@ async def _persist_voice_intake_profile_state(
             set_clauses.append(f"{field} = CAST(:{field} AS json)")
             update_params[field] = json.dumps(merged.get(field) or [])
 
-    if merged.get("opportunity_type") and merged.get("opportunity_type") != (candidate.get("opportunity_type") or "job"):
+    candidate_opportunity_type = _normalize_candidate_opportunity_type(merged.get("opportunity_type"))
+    existing_candidate_opportunity_type = _normalize_candidate_opportunity_type(candidate.get("opportunity_type"))
+    if candidate_opportunity_type and candidate_opportunity_type != existing_candidate_opportunity_type:
         set_clauses.append("opportunity_type = :opportunity_type")
-        update_params["opportunity_type"] = merged["opportunity_type"]
+        update_params["opportunity_type"] = candidate_opportunity_type
 
     merged_raw = merged.get("raw_data") or {}
     # The canonical profile intentionally merges resume and intake fields.
