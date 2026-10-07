@@ -322,10 +322,10 @@ def get_canonical_preferences(candidate: dict, prefs_row: Optional[dict] = None)
                            else raw.get("willing_to_relocate", parsed_resume.get("willing_to_relocate")))
     open_to_opportunities = p.get("open_to_opportunities") if p.get("open_to_opportunities") is not None else raw.get("open_to_opportunities")
     opportunity_type = (candidate.get("opportunity_type") or p.get("opportunity_type") or raw.get("opportunity_type")
-                        or raw.get("opportunityType") or parsed_resume.get("opportunity_type") or "job")
+                        or raw.get("opportunityType") or parsed_resume.get("opportunity_type") or "jobs")
     opportunity_type = str(opportunity_type).strip().lower()
-    if opportunity_type not in {"job", "internship"}:
-        opportunity_type = "job"
+    from app.job_ingestion.normalize import normalize_opportunity_type
+    opportunity_type = normalize_opportunity_type(opportunity_type)
 
     return {
         "preferred_roles": preferred_roles,

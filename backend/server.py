@@ -682,7 +682,7 @@ def _normalize_for_frontend(c: dict) -> dict:
         "name": c.get("name", ""),
         "email": c.get("email", ""),
         "phone": c.get("phone", ""),
-        "opportunity_type": _normalize_opportunity_type(c.get("opportunity_type")) or "job",
+        "opportunity_type": _normalize_opportunity_type(c.get("opportunity_type")) or "jobs",
         "location": c.get("location", ""),
         "headline": c.get("current_role", "") or c.get("headline", ""),
         "current_company": c.get("current_company", ""),
@@ -4625,7 +4625,7 @@ BEHAVIOR:
   {{"profile_updates": {{"field": value}}}}
   <<<END_UPDATES>>>
 - Only include profile_updates when the candidate actually provides new information.
-- If the candidate explicitly states they want internships, include opportunity_type: "internship". If they explicitly state they want jobs/full-time work or are moving away from internships, include opportunity_type: "job". Do not infer it from being a fresher or unrelated mentions.
+- If the candidate explicitly states they want internships, include opportunity_type: "intern". If they explicitly state they want jobs/full-time work or are moving away from internships, include opportunity_type: "jobs". Do not infer it from being a fresher or unrelated mentions.
 - Do not guess a destination for a bare request such as "Add Python". Ask where it belongs before emitting an update.
 - Before changing or deleting an existing value, use the supplied profile context to identify every matching record. If more than one record/section matches, ask the candidate to choose; never emit an update for an ambiguous target.
 - Preserve every explicitly stated Education or Work Experience fact in its proper record. Ask for missing dates/details, and merge those later; do not discard an otherwise meaningful degree/institution or title/company statement.
@@ -5466,13 +5466,14 @@ def _extract_employment_statement(text: str) -> dict[str, str] | None:
     return None
 
 
+from app.job_ingestion.normalize import normalize_opportunity_type as _canonical_opportunity_type
+
 def _normalize_opportunity_type(value: Any) -> str | None:
-    normalized = str(value or "").strip().lower().replace("-", " ")
-    if normalized in {"internship", "intern", "intern ship"}:
-        return "internship"
-    if normalized in {"job", "jobs", "full time", "fulltime", "employment", "work"}:
-        return "job"
-    return None
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    result = _canonical_opportunity_type(value, default="")
+    return result if result else None
 
 
 def _normalize_candidate_opportunity_type(value: Any) -> str | None:
@@ -5482,8 +5483,7 @@ def _normalize_candidate_opportunity_type(value: Any) -> str | None:
     the existing candidates check constraint uses ``jobs``/``intern``.
     Keep that storage compatibility localized to candidate writes.
     """
-    normalized = _normalize_opportunity_type(value)
-    return {"job": "jobs", "internship": "intern"}.get(normalized)
+    return _normalize_opportunity_type(value)
 
 
 def _infer_opportunity_type_from_text(message: str) -> str | None:
@@ -5496,12 +5496,12 @@ def _infer_opportunity_type_from_text(message: str) -> str | None:
     ):
         # Explicitly moving away from internships is a job preference.
         if re.search(r"\b(?:no longer|not)\s+(?:looking|interested|want).*\bintern", message, re.I):
-            return "job"
-        return "internship"
+            return "jobs"
+        return "intern"
     if re.search(r"\b(?:full[- ]?time|jobs?|job opportunities|employment)\b", message, re.I) and re.search(
         r"\b(?:looking|seeking|interested|want|prefer|open|searching|find|prefer)", message, re.I,
     ):
-        return "job"
+        return "jobs"
     return None
 
 
@@ -6616,7 +6616,7 @@ Return ONLY valid JSON with the exact keys below (omit keys where nothing was fo
   "preferred_locations": [],
   "preferred_industries": [],
   "employment_types": [],
-  "opportunity_type": "job",
+  "opportunity_type": "jobs",
   "remote_preference": "",
   "availability": "",
   "notice_period": "",
@@ -8053,7 +8053,7 @@ Return ONLY valid JSON with these exact keys (omit keys where no information was
 Only include fields where the candidate actually provided information. Extract country and country_code only when the candidate explicitly states their country; never infer country from a city or state.
 Do NOT invent or hallucinate information.
 For "remote_preference", use exactly one of "Remote", "Hybrid", "On-site", or "Flexible" when stated. For "employment_types" use a list such as ["Full-time"] or ["Contract"]. "willing_to_relocate" must be true or false only when the candidate explicitly states it; otherwise omit it.
-For "opportunity_type", use "internship" only when the candidate explicitly says they want an internship/internships. Use "job" when they explicitly say they want jobs or full-time work. Omit the key when they did not express this preference; never infer internship from being a fresher or from unrelated context.
+For "opportunity_type", use "intern" only when the candidate explicitly says they want an internship/internships. Use "jobs" when they explicitly say they want jobs or full-time work. Omit the key when they did not express this preference; never infer internship from being a fresher or from unrelated context.
 For work_experience start_date and end_date: extract the exact month and year the candidate states (e.g. "January 2025"). Use "Present" for end_date when the candidate says "to present", "currently", or "till now". Leave start_date/end_date empty only when the candidate did not mention dates.
 For "role_preference_bio": if the candidate mentions the type of roles they are looking for or their career preferences, write a concise bio sentence capturing that preference (e.g. "Looking for Python Backend roles involving FastAPI and AI"). Do NOT include specific company names. Leave empty if no role preference was mentioned.
 For "certifications": extract ALL certification names the candidate mentions anywhere in the transcript, even if mentioned incidentally (e.g. "I have AWS certification", "I am certified in PMP", "I hold a Google Cloud cert"). Each certification must be a separate string in the list. Do NOT omit certifications mentioned in passing.
@@ -10562,9 +10562,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
     from profile_strength_service import get_canonical_preferences
     # The stored candidate preference is authoritative; clients cannot switch
     # recommendation categories through the query parameter.
-    opportunity_type = (candidate.get("opportunity_type") or get_canonical_preferences(candidate, candidate.get("_prefs_row")).get("opportunity_type") or "job").lower()
-    if opportunity_type not in {"job", "internship"}:
-        raise HTTPException(status_code=400, detail="type must be job or internship")
+    opportunity_type = _normalize_opportunity_type(candidate.get("opportunity_type") or get_canonical_preferences(candidate, candidate.get("_prefs_row")).get("opportunity_type")) or "jobs"
     if not _voice_intake_completed_for_matching(candidate):
         raise HTTPException(
             status_code=409,
@@ -10588,7 +10586,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
             FROM candidate_job_recommendations cjr
             JOIN job_descriptions jd ON jd.id = cjr.job_id
             WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
-              AND COALESCE(jd.opportunity_type, 'job') = :opportunity_type
+              AND COALESCE(jd.opportunity_type, 'jobs') = :opportunity_type
         """), {"cid": candidate_id, "opportunity_type": opportunity_type})
         return [str(row[0]) for row in rows.fetchall()
                 if stored_recommendation_experience_eligibility(
@@ -10616,7 +10614,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
                   AND cjr.hidden_at IS NULL
                   AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
-                  AND COALESCE(jd.opportunity_type, 'job') = :opportunity_type
+              AND COALESCE(jd.opportunity_type, 'jobs') = :opportunity_type
                   AND NOT EXISTS (
                     SELECT 1
                     FROM candidate_daily_job_access access
@@ -10648,7 +10646,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
                 WHERE cjr.candidate_id = :cid AND cjr.hidden_at IS NULL
                   AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
-                  AND COALESCE(jd.opportunity_type, 'job') = :opportunity_type
+              AND COALESCE(jd.opportunity_type, 'jobs') = :opportunity_type
             """),
             {"cid": candidate_id, "opportunity_type": opportunity_type, **eligible_params},
         )
@@ -10697,7 +10695,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
                   AND cjr.hidden_at IS NULL
                   AND {eligible_clause}
                   AND {candidate_visible_where('jd')}
-                  AND COALESCE(jd.opportunity_type, 'job') = :opportunity_type
+                  AND COALESCE(jd.opportunity_type, 'jobs') = :opportunity_type
                 -- Return the complete ranked list so the client can render
                 -- locked placeholders.  The access predicate is projected
                 -- below instead of filtering the rows out: free candidates
@@ -10756,7 +10754,7 @@ async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type
             "viewed": r["viewed_at"] is not None,
             "application_status": r["application_status"],
             "job_url": r["job_url"] or None,
-            "opportunity_type": (r["opportunity_type"] or "job").lower(),
+            "opportunity_type": _normalize_opportunity_type(r["opportunity_type"]) or "jobs",
             "locked": False,
         }
     return [serialize_job(r) for r in results]

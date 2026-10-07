@@ -16,6 +16,15 @@ def _text(value: Any) -> str | None:
 
 UNKNOWN_EXPERIENCE_LEVEL = "Not specified"
 
+def normalize_opportunity_type(value: Any, default: str = "jobs") -> str:
+    """Return the database/API opportunity_type contract: ``jobs`` or ``intern``."""
+    normalized = str(value or "").strip().casefold().replace("-", " ").replace("_", " ")
+    if normalized in {"intern", "internship", "intern ship", "internship role", "intern co op", "co op", "student placement", "graduate internship"}:
+        return "intern"
+    if normalized in {"job", "jobs", "full time", "fulltime", "permanent", "regular", "employment", "work"}:
+        return "jobs"
+    return default if default in {"jobs", "intern"} else ""
+
 def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> str:
     """Classify an opportunity conservatively; descriptions alone are weak evidence.
 
@@ -31,10 +40,10 @@ def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> s
               job.get("position_type"), raw.get("opportunity_type"), raw.get("position_type")]
     explicit = " ".join(str(v) for v in values if v not in (None, "")).casefold()
     if re.search(r"\b(intern(ship)?|co[- ]?op|student placement|graduate internship)\b", explicit):
-        return "internship"
+        return "intern"
     title = str(job.get("title") or "")
     if re.search(r"\b(intern(ship)?|co[- ]?op|student placement)\b", title, re.I):
-        return "internship"
+        return "intern"
     text = _html_text(description)
     # Description prose is authoritative only when it describes the candidate's
     # role, not when it mentions prior experience or a program being managed.
@@ -44,8 +53,8 @@ def classify_opportunity_type(job: dict[str, Any], description: Any = None) -> s
         text,
         re.I,
     ):
-        return "internship"
-    return "job"
+        return "intern"
+    return "jobs"
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, (datetime, date)):

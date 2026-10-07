@@ -466,7 +466,7 @@ function Dashboard() {
     axios
       .get(`${API}/candidate/${candidateId}/jobs`, { params: {
         ...(requestMore ? { request_more: true } : {}),
-        type: userProfile?.opportunity_type === "internship" ? "internship" : "job",
+        type: userProfile?.opportunity_type === "intern" ? "intern" : "jobs",
       }})
       .then((res) => {
         setAvailableJobs(res.data || []);
@@ -486,7 +486,7 @@ function Dashboard() {
       });
   }, [candidateId, hasJobsAccess, userProfile?.opportunity_type]);
 
-  const opportunityType = userProfile?.opportunity_type === "internship" ? "internship" : "job";
+  const opportunityType = userProfile?.opportunity_type === "intern" ? "intern" : "jobs";
 
   React.useEffect(() => {
     const onProfileUpdated = (event) => {
@@ -893,8 +893,8 @@ function Dashboard() {
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
               <button
                   data-testid="jobs-tab"
-                  aria-disabled={opportunityType !== "job"}
-                  disabled={opportunityType !== "job"}
+                  aria-disabled={opportunityType !== "jobs"}
+                  disabled={opportunityType !== "jobs"}
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
@@ -910,17 +910,17 @@ function Dashboard() {
               </button>
               <button
                   data-testid="internships-tab"
-                  aria-disabled={opportunityType !== "internship"}
-                  disabled={opportunityType !== "internship"}
+                  aria-disabled={opportunityType !== "intern"}
+                  disabled={opportunityType !== "intern"}
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
                     setRightPanelTab("profile");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                    opportunityType === "internship" && centerView === "swipe"
+                    opportunityType === "intern" && centerView === "swipe"
                       ? "bg-black/[0.06] text-[#1F1F1F] font-medium"
-                      : opportunityType !== "internship"
+                      : opportunityType !== "intern"
                         ? "text-[#B8B8B4] cursor-not-allowed"
                         : "text-[#9A9A98] hover:text-[#4A4A48]"
                   }`}

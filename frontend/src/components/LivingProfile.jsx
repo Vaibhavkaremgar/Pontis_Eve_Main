@@ -779,7 +779,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
                         {job.company} · {job.location}
                       </p>
-                      {job.opportunity_type === "internship" && (
+                      {job.opportunity_type === "intern" && (
                         <span data-testid={`internship-label-${job.id}`} className="mt-1 inline-block text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">
                           Internship
                         </span>
