@@ -1109,6 +1109,96 @@ class TestVoiceIntakePersistenceRegression:
 # 6. LLM extraction
 # ─────────────────────────────────────────────
 
+class TestVoiceIntakeProgressRevisionScope:
+    def test_revision_is_scoped_to_vapi_call_and_stale_same_call_is_rejected(self, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import server
+
+        candidate_id = "revision-scope-candidate"
+        candidate = {"id": candidate_id, "raw_data": {"voice_intake": {
+            "status": "in_progress",
+            "vapi_call_id": "call-a",
+            "transcript_revision": 8,
+            "completed_turns": [{"question": "What role?", "answer": "Backend engineer"}],
+            "current_question": "Why are you looking?",
+            "next_question": "Why are you looking?",
+        }}}
+        saved = []
+
+        async def fake_get(_candidate_id):
+            return candidate
+
+        async def fake_save(_candidate_id, resume):
+            saved.append(resume)
+            candidate["raw_data"]["voice_intake"] = resume
+
+        async def fake_persist(*_args):
+            return candidate
+
+        async def fake_extract(*_args):
+            return {}
+
+        async def fake_sync(*_args, **_kwargs):
+            return None
+
+        async def fake_llm(*_args, **_kwargs):
+            return {"known_topics": [], "missing_topics": ["preferences"], "completed": False}
+
+        def fake_pairs(_notes, _transcript=""):
+            return ([{"question": "Why are you looking?", "answer": "I want more growth."}], None)
+
+        def fake_builder(_notes, _transcript, existing_resume, **_kwargs):
+            turns = list(existing_resume.get("completed_turns") or [])
+            if not any(t["question"] == "Why are you looking?" for t in turns):
+                turns.append({"question": "Why are you looking?", "answer": "I want more growth."})
+            return {
+                **existing_resume,
+                "status": "in_progress",
+                "completed_turns": turns,
+                "progress": len(turns),
+                "current_question": "What kind of work do you prefer?",
+                "next_question": "What kind of work do you prefer?",
+            }
+
+        monkeypatch.setattr(server, "_get_candidate_row", fake_get)
+        monkeypatch.setattr(server, "_authorize_candidate", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_save_voice_intake_resume", fake_save)
+        monkeypatch.setattr(server, "_persist_voice_intake_profile_state", fake_persist)
+        monkeypatch.setattr(server, "_extract_voice_info", fake_extract)
+        monkeypatch.setattr(server, "_sync_voice_ledger", fake_sync)
+        monkeypatch.setattr(server, "_sync_profile_updates_to_ledger", fake_sync)
+        monkeypatch.setattr(server, "_schedule_voice_intake_matching", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_llm_analyze_intake", fake_llm)
+        monkeypatch.setattr(server, "_voice_intake_turn_pairs", fake_pairs)
+        monkeypatch.setattr(server, "_build_voice_intake_resume_from_notes", fake_builder)
+
+        new_call = asyncio.run(server.candidate_voice_intake_progress(
+            server.VoiceCandidateIntakeProgressRequest(
+                candidate_id=candidate_id,
+                vapi_call_id="call-b",
+                transcript_revision="1",
+                transcript="Candidate: I want more growth.",
+            )
+        ))
+        assert new_call["accepted"] is True
+        assert new_call["voice_intake_resume"]["vapi_call_id"] == "call-b"
+        assert new_call["voice_intake_resume"]["transcript_revision"] == 1
+        assert new_call["voice_intake_resume"]["current_question"] == "What kind of work do you prefer?"
+
+        stale = asyncio.run(server.candidate_voice_intake_progress(
+            server.VoiceCandidateIntakeProgressRequest(
+                candidate_id=candidate_id,
+                vapi_call_id="call-b",
+                transcript_revision="0",
+                transcript="Candidate: stale update.",
+            )
+        ))
+        assert stale["accepted"] is False
+        assert stale["status"] == "ignored_stale"
+        assert len(saved) == 1
+
+
 class TestLLMExtraction:
     def test_valid_transcript_extracts_skills(self):
         """A transcript mentioning skills results in skills being added to profile."""

@@ -9937,7 +9937,19 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
         stored_revision = int(existing_vi.get("transcript_revision")) if existing_vi.get("transcript_revision") is not None else -1
     except (TypeError, ValueError):
         stored_revision = -1
-    if incoming_revision is not None and incoming_revision < stored_revision:
+    stored_vapi_call_id = _clean_str(existing_vi.get("vapi_call_id"))
+    incoming_vapi_call_id = _clean_str(request.vapi_call_id)
+    same_vapi_call = bool(incoming_vapi_call_id and stored_vapi_call_id and incoming_vapi_call_id == stored_vapi_call_id)
+    if same_vapi_call and incoming_revision is not None and incoming_revision < stored_revision:
+        logger.warning(
+            "[voice-intake] ignored stale progress candidate_id=%s vapi_call_id=%s "
+            "stored_vapi_call_id=%s incoming_revision=%s stored_revision=%s",
+            request.candidate_id,
+            incoming_vapi_call_id,
+            stored_vapi_call_id,
+            incoming_revision,
+            stored_revision,
+        )
         return {"status": "ignored_stale", "accepted": False, "candidate_id": request.candidate_id,
                 "transcript_revision": stored_revision, "voice_intake_resume": existing_vi}
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
@@ -9956,6 +9968,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
         resume["status"] = "in_progress"
     if incoming_revision is not None:
         resume["transcript_revision"] = incoming_revision
+    if incoming_vapi_call_id:
+        resume["vapi_call_id"] = incoming_vapi_call_id
     if request.termination_reason:
         resume["termination_reason"] = request.termination_reason
 
