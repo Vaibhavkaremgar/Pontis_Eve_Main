@@ -119,6 +119,40 @@ describe("Onboarding voice intake summary", () => {
   });
 });
 
+describe("Onboarding Step 2 resume upload regression", () => {
+  function renderOnboarding() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = ReactDOM.createRoot(container);
+    act(() => root.render(<Onboarding />));
+    return { container, unmount: () => act(() => { root.unmount(); container.remove(); }) };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    saveOnboardingState({ step: 1, countryCode: "US", phoneDigits: "4155552671" });
+  });
+
+  it("renders Step 2 after a valid mobile number is submitted", async () => {
+    const { container, unmount } = renderOnboarding();
+    act(() => container.querySelector('[data-testid="onboarding-continue-phone"]').click());
+
+    expect(container.querySelector('[data-testid="onboarding-step-2"]')).toBeTruthy();
+    unmount();
+  });
+
+  it("keeps PDF, DOC, and DOCX accepted by Step 2 validation", () => {
+    localStorage.clear();
+    saveOnboardingState({ step: 2, countryCode: "US" });
+    const { container, unmount } = renderOnboarding();
+    const input = container.querySelector('[data-testid="onboarding-resume-input"]');
+    expect(input.accept).toContain(".pdf");
+    expect(input.accept).toContain(".doc");
+    expect(input.accept).toContain(".docx");
+    unmount();
+  });
+});
+
 function flush() {
   return act(async () => {
     await Promise.resolve();

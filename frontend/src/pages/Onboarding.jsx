@@ -402,6 +402,7 @@ function StepUpload({
   certsFiles,
   setCertsFiles,
   verificationErrors,
+  parsingError,
   setParsingError,
 }) {
   const selectResume = (file) => {
