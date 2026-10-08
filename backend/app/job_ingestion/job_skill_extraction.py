@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import asyncio
 from typing import Any
 
 from app.job_ingestion.normalize import _normalize_skill_values, _html_text
@@ -19,21 +20,53 @@ _SYSTEM = (
     "soft skills unless clearly a named job competency. Deduplicate the list."
 )
 
+_EXTRACTION_CONCURRENCY = max(1, int(os.getenv("JOB_SKILL_EXTRACTION_CONCURRENCY", "2")))
+_EXTRACTION_SEMAPHORE = asyncio.Semaphore(_EXTRACTION_CONCURRENCY)
+_FIELD_LIMITS = {"title": 500, "description": 12000, "requirements": 8000, "responsibilities": 8000}
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    text = _html_text(str(value or "")).strip()
+    return text[:limit]
+
+
+def _extraction_input(job: dict[str, Any]) -> dict[str, Any]:
+    """Build a deterministic, bounded request without truncating JSON."""
+    return {
+        key: _bounded_text(job.get(key), limit)
+        for key, limit in _FIELD_LIMITS.items()
+    } | {
+        "native_metadata": {
+            key: job.get(key)
+            for key in ("skills", "skills_required", "salary_range", "employment_type", "location")
+            if job.get(key) is not None
+        }
+    }
+
 async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     """Monotonically enrich provider skills with optional semantic extraction."""
     original = merge_skills(job.get("skills_required"), job.get("skills"))
     jd = _html_text("\n".join(str(job.get(key) or "") for key in ("title", "description", "requirements", "responsibilities")))
     if not jd.strip():
         return job
+    # Provider metadata is already sufficient for this optional fallback. A
+    # pending retry is the sole exception: it represents a prior unavailable
+    # attempt and must be allowed to recover.
+    status = (job.get("structured_data") or {}).get("metadata_extraction_status") if isinstance(job.get("structured_data"), dict) else None
+    if status == "complete" or (job.get("skills") and not job.get("skills_required")):
+        return job
     try:
         from groq_client import GroqClientPool
         client = GroqClientPool()
-        response = await client.chat.completions.create(
-            model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            temperature=0,
-            response_format={"type": "json_object"},
-        messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": json.dumps({"title": job.get("title"), "description": job.get("description"), "requirements": job.get("requirements"), "responsibilities": job.get("responsibilities"), "native_metadata": {k: job.get(k) for k in ("skills", "skills_required", "salary_range", "employment_type", "location", "structured_data")}}, default=str)}],
-        )
+        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        async with _EXTRACTION_SEMAPHORE:
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                _telemetry={"workflow": "job_skill_extraction", "function_name": "extract_missing_job_skills", "job_id": job.get("id") or job.get("job_id"), "model": model},
+                messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": json.dumps(_extraction_input(job), default=str)}],
+            )
         payload = json.loads(response.choices[0].message.content or "{}")
         if not isinstance(payload, dict):
             raise ValueError("LLM returned non-object JSON")
