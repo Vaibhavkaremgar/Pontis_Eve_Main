@@ -31,6 +31,7 @@ import asyncio
 import html
 import textwrap
 import mimetypes
+import subprocess
 from importlib.metadata import PackageNotFoundError, version as package_version
 from app.job_ingestion.lifecycle import candidate_visible_where
 from location_matching import country_eligible, country_code
@@ -240,6 +241,41 @@ def _extract_pdf_text(file_bytes: bytes) -> tuple[str, bool]:
         return text, False
 
 
+def _extract_word_text(file_bytes: bytes, extension: str) -> str:
+    """Extract text from a Microsoft Word document for the normal resume flow."""
+    if extension == ".docx":
+        from docx import Document
+
+        document = Document(io.BytesIO(file_bytes))
+        parts = [paragraph.text for paragraph in document.paragraphs]
+        for table in document.tables:
+            parts.extend(cell.text for row in table.rows for cell in row.cells)
+        return "\n".join(parts).strip()
+
+    # Legacy .doc files require a binary Word reader. antiword is the small,
+    # standard system utility used by the backend image for this format.
+    result = subprocess.run(
+        ["antiword", "-"],
+        input=file_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("Unable to read the Word document")
+    return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+def _extract_resume_text(file_bytes: bytes, extension: str) -> tuple[str, bool]:
+    if extension == ".pdf":
+        return _extract_pdf_text(file_bytes)
+    try:
+        return _extract_word_text(file_bytes, extension), False
+    except Exception as exc:
+        logger.warning("Word resume extraction failed: %s", exc)
+        return "", False
+
+
 _EXPERIENCE_OPEN_ENDED_MARKERS = {"present", "current", "ongoing", "now"}
 
 
@@ -349,8 +385,10 @@ def _sort_experience_for_display(experience: Any) -> list[dict]:
 
     def sort_key(entry: tuple[bool, Optional[int], Optional[int], int, dict]) -> tuple[int, int, int, int]:
         open_ended, start, end, index, _item = entry
-        primary = start if open_ended else (end if end is not None else start)
-        secondary = start if start is not None else end
+        # Display chronology is based on when the employment began. The end
+        # date is only a fallback for legacy records without a start date.
+        primary = start if start is not None else end
+        secondary = end if end is not None else start
         return (
             0 if open_ended else 1,
             -(primary or 0),
@@ -3812,11 +3850,12 @@ async def root():
 @api_router.post("/onboarding/parse-resume")
 async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] = None):
     filename = (file.filename or "").lower()
-    if not filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF resumes are supported right now.")
+    extension = Path(filename).suffix
+    if extension not in {".pdf", ".doc", ".docx"}:
+        raise HTTPException(status_code=400, detail="Unsupported resume type. Please upload a PDF, DOC, or DOCX file.")
 
     file_bytes = await file.read()
-    resume_text, used_ocr = _extract_pdf_text(file_bytes)
+    resume_text, used_ocr = _extract_resume_text(file_bytes, extension)
 
     if len(resume_text.strip()) < 50:
         raise HTTPException(

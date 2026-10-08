@@ -98,12 +98,43 @@ def _build_image_pdf(text):
     return buf.getvalue()
 
 
-# --- Rejects non-PDF files ---
-def test_reject_non_pdf_extension():
+# --- Rejects unsupported files ---
+def test_reject_unsupported_extension():
     files = {"file": ("resume.txt", b"just some text", "text/plain")}
     r = requests.post(PARSE_URL, files=files, timeout=30)
     assert r.status_code == 400
-    assert "PDF" in r.json().get("detail", "")
+    detail = r.json().get("detail", "")
+    assert "PDF" in detail and "DOC" in detail and "DOCX" in detail
+
+
+def test_extract_docx_text():
+    from docx import Document
+    import server
+
+    document = Document()
+    document.add_paragraph("Jane Doe")
+    document.add_paragraph("Senior Product Designer with Python experience.")
+    output = io.BytesIO()
+    document.save(output)
+
+    text, used_ocr = server._extract_resume_text(output.getvalue(), ".docx")
+    assert "Jane Doe" in text
+    assert "Python" in text
+    assert used_ocr is False
+
+
+def test_extract_doc_text_uses_legacy_word_reader():
+    import server
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    completed = SimpleNamespace(returncode=0, stdout=b"Jane Doe\nLegacy Word resume", stderr=b"")
+    with patch.object(server.subprocess, "run", return_value=completed) as run:
+        text, used_ocr = server._extract_resume_text(b"legacy doc", ".doc")
+
+    run.assert_called_once()
+    assert text == "Jane Doe\nLegacy Word resume"
+    assert used_ocr is False
 
 
 # --- Rejects empty PDFs with updated error message ---

@@ -162,6 +162,8 @@ function StepPhone({ phone }) {
 
 /* ---------- Step 2: Uploads (red asterisk, multi certs) ---------- */
 
+const RESUME_ACCEPT = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 function ResumeRow({ file, onSelect, onClear }) {
   const inputRef = React.useRef(null);
   return (
@@ -193,7 +195,7 @@ function ResumeRow({ file, onSelect, onClear }) {
             </p>
           ) : (
             <p className="text-[11.5px] text-[#9A9A98] mt-0.5">
-              PDF · text-based files parse best
+              PDF, DOC, or DOCX · text-based files parse best
             </p>
           )}
         </div>
@@ -202,7 +204,7 @@ function ResumeRow({ file, onSelect, onClear }) {
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf"
+        accept={RESUME_ACCEPT}
         className="hidden"
         onChange={(e) => e.target.files?.[0] && onSelect(e.target.files[0])}
         data-testid="onboarding-resume-input"
@@ -400,7 +402,17 @@ function StepUpload({
   certsFiles,
   setCertsFiles,
   verificationErrors,
+  setParsingError,
 }) {
+  const selectResume = (file) => {
+    const extension = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
+    if (![".pdf", ".doc", ".docx"].includes(extension)) {
+      setParsingError("Unsupported resume type. Please upload a PDF, DOC, or DOCX file.");
+      return;
+    }
+    setParsingError(null);
+    setResumeFile(file);
+  };
   return (
     <div>
       <h1 className="text-[26px] font-medium tracking-tight leading-tight mb-2">
@@ -414,7 +426,7 @@ function StepUpload({
       <div className="space-y-3">
         <ResumeRow
           file={resumeFile}
-          onSelect={setResumeFile}
+          onSelect={selectResume}
           onClear={() => setResumeFile(null)}
         />
         <CertificationsRow
@@ -426,6 +438,7 @@ function StepUpload({
         />
       </div>
       <VerificationErrors errors={verificationErrors} />
+      {parsingError && <p className="mt-3 text-[12px] text-[#E11D48]" data-testid="resume-file-error">{parsingError}</p>}
     </div>
   );
 }
@@ -1048,6 +1061,7 @@ export default function Onboarding() {
               certsFiles={certsFiles}
               setCertsFiles={setCertsFiles}
               verificationErrors={verificationErrors}
+              setParsingError={setParsingError}
             />
           )}
           {step === 3 && (

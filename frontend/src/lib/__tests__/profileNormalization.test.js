@@ -65,6 +65,52 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     ]);
   });
 
+  it("orders chat-added work by start date without changing date formatting", () => {
+    const profile = {
+      experience: [
+        {
+          company: "Deepija Telecom Private Limited",
+          title: "Software Engineer",
+          start_date: "Nov 2023",
+          end_date: "Oct 2024",
+        },
+        {
+          company: "Pontis",
+          title: "Backend Developer",
+          start_date: "December 2022",
+          end_date: "2023-10",
+        },
+      ],
+    };
+
+    const normalized = normalizeProfileForDisplay(profile);
+
+    expect(normalized.experience.map((exp) => exp.company)).toEqual([
+      "Deepija Telecom Private Limited",
+      "Pontis",
+    ]);
+    expect(normalized.experience.map((exp) => exp.dates)).toEqual([
+      "Nov 2023 – Oct 2024",
+      "Dec 2022 – Oct 2023",
+    ]);
+  });
+
+  it("keeps Present first and places newer additions above historical roles", () => {
+    const normalized = normalizeProfileForDisplay({
+      experience: [
+        { company: "Old Co", title: "Engineer", start_date: "2019", end_date: "2021" },
+        { company: "Current Co", title: "Lead", start_date: "2024", end_date: "Present" },
+        { company: "New Co", title: "Senior Engineer", start_date: "2022-06", end_date: "2023-10" },
+      ],
+    });
+
+    expect(normalized.experience.map((exp) => exp.company)).toEqual([
+      "Current Co",
+      "New Co",
+      "Old Co",
+    ]);
+  });
+
   it("treats missing or blank end dates as the most recent experience", () => {
     const profile = {
       experience: [

@@ -305,8 +305,10 @@ function sortExperienceForDisplay(experience) {
     })
     .sort((a, b) => {
       if (a.openEnded !== b.openEnded) return a.openEnded ? -1 : 1;
-      const primaryA = a.openEnded ? a.start : (a.end ?? a.start);
-      const primaryB = b.openEnded ? b.start : (b.end ?? b.start);
+      // Employment chronology is defined by the parsed start date. Only
+      // legacy records without a start date fall back to their end date.
+      const primaryA = a.start ?? a.end ?? 0;
+      const primaryB = b.start ?? b.end ?? 0;
       if (primaryA !== primaryB) return primaryB - primaryA;
       const secondaryA = a.start ?? a.end;
       const secondaryB = b.start ?? b.end;
@@ -779,8 +781,8 @@ function dedupeExperienceForDisplay(experience) {
         index,
         score: experienceCompletenessScore(exp),
         sortValues,
-        primary: sortValues.openEnded ? (sortValues.start ?? 0) : ((sortValues.end ?? sortValues.start) ?? 0),
-        secondary: sortValues.start ?? sortValues.end ?? 0,
+        primary: sortValues.start ?? sortValues.end ?? 0,
+        secondary: sortValues.end ?? sortValues.start ?? 0,
       };
     })
     .sort((a, b) => {

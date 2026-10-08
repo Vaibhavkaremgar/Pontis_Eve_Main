@@ -3,7 +3,7 @@ import json
 import sys
 import types
 
-from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, _clean_extracted_skills
 from app.job_ingestion.normalize import normalize_greenhouse, normalize_lever, normalize_ashby, normalize_fantastic
 from skill_normalization import canonical_skill, canonical_skill_key
 
@@ -141,3 +141,19 @@ def test_safe_aliases_and_non_equivalences():
     for left, right in (("Java", "JavaScript"), ("Python", "PyTorch"), ("SQL", "PostgreSQL"),
                         ("Docker", "Kubernetes"), ("AWS", "AWS Lambda")):
         assert canonical_skill_key(left) != canonical_skill_key(right)
+
+
+def test_skill_postprocessing_removes_metadata_and_preserves_capabilities():
+    job = {"title": "Software Developer", "company_name": "Marriott International"}
+    values = ["Marriott International", "Software Developer", "Remote work", "ESOP",
+              "Healthcare", "Financial domain", "Financial modelling", "PostgreSQL",
+              "Docker", "Vendor Management"]
+    assert _clean_extracted_skills(values, job) == ["Financial modelling", "PostgreSQL", "Docker", "Vendor Management"]
+
+
+def test_skill_postprocessing_deduplicates_obvious_variants_without_merging_technologies():
+    job = {"title": "Engineer", "company_name": "Example"}
+    result = _clean_extracted_skills(
+        ["GIS Technology", "GIS", "BIM", "BIM Modelling", "Revit MEP", "Autodesk Revit MEP",
+         "Java", "JavaScript", "React", "React Native", "AWS", "Azure", "SQL", "PostgreSQL"], job)
+    assert result == ["GIS", "BIM", "Autodesk Revit MEP", "Java", "JavaScript", "React", "React Native", "AWS", "Azure", "SQL", "PostgreSQL"]

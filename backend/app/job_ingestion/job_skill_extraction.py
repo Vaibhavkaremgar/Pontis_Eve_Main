@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import asyncio
+import re
 from typing import Any
 
 from app.job_ingestion.normalize import _normalize_skill_values, _html_text
@@ -15,14 +16,50 @@ _SYSTEM = (
     "Extract job metadata and return exactly one JSON object with these keys: "
     "skills (array of strings), experience_required (string or null), "
     "salary_range (string or null), employment_type (string or null). "
-    "Extract only concise professional or technical skills explicitly required or preferred "
-    "Never return sentences, duties, marketing text, salary, location, education, or generic "
-    "soft skills unless clearly a named job competency. Deduplicate the list."
+    "Extract only concise candidate-relevant skills or capabilities explicitly required or preferred. "
+    "Include technologies, tools, methodologies, professional capabilities, and genuine soft skills. "
+    "Never return company names, job titles, salary, location, benefits, employment type, years of "
+    "experience, marketing language, business outcomes, or generic industry/domain labels. "
+    "A product is valid only when a candidate can use it as a tool or platform. Return canonical names "
+    "and avoid overlapping duplicates. Do not return sentences or duties."
 )
 
 _EXTRACTION_CONCURRENCY = max(1, int(os.getenv("JOB_SKILL_EXTRACTION_CONCURRENCY", "2")))
 _EXTRACTION_SEMAPHORE = asyncio.Semaphore(_EXTRACTION_CONCURRENCY)
 _FIELD_LIMITS = {"title": 500, "description": 12000, "requirements": 8000, "responsibilities": 8000}
+
+_NON_SKILL_PATTERNS = (
+    re.compile(r"^(?:remote|hybrid|on[- ]site)\s+(?:work|role|position)$", re.I),
+    re.compile(r"^(?:esop|lta|salary|compensation|benefits?)$", re.I),
+    re.compile(r"^(?:financial|healthcare|manufacturing|hospitality|education|infrastructure|energy)\s+(?:domain|sector|industry)$", re.I),
+)
+_DOMAIN_ONLY = {"healthcare", "manufacturing", "hospitality", "infrastructure", "education", "energy", "finance", "financial"}
+
+
+def _clean_extracted_skills(values: Any, job: dict[str, Any]) -> list[str]:
+    """Conservatively remove metadata/title/company contamination from skills."""
+    title = " ".join(str(job.get(key) or "") for key in ("title", "job_title"))
+    company = " ".join(str(job.get(key) or "") for key in ("company_name", "company", "organization"))
+    excluded = {canonical_skill_key(title), canonical_skill_key(company)} - {""}
+    cleaned, seen = [], set()
+    for value in _normalize_skill_values(values):
+        text = " ".join(str(value).split()).strip(" .,:;-")
+        if not text or canonical_skill_key(text) in excluded:
+            continue
+        if any(pattern.fullmatch(text) for pattern in _NON_SKILL_PATTERNS) or text.casefold() in _DOMAIN_ONLY:
+            continue
+        folded = re.sub(r"\s+", " ", text.casefold())
+        if folded == "gis technology":
+            text = "GIS"
+        elif folded in {"bim modelling", "bim modeling"}:
+            text = "BIM"
+        elif folded == "revit mep":
+            text = "Autodesk Revit MEP"
+        key = canonical_skill_key(text)
+        if key and key not in seen:
+            seen.add(key)
+            cleaned.append(text)
+    return cleaned
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -45,7 +82,7 @@ def _extraction_input(job: dict[str, Any]) -> dict[str, Any]:
 
 async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     """Monotonically enrich provider skills with optional semantic extraction."""
-    original = merge_skills(job.get("skills_required"), job.get("skills"))
+    original = _clean_extracted_skills(merge_skills(job.get("skills_required"), job.get("skills")), job)
     jd = _html_text("\n".join(str(job.get(key) or "") for key in ("title", "description", "requirements", "responsibilities")))
     if not jd.strip():
         return job
@@ -70,7 +107,7 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(response.choices[0].message.content or "{}")
         if not isinstance(payload, dict):
             raise ValueError("LLM returned non-object JSON")
-        llm_skills = _normalize_skill_values(payload.get("skills"))
+        llm_skills = _clean_extracted_skills(payload.get("skills"), job)
         skills = merge_skills(original, llm_skills, canonical_display=True)
         if skills:
             job["skills_required"] = skills
