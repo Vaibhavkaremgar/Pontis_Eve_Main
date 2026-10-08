@@ -5443,8 +5443,28 @@ def _normalize_availability_value(value: Any) -> str:
     cleaned = " ".join(value.split()).strip()
     if not cleaned:
         return ""
-    if _IMMEDIATE_JOINER_PATTERN.search(cleaned):
+    if _IMMEDIATE_JOINER_PATTERN.search(cleaned) or re.fullmatch(r"(?:immediately|right away|now)", cleaned, re.I):
         return "Immediately"
+    return cleaned
+
+
+def _normalize_salary_expectation(value: Any) -> str:
+    """Return a compact, canonical display value without changing its meaning."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join(value.split()).strip(" .;:")
+    if not cleaned:
+        return ""
+    # Indian salary answers commonly omit the currency and use a hyphen.
+    if re.search(r"\b(?:lpa|lac|lakhs?|per annum|pa)\b", cleaned, re.I):
+        # Preserve the established representation for a single amount; use
+        # the richer display normalization for an explicit range.
+        is_range = bool(re.search(r"\d\s*(?:[-–—]|to)\s*\d", cleaned))
+        if is_range and not re.match(r"^[₹$€£]", cleaned):
+            cleaned = "₹" + cleaned
+        if is_range:
+            cleaned = re.sub(r"\s*[-–—]\s*", "–", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned
 
 
@@ -5546,8 +5566,23 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             r"\bpreferred roles?\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         ],
     )
+    # A compound answer has several independent facts. Stop the role at the
+    # next preference clause instead of treating the whole answer as a title.
+    compound_role = re.search(
+        r"\b(?:looking for|seeking|targeting|interested in|want(?:ing)?|open to)\s+"
+        r"(?:a\s+|an\s+|the\s+)?(?P<value>.+?)\s+(?:roles?|positions?|opportunities?)\b"
+        r"(?:\s+in\s+(?P<location>[A-Z][A-Za-z .'-]+?))?"
+        r"(?=\s*,?\s*(?:expecting|with|and\s+(?:can|am|i)|$))",
+        text,
+        re.IGNORECASE,
+    )
+    if compound_role:
+        preferred_roles = compound_role.group("value")
+        if compound_role.group("location"):
+            updates["preferred_locations"] = [_normalize_profile_text(compound_role.group("location"))]
     if preferred_roles:
         roles = _normalize_preferred_roles(_split_update_list(preferred_roles))
+        roles = [re.sub(r"^(?:full[- ]?time|part[- ]?time|contract|freelance|internship)\s+", "", role, flags=re.I).strip() for role in roles]
         if roles:
             updates["preferred_roles"] = roles
 
@@ -5598,23 +5633,38 @@ def _infer_profile_updates_from_message(message: str) -> dict:
             r"\b(?:i(?:'m| am)?\s+(?:expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)|expecting|targeting|seeking|looking for|hoping for|want(?:ing)?|after)\s+(?P<value>(?:[₹$€£]\s*)?\d[\d,]*(?:\s*(?:[-–—]|to)\s*(?:[₹$€£]\s*)?\d[\d,]*)?(?:\s*(?:k|lpa|pa|per annum|annual(?:ly)?|year(?:ly)?|yr|month(?:ly)?|lac|lakhs?|crore|crores))?)(?:[.!?;]|$)",
         ],
     )
+    if not salary_expectation:
+        salary_match = re.search(
+            r"\b(?:expecting|targeting|seeking)\s+(?P<value>(?:[₹$€£]\s*)?\d[\d,]*(?:\s*(?:[-–—]|to)\s*(?:[₹$€£]\s*)?\d[\d,]*)?\s*(?:k|lpa|pa|per annum|annual(?:ly)?|year(?:ly)?|yr|month(?:ly)?|lac|lakhs?|crore|crores))\b",
+            text,
+            re.I,
+        )
+        if salary_match:
+            salary_expectation = salary_match.group("value")
     if salary_expectation:
         # Preserve the fallback's established output contract; application maps
         # this legacy extraction alias into the canonical expected_salary key.
-        updates["salary_expectation"] = salary_expectation.strip()
+        updates["salary_expectation"] = _normalize_salary_expectation(salary_expectation)
 
     remote_match = re.search(r"\b(?:(?:prefer|want|looking for|open to)\s+|(?:set|update|change)\s+(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:to|as)\s+|(?:my\s+)?(?:work mode|work preference|remote preference)\s+(?:is|:)\s*)(remote|hybrid|on[ -]?site|flexible)\b", text, re.IGNORECASE)
     if remote_match:
         updates["remote_preference"] = {"remote": "Remote", "hybrid": "Hybrid", "on-site": "On-site", "onsite": "On-site", "flexible": "Flexible"}[remote_match.group(1).lower().replace(" ", "-")]
 
     employment_match = re.search(r"\b(full[ -]?time|part[ -]?time|contract|freelance|internship)\b", text, re.IGNORECASE)
-    if employment_match and any(term in lower for term in ("prefer", "looking for", "want", "open to", "employment type", "work type")):
+    if employment_match and (any(term in lower for term in ("prefer", "looking for", "want", "open to", "employment type", "work type")) or preferred_roles):
         updates["employment_types"] = [_normalize_profile_text(employment_match.group(1)).title().replace("Full-Time", "Full-time").replace("Part-Time", "Part-time")]
 
     locations = _extract_first_match(text, [
         r"\b(?:preferred locations?|locations? preferred)\s*[:\-]\s*(?P<value>.+?)(?:[.!?;]|$)",
         r"\b(?:i\s+)?prefer\s+(?P<value>[A-Z][A-Za-z .'-]+?)(?:\s+(?:now|instead)|[.!?;]|$)",
     ])
+    if not locations:
+        location_match = re.search(
+            r"\b(?:in|near)\s+(?P<value>[A-Z][A-Za-z .'-]+?)\s*,?\s*(?=(?:expecting|with|and\s+(?:can|am|i)|$))",
+            text,
+        )
+        if location_match:
+            locations = location_match.group("value")
     if locations:
         updates["preferred_locations"] = _split_update_list(locations)
         # "actually ... now" is a correction, not an additional location.
@@ -7009,7 +7059,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
         elif field in ("salary_expectation", "expected_salary"):
             if not isinstance(value, str):
                 continue
-            salary_value = value.strip()
+            salary_value = _normalize_salary_expectation(value)
             if not salary_value:
                 continue
             has_preference_payload = True

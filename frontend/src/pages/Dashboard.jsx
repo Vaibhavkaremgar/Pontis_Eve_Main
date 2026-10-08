@@ -800,9 +800,9 @@ function Dashboard() {
       )}
 
       {/* Dashboard top header with Bell */}
-      <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:px-5 border-b border-black/[0.05]">
+      <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:gap-3 sm:px-5 border-b border-black/[0.05]">
         {userProfile.strengthPercent < 90 && (
-          <span data-testid="profile-90-navbar-guidance" className="mr-auto text-xs text-[#62578F] font-medium">
+          <span data-testid="profile-90-navbar-guidance" className="min-w-0 text-right text-xs leading-5 text-[#514875] font-semibold sm:whitespace-nowrap">
             Complete your profile to 90% to get personalized job matches.
           </span>
         )}
