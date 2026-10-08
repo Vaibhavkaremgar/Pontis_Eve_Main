@@ -306,9 +306,15 @@ describe("Dashboard right-panel state restoration", () => {
     unmount();
   });
 
-  it.each(["jobs", "documents", "profile"])(
-    "Chat with Eve + %s sidebar navigation keeps Chat with Eve and Profile",
-    async (tab) => {
+  it.each([
+    ["jobs", "jobs"],
+    ["documents", "documents"],
+    ["profile", "profile"],
+    ["tracked", "tracked"],
+    ["opportunities", "opportunities"],
+  ])(
+    "Chat with Eve + %s sidebar tab keeps Chat with Eve active and updates right panel to %s",
+    async (tab, expectedPanel) => {
       setupAxios(makeProfile({ profile_strength_percent: 90 }));
       const { container, unmount } = renderDashboard();
       await flush();
@@ -318,9 +324,11 @@ describe("Dashboard right-panel state restoration", () => {
 
       act(() => { container.querySelector(`[data-testid="nav-tab-${tab}"]`).click(); });
       await flush();
+      // Chat with Eve must remain in the center
       expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
       expect(container.querySelector('[data-testid="jobs-deck"]')).toBeFalsy();
-      expect(getRightPanelTab(container)).toBe("profile");
+      // Right panel must reflect the selected sidebar tab
+      expect(getRightPanelTab(container)).toBe(expectedPanel);
       unmount();
     }
   );

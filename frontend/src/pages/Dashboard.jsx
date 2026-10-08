@@ -176,12 +176,10 @@ function Dashboard() {
   const hasJobsAccess = userProfile.strengthPercent >= 90;
   const handleSidebarTabChange = React.useCallback((tab) => {
     setActiveTabPersisted(tab);
-    // Chat and Voice always use Profile as their supporting context. When
-    // viewing Jobs for You, sidebar tabs may provide their own right content.
-    setRightPanelTab(centerView === "swipe" ? tab : "profile");
-  }, [centerView, setActiveTabPersisted]);
+    setRightPanelTab(tab);
+  }, [setActiveTabPersisted]);
 
-  const displayedRightPanelTab = centerView === "swipe" ? rightPanelTab : "profile";
+  const displayedRightPanelTab = rightPanelTab;
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
