@@ -156,7 +156,7 @@ const STATE_LABELS = {
 const NOT_CONFIGURED_MSG = "Voice intake is not configured. Please contact support.";
 
 export default function VoiceIntake({ firstName, candidateId, onComplete, candidateProfile }) {
-  const [showTranscript, setShowTranscript] = React.useState(false);
+  const [showTranscript, setShowTranscript] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
   const progressTimerRef = React.useRef(null);

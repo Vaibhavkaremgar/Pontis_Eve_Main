@@ -1,8 +1,87 @@
+import React from "react";
+import { act } from "react";
+import ReactDOM from "react-dom/client";
 import {
   buildVoiceIntakeAssistantOverrides,
   canPersistVoiceProgress,
   resolveVoiceIntakeCandidateId,
 } from "../VoiceIntake";
+import VoiceIntake from "../VoiceIntake";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+jest.mock("../../../hooks/useVapi", () => {
+  const VAPI_STATES = {
+    IDLE: "idle",
+    CONNECTING: "connecting",
+    LISTENING: "listening",
+    SPEAKING: "speaking",
+    PROCESSING: "processing",
+    COMPLETED: "completed",
+    ERROR: "error",
+  };
+  const buildTranscriptText = (turns) =>
+    turns.map((t) => `${t.role === "assistant" ? "Assistant" : "Candidate"}: ${t.text}`).join("\n");
+  function useVapi() {
+    return {
+      callState: VAPI_STATES.LISTENING,
+      transcript: [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }],
+      error: null,
+      terminationReason: null,
+      startCall: () => {},
+      stopCall: () => {},
+      isMuted: false,
+      toggleMute: () => {},
+      callId: { current: null },
+    };
+  }
+  return { __esModule: true, default: useVapi, VAPI_STATES, buildTranscriptText };
+});
+
+jest.mock("axios", () => ({ post: jest.fn(() => Promise.resolve({ data: {} })) }));
+
+describe("VoiceIntake transcript visibility", () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = ReactDOM.createRoot(container);
+    act(() => {
+      root.render(
+        <VoiceIntake
+          firstName="Alex"
+          candidateId="cid-1"
+          onComplete={jest.fn()}
+          candidateProfile={{ name: "Alex Smith" }}
+        />
+      );
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("shows the live transcript panel by default when the call is active", () => {
+    expect(container.querySelector('[data-testid="voice-live-transcript"]')).not.toBeNull();
+  });
+
+  it("hides the transcript when the Live Transcript button is clicked", () => {
+    const btn = container.querySelector('[data-testid="voice-toggle-transcription"]');
+    act(() => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.querySelector('[data-testid="voice-live-transcript"]')).toBeNull();
+  });
+
+  it("shows the transcript again after a second click on the Live Transcript button", () => {
+    const btn = container.querySelector('[data-testid="voice-toggle-transcription"]');
+    act(() => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    act(() => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.querySelector('[data-testid="voice-live-transcript"]')).not.toBeNull();
+  });
+});
 
 describe("VoiceIntake progress terminal guard", () => {
   it("allows the current generation during normal progress saving", () => {
