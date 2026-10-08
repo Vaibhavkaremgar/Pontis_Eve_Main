@@ -35,6 +35,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
   const [callState, setCallState] = React.useState(VAPI_STATES.IDLE);
   const [transcript, setTranscript] = React.useState([]); // { role, text, final }[]
   const [error, setError] = React.useState(null);
+  const [terminationReason, setTerminationReason] = React.useState(null);
   const callIdRef = React.useRef(null);
   // Always hold the latest overrides so startCall never uses a stale closure value
   const assistantOverridesRef = React.useRef(assistantOverrides);
@@ -74,6 +75,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
         callIdRef.current = null;
         console.log("[voice-intake] Vapi call started");
         setCallState(VAPI_STATES.LISTENING);
+        setTerminationReason(null);
       });
 
       vapi.on("speech-start", () => setCallState(VAPI_STATES.SPEAKING));
@@ -91,12 +93,15 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       });
 
       vapi.on("error", (err) => {
+        console.error("[voice-intake] Vapi error", err);
         setError(err?.message || "Voice call error.");
+        setTerminationReason("vapi_error");
         setCallState(VAPI_STATES.ERROR);
       });
 
       vapi.on("call-end", () => {
         console.log("[voice-intake] call ended");
+        setTerminationReason("disconnect");
         setCallState(VAPI_STATES.PROCESSING);
       });
 
@@ -166,6 +171,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
     callState,
     transcript,
     error,
+    terminationReason,
     callId: callIdRef,
     startCall,
     stopCall,

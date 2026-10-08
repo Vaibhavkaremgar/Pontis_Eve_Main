@@ -189,7 +189,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     [firstName, resolvedCandidateId, candidateProfile]
   );
 
-  const { callState, transcript, error, startCall, stopCall, isMuted, toggleMute, callId } = useVapi({
+  const { callState, transcript, error, terminationReason, startCall, stopCall, isMuted, toggleMute, callId } = useVapi({
     publicKey: PUBLIC_KEY,
     assistantId: ASSISTANT_ID,
     assistantOverrides,
@@ -215,6 +215,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       candidate_id: resolvedCandidateId,
       vapi_call_id: callId.current || null,
       transcript_revision: String(transcript.length),
+      termination_reason: null,
     };
 
     const generation = progressGenerationRef.current;
@@ -236,7 +237,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
   // When Vapi signals processing, submit transcript to backend
   React.useEffect(() => {
-    if (callState !== VAPI_STATES.PROCESSING) return;
+    if (callState !== VAPI_STATES.PROCESSING && callState !== VAPI_STATES.ERROR) return;
     if (submitting) return;
 
     // Invalidate both pending timers and callbacks that were already queued
@@ -269,6 +270,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
           candidate_id: resolvedCandidateId,
           vapi_call_id: callId.current || null,
           transcript_revision: String(transcript.length),
+          termination_reason: terminationReason || "disconnect",
         });
       } catch (err) {
         console.warn("[voice-intake] interrupted-state save failed", err);
@@ -278,6 +280,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     };
 
     const hasCandidateSpeech = transcript.some((t) => t.role === "user" && t.text?.trim());
+    if (callState === VAPI_STATES.ERROR) {
+      // Errors are always resumable; never send them through the completion path.
+      persistInterruptedState();
+      return;
+    }
     if (!hasCandidateSpeech) {
       // The candidate hung up before answering, so persist Eve's last question
       // and the interrupted state before we navigate back to chat.
@@ -303,7 +310,9 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         transcript: transcriptText,
         voice_notes: transcript.map((t) => ({ role: t.role, text: t.text })),
         candidate_id: resolvedCandidateId,
-        vapi_call_id: callId.current || null,
+          vapi_call_id: callId.current || null,
+          termination_reason: terminationReason || "disconnect",
+          transcript_revision: String(transcript.length),
       })
       .then((res) => {
         console.log("[voice-intake] navigating to summary");
@@ -318,7 +327,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       })
       .finally(() => setSubmitting(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [callState]);
+  }, [callState, terminationReason]);
 
   const handleStartCall = () => {
     console.log("[voice-intake] button clicked");

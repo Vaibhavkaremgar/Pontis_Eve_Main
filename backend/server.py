@@ -7858,6 +7858,8 @@ class VoiceCandidateIntakeRequest(BaseModel):
     candidate_id: str  # validated server-side against DB
     vapi_call_id: Optional[str] = None
     provider_event_id: Optional[str] = None
+    termination_reason: Optional[str] = None
+    transcript_revision: Optional[str] = None
 
 
 class VoiceCandidateIntakeProgressRequest(BaseModel):
@@ -7866,6 +7868,7 @@ class VoiceCandidateIntakeProgressRequest(BaseModel):
     candidate_id: str
     vapi_call_id: Optional[str] = None
     transcript_revision: Optional[str] = None
+    termination_reason: Optional[str] = None
 
 
 # ---------- Voice intake migration (idempotent) ----------
@@ -9778,6 +9781,15 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
         voice_intake_state["current_question"] = None
         voice_intake_state["next_question"] = None
         voice_intake_state["has_open_question"] = False
+    if request.termination_reason and request.termination_reason != "completed":
+        # The termination reason records how the call ended, but the backend's
+        # independent topic analysis remains authoritative for completion.
+        voice_intake_state["termination_reason"] = request.termination_reason
+        if request.transcript_revision is not None:
+            try:
+                voice_intake_state["transcript_revision"] = int(request.transcript_revision)
+            except (TypeError, ValueError):
+                pass
     print("\n===== VOICE DEBUG =====", flush=True)
     print("existing_status=", existing_vi.get("status"), flush=True)
     print("existing_turns=", existing_vi.get("completed_turns") or [], flush=True)
@@ -9878,6 +9890,17 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
 
     existing_raw = _parse_raw_data(candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
+    try:
+        incoming_revision = int(request.transcript_revision) if request.transcript_revision is not None else None
+    except (TypeError, ValueError):
+        incoming_revision = None
+    try:
+        stored_revision = int(existing_vi.get("transcript_revision")) if existing_vi.get("transcript_revision") is not None else -1
+    except (TypeError, ValueError):
+        stored_revision = -1
+    if incoming_revision is not None and incoming_revision < stored_revision:
+        return {"status": "ignored_stale", "accepted": False, "candidate_id": request.candidate_id,
+                "transcript_revision": stored_revision, "voice_intake_resume": existing_vi}
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
     llm_analysis = await _llm_analyze_intake(
         candidate,
@@ -9892,6 +9915,10 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     )
     if not resume.get("status"):
         resume["status"] = "in_progress"
+    if incoming_revision is not None:
+        resume["transcript_revision"] = incoming_revision
+    if request.termination_reason:
+        resume["termination_reason"] = request.termination_reason
 
     await _save_voice_intake_resume(request.candidate_id, resume)
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
@@ -9913,7 +9940,9 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     _schedule_voice_intake_matching(request.candidate_id, resume_status)
     return {
         "status": "saved",
+        "accepted": True,
         "candidate_id": request.candidate_id,
+        "transcript_revision": resume.get("transcript_revision"),
         "voice_intake_resume": resume,
     }
 
