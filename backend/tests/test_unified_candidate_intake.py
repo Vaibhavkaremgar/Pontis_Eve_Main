@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
@@ -43,3 +44,56 @@ def test_profile_strength_override_is_disabled_by_default(monkeypatch):
     original = {"percent": 62, "label": "Developing", "profile_strength": {"percent": 62}}
     candidate = {"id": "53a744f8-3292-4339-8533-f9a2f2f93e96"}
     assert server._apply_profile_strength_test_override(candidate, original) is original
+def test_historical_employer_is_not_promoted_to_current_job():
+    extracted = {
+        "current_role": "Software Engineer",
+        "current_company": "Viral Bug",
+        "work_experience": [{"title": "Software Engineer", "company": "Viral Bug"}],
+    }
+    validated = server._validate_voice_current_employment(
+        extracted,
+        "Candidate: I previously worked at Viral Bug as a Software Engineer.",
+    )
+
+    assert "current_role" not in validated
+    assert "current_company" not in validated
+    assert validated["work_experience"] == extracted["work_experience"]
+
+
+def test_explicit_current_employer_can_update_current_job():
+    extracted = {"current_role": "Software Engineer", "current_company": "Viral Bug"}
+    validated = server._validate_voice_current_employment(
+        extracted,
+        "Assistant: What is your current role? Candidate: I am currently a Software Engineer at Viral Bug.",
+    )
+
+    assert validated["current_role"] == "Software Engineer"
+    assert validated["current_company"] == "Viral Bug"
+
+
+def test_authoritative_missing_questions_exclude_saved_answered_and_pending_topics(monkeypatch):
+    async def fake_ledger(_candidate_id):
+        return [
+            {"topic_id": "expected_salary", "status": "ANSWERED"},
+            {"topic_id": "notice_period", "status": "ASKED"},
+        ]
+
+    monkeypatch.setattr(server, "_load_intake_ledger", fake_ledger)
+    candidate = {
+        "id": "candidate-1",
+        "current_role": "Engineer",
+        "experience_years": 3,
+        "skills": ["Python"],
+        "education": [{"degree": "B.Tech"}],
+        "raw_data": {"preferred_roles": ["Backend Engineer"]},
+    }
+
+    questions = asyncio.run(server._build_authoritative_missing_questions(candidate, {}))
+    topics = {item["topic_id"] for item in questions}
+
+    assert "current_role" not in topics
+    assert "skills" not in topics
+    assert "preferred_roles" not in topics
+    assert "expected_salary" not in topics
+    assert "notice_period" not in topics
+    assert "preferred_locations" in topics

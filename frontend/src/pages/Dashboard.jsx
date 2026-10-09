@@ -9,7 +9,6 @@ import ChatHub from "../components/ChatHub";
 import LivingProfile, { JobsTab } from "../components/LivingProfile";
 import CandidateSettingsModal from "../components/CandidateSettingsModal";
 import { MOCK_RECENT_ACTIVITY } from "../mock";
-import { getDynamicChatSuggestions } from "../lib/chatSuggestions";
 import {
   isVoiceIntakeCompleteStatus,
   loadOnboardingState,
@@ -150,6 +149,7 @@ function Dashboard() {
   ]);
   const [chatRestored, setChatRestored] = React.useState(false);
   const [inputValue, setInputValue] = React.useState("");
+  const [composerFocusToken, setComposerFocusToken] = React.useState(0);
   const [availableJobs, setAvailableJobs] = React.useState([]);
   const [matchingJobsTotal, setMatchingJobsTotal] = React.useState(0);
   const [documents, setDocuments] = React.useState({ resume: null, certificates: [], application_resumes: [] });
@@ -233,6 +233,7 @@ function Dashboard() {
           profile_strength_label: data.profile_strength_label ?? data.strength,
           profile_strength_detail: data.profile_strength_detail ?? null,
           recommendation_readiness: data.recommendation_readiness ?? null,
+          missing_questions: data.missing_questions ?? [],
         };
         setUserProfile((prev) => {
           // The persisted payload is authoritative.  In particular, do not
@@ -616,24 +617,12 @@ function Dashboard() {
     await _sendToEve(historyPayload, turnId);
   };
 
-  // Suggestion chips act as profile-improvement prompts: Eve asks the candidate
-  // the question; the instruction is not shown as a user bubble.
-  const handleSuggestionClick = React.useCallback(async (suggestion) => {
-    if (sending) return;
-    const instruction = `[PROFILE_QUESTION] Please ask me the following question to help complete my profile: "${suggestion}"`;
-    const historyPayload = [
-      ...chats
-        .filter((c) => c.sender === "user" || c.sender === "eve")
-        .map((c) => ({
-          role: c.sender === "user" ? "user" : "assistant",
-          content: c.content,
-        })),
-      { role: "user", content: instruction },
-    ];
-    const turnId = latestChatTurnRef.current + 1;
-    latestChatTurnRef.current = turnId;
-    await _sendToEve(historyPayload, turnId);
-  }, [sending, chats, _sendToEve]);
+  const handleSuggestionClick = React.useCallback((suggestion) => {
+    if (sending || !suggestion) return;
+    const question = String(suggestion).trim().replace(/[?:\s]+$/, "");
+    setInputValue(`${question}: `);
+    setComposerFocusToken((token) => token + 1);
+  }, [sending]);
 
   const handleProfileGuidanceClick = React.useCallback((item) => {
     const questions = {
@@ -652,7 +641,6 @@ function Dashboard() {
     setActiveSidebarTab("profile");
     setRightPanelTab("profile");
     setCenterView("chat");
-    setInputValue("");
     handleSuggestionClick(question);
   }, [handleSuggestionClick]);
 
@@ -1022,8 +1010,9 @@ function Dashboard() {
                 setInputValue={setInputValue}
                 onSend={handleSendMessage}
                 sending={sending}
-                quickActions={getDynamicChatSuggestions(userProfile)}
+                quickActions={(userProfile.missing_questions || []).map((item) => item.question).slice(0, 4)}
                 onSuggestionClick={handleSuggestionClick}
+                composerFocusToken={composerFocusToken}
                 onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();

@@ -1385,7 +1385,11 @@ async def _get_candidate_profile_payload(candidate_id: str) -> dict:
         )
         _prefs_row = _pr.mappings().fetchone()
     enriched["_prefs_row"] = dict(_prefs_row) if _prefs_row else None
-    return _normalize_for_frontend(enriched)
+    payload = _normalize_for_frontend(enriched)
+    payload["missing_questions"] = await _build_authoritative_missing_questions(
+        enriched, enriched["_prefs_row"]
+    )
+    return payload
 
 
 async def _load_candidate_certificates(candidate_id: str) -> list[dict]:
@@ -3325,6 +3329,72 @@ async def _load_intake_ledger(candidate_id: str) -> list[dict]:
         return [dict(row) for row in result.mappings().fetchall()]
 
 
+_INTAKE_TOPIC_QUESTIONS = {
+    "current_role": "What's your current job title and industry?",
+    "experience_years": "How many years of professional experience do you have?",
+    "skills": "What are your strongest professional and technical skills?",
+    "preferred_roles": "What kinds of roles are you looking for?",
+    "preferred_locations": "Which locations would you prefer to work in?",
+    "remote_preference": "Do you prefer remote, hybrid, on-site, or flexible work?",
+    "notice_period": "What is your notice period or when could you start?",
+    "expected_salary": "What salary range are you targeting?",
+    "education": "What's your highest level of education?",
+    "certifications": "Do you have any professional certifications?",
+    "projects": "Tell me about a project that best demonstrates your skills.",
+}
+
+
+async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Optional[dict] = None) -> list[dict]:
+    """Return only unanswered profile topics, using persisted profile and ledger state."""
+    from profile_strength_service import get_canonical_preferences
+
+    candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "")
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    preferences = get_canonical_preferences(candidate, prefs_row)
+    try:
+        ledger = await _load_intake_ledger(candidate_id) if candidate_id else []
+    except Exception as exc:
+        logger.warning("[intake-ledger] could not load candidate=%s: %s", candidate_id, exc)
+        ledger = []
+    ledger_by_topic = {item.get("topic_id"): item for item in ledger}
+
+    values = {
+        "current_role": candidate.get("current_role") or candidate.get("headline"),
+        "experience_years": candidate.get("experience_years") or candidate.get("total_experience_years"),
+        "skills": candidate.get("skills"),
+        "preferred_roles": preferences.get("preferred_roles") or raw.get("preferred_roles"),
+        "preferred_locations": preferences.get("preferred_locations") or raw.get("location_preferences"),
+        "remote_preference": preferences.get("remote_preference") or raw.get("work_type_preference"),
+        "notice_period": preferences.get("notice_period") or raw.get("notice_period") or raw.get("availability"),
+        "expected_salary": preferences.get("expected_salary") or raw.get("salary_expectation"),
+        "education": candidate.get("education"),
+        "certifications": raw.get("certifications") or candidate.get("candidate_certificates"),
+        "projects": raw.get("projects"),
+    }
+
+    questions: list[dict] = []
+    for topic in INTAKE_TOPIC_PRIORITY:
+        if topic == "current_company":
+            continue
+        saved = values.get(topic)
+        ledger_item = ledger_by_topic.get(topic) or {}
+        status = ledger_item.get("status")
+        if saved not in (None, "", []) or status == "ANSWERED":
+            continue
+        # Do not immediately repeat a question already asked in voice or chat.
+        if status == "ASKED":
+            continue
+        question = _INTAKE_TOPIC_QUESTIONS.get(topic)
+        if not question:
+            continue
+        questions.append({
+            "topic_id": topic,
+            "question": question,
+            "status": status or "NOT_ASKED",
+        })
+    return questions
+
+
 def _voice_intake_resume_to_voice_notes(
     resume: dict,
     candidate_answer: str = "",
@@ -4860,6 +4930,14 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         percent = result.get("percent", 0)
         if percent >= 90:
             return f"Profile is at {percent}% (90%+ reached). Do NOT ask any more profile-completion questions."
+        authoritative_questions = profile.get("missing_questions") or []
+        if authoritative_questions:
+            question = _clean_str(authoritative_questions[0].get("question"))
+            if question:
+                return (
+                    f"Profile is at {percent}% (below 90%). Ask this ONE database-selected "
+                    f"unanswered question naturally: \"{question}\""
+                )
         # Preference completion is based on the canonical reader, rather than
         # whichever legacy alias happened to be present in raw_data. Preserve
         # the product-wide 90% completion boundary for chat and sidebar behavior.
@@ -7564,6 +7642,9 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                 )
                 prefs_row = prefs_result.mappings().fetchone()
             frontend_profile["_prefs_row"] = dict(prefs_row) if prefs_row else None
+            frontend_profile["missing_questions"] = await _build_authoritative_missing_questions(
+                row, frontend_profile["_prefs_row"]
+            )
             profile_context, missing_fields = _build_profile_context(frontend_profile)
             missing_preference_fields = _missing_canonical_preference_fields(
                 row, frontend_profile["_prefs_row"]
@@ -7586,6 +7667,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                     f"\n- Partially answered topics: {', '.join(partial) or 'None'}"
                     f"\n- Pending topics: {', '.join(pending) or 'None'}"
                     "\nNever ask an ANSWERED topic again. A PARTIALLY_ANSWERED topic may only receive a targeted follow-up."
+                    " Never re-ask a PENDING topic; wait for the candidate to answer it."
                 )
             persisted_window = await _load_chat_window(request.candidate_id)
         except HTTPException:
@@ -8095,6 +8177,10 @@ async def _ensure_schema():
     async with SessionLocal() as db:
         await db.execute(text(CREATE_VOICE_INTAKES_TABLE))
         await db.execute(text(CREATE_VOICE_INTAKES_INDEX))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER))
+        await db.execute(text(CREATE_CANDIDATE_INTAKE_LEDGER_EVENT_INDEX))
+        await db.execute(text(CREATE_VAPI_EVENTS_TABLE))
+        await db.execute(text(CREATE_VAPI_EVENTS_CALL_INDEX))
         await db.execute(text(ALTER_CANDIDATE_JOB_RECS_ADD_REASON))
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_TABLE))
         await db.execute(text(CREATE_DAILY_JOB_ACCESS_INDEX))
@@ -8186,6 +8272,42 @@ async def _extract_voice_info(transcript: str) -> dict:
     except Exception as e:
         logger.warning("Voice extraction LLM failed: %s", e)
         return {}
+
+
+def _validate_voice_current_employment(voice_data: dict, transcript: str) -> dict:
+    """Keep current-job scalars only when the transcript supports present employment.
+
+    Historical employers still remain available in work_experience; they must not
+    override a valid resume current role merely because the extractor returned a
+    role/company pair.
+    """
+    cleaned = dict(voice_data or {})
+    if not (cleaned.get("current_role") or cleaned.get("current_company")):
+        return cleaned
+
+    evidence = _normalize_profile_text(transcript).lower()
+    current_evidence = bool(re.search(
+        r"\b(?:current(?:ly)?|present(?:ly)?|right now|working at|work at|employed at|current (?:role|job|position|company|employer))\b",
+        evidence,
+    ))
+    historical_evidence = bool(re.search(
+        r"\b(?:previously|formerly|used to|worked at|had worked at|past role|previous role)\b",
+        evidence,
+    ))
+    candidate_segments = " ".join(re.findall(
+        r"(?:candidate|user|answer)\s*:\s*([^\n]+)",
+        evidence,
+        flags=re.I,
+    )) or evidence
+    candidate_current_evidence = bool(re.search(
+        r"\b(?:current(?:ly)?|present(?:ly)?|right now|working at|work at|employed at)\b",
+        candidate_segments,
+    ))
+    historical_only = historical_evidence and not candidate_current_evidence
+    if historical_only or not current_evidence:
+        cleaned.pop("current_role", None)
+        cleaned.pop("current_company", None)
+    return cleaned
 
 
 # ---------- Safe profile merge ----------
@@ -9847,6 +9969,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
     # 4. Extract structured info via LLM
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript)
+    voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
 
     # 5. Merge into existing profile, preferences, and resume state.
     merged = await _persist_voice_intake_profile_state(
@@ -9976,6 +10099,7 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     await _save_voice_intake_resume(request.candidate_id, resume)
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
     voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
+    voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
     await _sync_voice_ledger(request.candidate_id, resume)
     await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")

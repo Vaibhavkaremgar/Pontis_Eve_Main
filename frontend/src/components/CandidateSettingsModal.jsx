@@ -204,7 +204,6 @@ export default function CandidateSettingsModal({
                         <p className="text-[12px] text-[#6B6B69]">Browse FAQs or send a message to the team.</p>
                       </div>
                     </div>
-                    <span className="text-[12px] text-[#9A9A98]">Open</span>
                   </button>
 
                   <button
@@ -222,7 +221,6 @@ export default function CandidateSettingsModal({
                         <p className="text-[12px] text-red-600/80">Permanently remove your profile and data.</p>
                       </div>
                     </div>
-                    <span className="text-[12px] text-red-500">Open</span>
                   </button>
                 </div>
               ) : view === "faq" ? (

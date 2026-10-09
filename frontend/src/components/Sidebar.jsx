@@ -29,7 +29,11 @@ export default function Sidebar({
   const displayName = (footerIdentity ?? userProfile).name;
   const displayEmail = (footerIdentity ?? userProfile).email;
   const profileGuidance = userProfile?.profile_strength_detail?.ninety_percent_guidance;
-  const guidanceItems = profileGuidance?.items || [];
+  const guidanceItems = (userProfile?.missing_questions || []).map((item) => ({
+    ...item,
+    section: item.topic_id,
+    action: item.question,
+  }));
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef(null);
 
@@ -121,7 +125,7 @@ export default function Sidebar({
           */}
         </nav>
 
-        {profileGuidance && profileGuidance.current_percent < 90 && (
+        {profileGuidance && profileGuidance.current_percent < 90 && guidanceItems.length > 0 && (
           <section
             data-testid="profile-90-guidance"
             className="mx-2 mt-3 min-w-0 rounded-2xl border border-[#DDD8EF] bg-[#F7F5FC] p-4"

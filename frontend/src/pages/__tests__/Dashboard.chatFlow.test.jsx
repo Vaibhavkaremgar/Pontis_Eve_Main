@@ -38,6 +38,11 @@ jest.mock("../../components/ChatHub", () => (props) => (
     <button data-testid="chat-send-btn" onClick={(e) => props.onSend?.(e)}>
       send
     </button>
+    {(props.quickActions || []).map((question) => (
+      <button key={question} data-testid="chat-suggestion" onClick={() => props.onSuggestionClick?.(question)}>
+        {question}
+      </button>
+    ))}
     {props.onMicClick && (
       <button data-testid="chat-mic-btn" onClick={props.onMicClick}>
         mic
@@ -357,5 +362,25 @@ describe("Dashboard chat flow regressions", () => {
     const secondRequest = axios.post.mock.calls[1][1];
     expect(secondRequest.messages.at(-1)).toEqual({ role: "user", content: "I am expecting 7-10 LPA" });
     expect(renderResult.container.querySelector('[data-testid="chat-transcript"]').textContent).toContain("7-10 LPA");
+  });
+
+  it("prefills an authoritative missing question without sending it to Eve", async () => {
+    mockRequests([makeProfile({
+      missing_questions: [{
+        topic_id: "expected_salary",
+        question: "What salary range are you targeting?",
+        status: "NOT_ASKED",
+      }],
+    })]);
+    renderResult = renderDashboard();
+    await waitForSelector(renderResult.container, '[data-testid="chat-hub"]');
+
+    act(() => {
+      renderResult.container.querySelector('[data-testid="chat-suggestion"]').click();
+    });
+
+    expect(renderResult.container.querySelector('[data-testid="chat-text-input"]').value)
+      .toBe("What salary range are you targeting: ");
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });

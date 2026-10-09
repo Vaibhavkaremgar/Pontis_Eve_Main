@@ -69,6 +69,13 @@ describe("VoiceIntake transcript visibility", () => {
     expect(container.querySelector('[data-testid="voice-live-transcript"]')).not.toBeNull();
   });
 
+  it("tells the candidate to end the call to finish and save responses", () => {
+    const instruction = container.querySelector('[data-testid="voice-end-call-instruction"]');
+    expect(instruction).not.toBeNull();
+    expect(instruction.textContent).toContain("End Call");
+    expect(instruction.textContent).toContain("save your responses");
+  });
+
   it("hides the transcript when the Live Transcript button is clicked", () => {
     const btn = container.querySelector('[data-testid="voice-toggle-transcription"]');
     act(() => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });

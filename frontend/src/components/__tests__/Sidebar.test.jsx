@@ -154,6 +154,11 @@ describe("Sidebar profile guidance", () => {
             items: [{ section: "skills", action: "Add your key skills" }],
           },
         },
+        missing_questions: [{
+          topic_id: "skills",
+          question: "What are your strongest professional and technical skills?",
+          status: "NOT_ASKED",
+        }],
       },
     });
 
@@ -164,6 +169,9 @@ describe("Sidebar profile guidance", () => {
     expect(billing.compareDocumentPosition(guidance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const suggestion = guidance.querySelector('[data-testid="profile-guidance-skills"]');
     act(() => suggestion.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onGuidanceClick).toHaveBeenCalledWith(expect.objectContaining({ section: "skills", action: "Add your key skills" }));
+    expect(onGuidanceClick).toHaveBeenCalledWith(expect.objectContaining({
+      section: "skills",
+      action: "What are your strongest professional and technical skills?",
+    }));
   });
 });

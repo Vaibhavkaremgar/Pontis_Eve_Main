@@ -78,6 +78,7 @@ export default function ChatHub({
   quickActions,
   onSuggestionClick,
   onMicClick,
+  composerFocusToken,
 }) {
   const scrollRef = React.useRef(null);
   const inputRef = React.useRef(null);
@@ -101,6 +102,11 @@ export default function ChatHub({
   React.useEffect(() => {
     resizeInput();
   }, [inputValue, resizeInput]);
+
+  React.useEffect(() => {
+    if (!composerFocusToken) return;
+    inputRef.current?.focus();
+  }, [composerFocusToken]);
 
   return (
     <section
@@ -152,7 +158,7 @@ export default function ChatHub({
           <button
             key={q}
             data-testid={`quick-action-${q.replace(/\s+/g, "-").toLowerCase()}`}
-            onClick={() => onSuggestionClick ? onSuggestionClick(q) : setInputValue(q)}
+            onClick={() => onSuggestionClick ? onSuggestionClick(q) : setInputValue(`${q.replace(/[?:\s]+$/, "")}: `)}
             className="text-[12px] px-3 py-1.5 rounded-full bg-white border border-black/[0.06] text-[#4A4A48] hover:border-black/[0.14] hover:text-[#1F1F1F] transition-colors font-normal"
           >
             {q}

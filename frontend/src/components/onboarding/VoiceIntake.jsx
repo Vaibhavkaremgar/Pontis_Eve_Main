@@ -375,6 +375,15 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         )}
       </div>
 
+      {isActive && (
+        <p
+          className="text-[12.5px] text-[#4A4A48] max-w-sm mx-auto leading-relaxed"
+          data-testid="voice-end-call-instruction"
+        >
+          Once you&apos;ve completed your voice intake, click <span className="font-medium text-[#1F1F1F]">End Call</span> to finish and save your responses.
+        </p>
+      )}
+
       {/* Controls */}
       <div className="flex items-center gap-3 flex-wrap justify-center">
         {isIdle && (
