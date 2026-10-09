@@ -4,6 +4,7 @@ import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useApplicationFollowUp } from "./ApplicationFollowUp";
+import { normalizeJobDescription } from "../lib/jobDescription";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -63,6 +64,19 @@ function formatJobDescription(str) {
     else output.push(item);
   }
   return output.join("\n\n");
+}
+
+function JobDescriptionContent({ source }) {
+  return (
+    <div className="space-y-4">
+      {normalizeJobDescription(source).map((block, index) => {
+        if (block.type === "heading") return <h4 key={index} className="font-medium text-[#1F1F1F]">{block.text}</h4>;
+        if (block.type === "ul") return <ul key={index} className="list-disc space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>;
+        if (block.type === "ol") return <ol key={index} className="list-decimal space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ol>;
+        return <p key={index}>{block.text}</p>;
+      })}
+    </div>
+  );
 }
 
 // Extract 2–3 meaningful bullet points from responsibilities, requirements, or description
@@ -401,9 +415,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.description && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
-              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {formatJobDescription(job.description)}
-              </p>
+              <div className="text-[13px] text-[#4A4A48] leading-relaxed font-normal"><JobDescriptionContent source={job.description} /></div>
             </div>
           )}
 
@@ -411,9 +423,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.requirements && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
-              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {formatJobDescription(job.requirements)}
-              </p>
+              <div className="text-[13px] text-[#4A4A48] leading-relaxed font-normal"><JobDescriptionContent source={job.requirements} /></div>
             </div>
           )}
 
