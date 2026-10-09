@@ -1,6 +1,5 @@
 import React from "react";
 import axios from "axios";
-import DOMPurify from "dompurify";
 import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react";
 import { toast } from "sonner";
@@ -22,11 +21,6 @@ export const NOT_INTERESTED_REASONS = [
   "Not looking for a job now",
   "Other",
 ];
-
-function sanitizeHtml(str) {
-  if (!str || typeof str !== "string") return "";
-  return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
-}
 
 // For plain-text preview snippets (swipe card summary, job list card)
 function cleanText(str) {
@@ -377,10 +371,9 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.description && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
-              <div
-                className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
-                dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.description) }}
-              />
+              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
+                {cleanText(job.description)}
+              </p>
             </div>
           )}
 
@@ -388,10 +381,9 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.requirements && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
-              <div
-                className="job-description-html text-[13px] text-[#4A4A48] leading-relaxed font-normal"
-                dangerouslySetInnerHTML={{ __html: sanitizeHtml(job.requirements) }}
-              />
+              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
+                {cleanText(job.requirements)}
+              </p>
             </div>
           )}
 

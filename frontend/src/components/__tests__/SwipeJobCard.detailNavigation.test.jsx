@@ -95,6 +95,19 @@ describe("SwipeJobDeck job details navigation", () => {
     expect(renderResult.container.querySelector('[aria-label="Back"]')).toBeNull();
   });
 
+  it("shows job description and requirements as text without HTML tags", () => {
+    const renderResult = renderDeck();
+    act(() => {
+      renderResult.container.querySelector('[data-testid="job-card-job-1"]')?.click();
+    });
+    const detail = renderResult.container.querySelector('[data-testid="job-detail-panel"]');
+    expect(detail?.textContent).toContain("Lead product strategy.");
+    expect(detail?.textContent).toContain("5+ years experience");
+    expect(detail?.textContent).not.toContain("<p>");
+    expect(detail?.textContent).not.toContain("<ul>");
+    renderResult.unmount();
+  });
+
   it("renders a horizontal card with its details and score on the right", () => {
     renderResult = renderDeck({ jobs: [{
       id: "job-1", title: "Senior Product Manager", company: "Acme", location: "Remote", salary: "$150k",

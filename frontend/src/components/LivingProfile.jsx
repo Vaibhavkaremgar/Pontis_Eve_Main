@@ -1500,13 +1500,13 @@ function OpportunitiesTab({ candidateId, onInterested }) {
         {job.description && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">About the role</p>
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed">{job.description}</p>
+            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed whitespace-pre-line">{stripHtml(job.description)}</p>
           </div>
         )}
         {job.requirements && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">Requirements</p>
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed">{job.requirements}</p>
+            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed whitespace-pre-line">{stripHtml(job.requirements)}</p>
           </div>
         )}
         {skills.length > 0 && (

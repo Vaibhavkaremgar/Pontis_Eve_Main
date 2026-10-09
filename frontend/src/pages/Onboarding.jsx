@@ -655,11 +655,10 @@ export function buildSummary(profile = {}) {
   const professionalSummary = dynamicProfessionalSummary({ overview, roleAndCompany, responsibilities, lookingFor });
   if (professionalSummary) items.push({ label: "Summary", value: professionalSummary });
 
-  if (roleAndCompany || responsibilities) {
+  if (roleAndCompany) {
     items.push({
       label: "Current role",
       value: roleAndCompany,
-      detail: responsibilities,
     });
   }
 

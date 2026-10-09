@@ -305,7 +305,7 @@ describe("buildSummary", () => {
 
     const currentRole = summary.find((item) => item.label === "Current role");
     expect(currentRole.value).toBe("AI Automation Engineer at Viral Buck");
-    expect(currentRole.detail).toBe("");
+    expect(currentRole.detail).toBeUndefined();
   });
 
   it("uses the merged profile data consistently", () => {
@@ -388,7 +388,7 @@ describe("buildSummary", () => {
     expect(byLabel["Current role"]).toContain("Acme");
   });
 
-  it("uses the Voice Intake responsibility answer for the Current Role detail", () => {
+  it("keeps Current role limited to the title and company", () => {
     const summary = buildSummary({
       current_role: "Python Developer",
       current_company: "Viral Bug",
@@ -403,7 +403,6 @@ describe("buildSummary", () => {
     expect(summary.find((item) => item.label === "Current role")).toEqual({
       label: "Current role",
       value: "Python Developer at Viral Bug",
-      detail: "I build and maintain payment APIs for our checkout team.",
     });
   });
 
@@ -484,7 +483,7 @@ describe("buildSummary", () => {
     });
 
     expect(summary.find((item) => item.label === "Skills")?.value).toBe("Python");
-    expect(summary.find((item) => item.label === "Current role")?.detail).toContain("data integration");
+    expect(summary.find((item) => item.label === "Current role")?.detail).toBeUndefined();
   });
 });
 
