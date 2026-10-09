@@ -18,13 +18,21 @@ function decodePlainText(value) {
   return cleanWhitespace(template.content.textContent || "");
 }
 
+function decodeInputOnce(value) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = String(value || "");
+  // Some aggregators persist escaped delimiters as `\\<p>` / `\\</p>`.
+  // Normalize only the delimiter escape, not arbitrary backslashes in text.
+  return textarea.value.replace(/\\([<>])/g, "$1");
+}
+
 function hasMarkup(value) {
   return /<\/?[a-z][^>]*>/i.test(String(value || ""));
 }
 
 export function normalizeJobDescription(source) {
   if (!source || typeof source !== "string") return [];
-  const input = source.trim();
+  const input = decodeInputOnce(source).trim();
   if (!input) return [];
   if (!hasMarkup(input)) {
     return input.split(/\n{2,}/).map((text) => ({ type: "paragraph", text: cleanWhitespace(decodePlainText(text)) })).filter((block) => block.text);
@@ -39,7 +47,13 @@ export function normalizeJobDescription(source) {
   const root = doc.body.firstElementChild;
   const blocks = [];
 
-  Array.from(root?.children || []).forEach((node) => {
+  Array.from(root?.childNodes || []).forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = cleanWhitespace(node.textContent);
+      if (text) blocks.push({ type: "paragraph", text });
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
     const tag = node.tagName;
     if (HEADING_TAGS.has(tag)) {
       const text = cleanWhitespace(node.textContent);
