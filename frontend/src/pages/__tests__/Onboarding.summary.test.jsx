@@ -286,6 +286,28 @@ describe("post-Voice-Intake navigation flow", () => {
 });
 
 describe("buildSummary", () => {
+  it("does not place career-preference prose under Current role", () => {
+    const summary = buildSummary({
+      current_role: "AI Automation Engineer",
+      current_company: "Viral Buck",
+      voice_intake_resume: {
+        completed_turns: [{
+          question: "Tell me about your current work and responsibilities.",
+          answer: "Anything that's better related to my role would be great. I'm very much interested in working on different categories of projects where I can explore new topics and new kind of environment.",
+        }],
+      },
+      voice_intake_summary_source: {
+        current_role: "AI Automation Engineer",
+        current_company: "Viral Buck",
+        preferred_roles: ["Python Developer"],
+      },
+    });
+
+    const currentRole = summary.find((item) => item.label === "Current role");
+    expect(currentRole.value).toBe("AI Automation Engineer at Viral Buck");
+    expect(currentRole.detail).toBe("");
+  });
+
   it("uses the merged profile data consistently", () => {
     const merged = mergeProfilesForDisplay(
       {

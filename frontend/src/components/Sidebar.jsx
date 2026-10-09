@@ -125,16 +125,20 @@ export default function Sidebar({
           */}
         </nav>
 
-        {profileGuidance && profileGuidance.current_percent < 90 && guidanceItems.length > 0 && (
+        {guidanceItems.length > 0 && (
           <section
             data-testid="profile-90-guidance"
             className="mx-2 mt-3 min-w-0 rounded-2xl border border-[#DDD8EF] bg-[#F7F5FC] p-4"
           >
             <p className="text-[14px] font-semibold text-[#1F1F1F]">
-              Reach 90% Profile
+              {profileGuidance && profileGuidance.current_percent < 90
+                ? "Reach 90% Profile"
+                : "Complete your profile"}
             </p>
             <p className="mt-1 text-[12.5px] text-[#4A4A48]">
-              {profileGuidance.current_percent}% complete · {profileGuidance.remaining_percent_to_90}% to go
+              {profileGuidance
+                ? `${profileGuidance.current_percent}% complete · ${profileGuidance.remaining_percent_to_90}% to go`
+                : `${guidanceItems.length} missing detail${guidanceItems.length === 1 ? "" : "s"}`}
             </p>
             {guidanceItems.length > 0 && (
               <ul className="mt-3 space-y-2">

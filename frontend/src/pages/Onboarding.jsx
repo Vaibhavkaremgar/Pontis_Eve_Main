@@ -544,7 +544,15 @@ function voiceIntakeTurns(profile) {
 function currentWorkSummary(profile) {
   const turn = voiceIntakeTurns(profile).find(({ question, answer }) => {
     const prompt = nonEmptyText(question).toLowerCase();
-    return nonEmptyText(answer) && /responsibilit|current (?:work|role|job)|what do you do|recent .*project/.test(prompt);
+    const response = nonEmptyText(answer);
+    if (!response) return false;
+    // Career preferences belong under Looking for / Additional information,
+    // never under Current role, even when the intake question mentions a
+    // project or current work.
+    if (/\b(?:anything\s+(?:better|else)|interested\s+in\s+working|looking\s+for|prefer(?:ably)?|new\s+(?:topics?|environment|kind)|different\s+categor(?:y|ies))\b/i.test(response)) {
+      return false;
+    }
+    return /responsibilit|current (?:work|role|job)|what do you do/.test(prompt);
   });
   const answer = nonEmptyText(turn?.answer);
   if (!answer) return "";

@@ -97,3 +97,11 @@ def test_authoritative_missing_questions_exclude_saved_answered_and_pending_topi
     assert "expected_salary" not in topics
     assert "notice_period" not in topics
     assert "preferred_locations" in topics
+
+
+def test_certification_normalization_keeps_name_not_candidate_sentence():
+    import server
+
+    assert server._normalize_certifications([
+        "yes i ahve N8N workflow automation engineer certification",
+    ]) == ["N8N workflow automation engineer"]

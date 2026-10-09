@@ -3217,7 +3217,8 @@ async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
 
 
 INTAKE_TOPIC_PRIORITY = (
-    "current_role", "current_company", "experience_years", "skills",
+    "name", "location", "bio", "current_role", "current_company", "experience_years", "skills",
+    "work_experience",
     "preferred_roles", "preferred_locations", "remote_preference",
     "notice_period", "expected_salary", "education", "certifications", "projects",
 )
@@ -3330,9 +3331,13 @@ async def _load_intake_ledger(candidate_id: str) -> list[dict]:
 
 
 _INTAKE_TOPIC_QUESTIONS = {
+    "name": "What name would you like employers to use?",
+    "location": "Where are you currently located?",
+    "bio": "How would you briefly describe your professional background?",
     "current_role": "What's your current job title and industry?",
     "experience_years": "How many years of professional experience do you have?",
     "skills": "What are your strongest professional and technical skills?",
+    "work_experience": "Could you share your work experience, including your roles, companies, and dates?",
     "preferred_roles": "What kinds of roles are you looking for?",
     "preferred_locations": "Which locations would you prefer to work in?",
     "remote_preference": "Do you prefer remote, hybrid, on-site, or flexible work?",
@@ -3359,9 +3364,13 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
     ledger_by_topic = {item.get("topic_id"): item for item in ledger}
 
     values = {
+        "name": candidate.get("name"),
+        "location": candidate.get("location") or raw.get("location"),
+        "bio": candidate.get("summary") or candidate.get("bio") or raw.get("bio"),
         "current_role": candidate.get("current_role") or candidate.get("headline"),
         "experience_years": candidate.get("experience_years") or candidate.get("total_experience_years"),
         "skills": candidate.get("skills"),
+        "work_experience": candidate.get("work_experience"),
         "preferred_roles": preferences.get("preferred_roles") or raw.get("preferred_roles"),
         "preferred_locations": preferences.get("preferred_locations") or raw.get("location_preferences"),
         "remote_preference": preferences.get("remote_preference") or raw.get("work_type_preference"),
@@ -7819,7 +7828,9 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     groq_request_kwargs = {
         "model": GROQ_MODEL,
         "messages": messages,
-        "temperature": 0.7,
+        # Keep candidate-profile updates deterministic and grounded in the
+        # supplied profile/chat context. Structured extractors already use 0.
+        "temperature": 0.2,
     }
     _log_groq_chat_diagnostic(groq_diagnostic_request_id, groq_request_kwargs)
     try:
@@ -8390,6 +8401,29 @@ def _normalize_certifications(certifications: Any) -> list[str]:
     seen_relaxed: set[str] = set()
     for cert in certifications:
         cleaned = _normalize_profile_text(cert)
+        if not cleaned:
+            continue
+        # LLMs and fallback extraction can return the candidate's whole
+        # sentence (including a typo such as "ahve") instead of the named
+        # credential. Persist only the credential name.
+        cleaned = re.sub(
+            r"^(?:yes\s*[,;:]?\s*)?(?:i\s+(?:have|ahve|hold|possess|earned|obtained)\s+)",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned = re.sub(
+            r"^(?:my\s+)?certification\s+(?:is|:|-\s*)\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned = re.sub(
+            r"\s+(?:certification|certificate|credential)\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip(" .,:;-\t")
         if not cleaned:
             continue
         # Drop bare conversational filler words (e.g. "any", "yes", "some")
