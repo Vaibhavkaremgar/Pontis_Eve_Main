@@ -10171,7 +10171,6 @@ async def get_opportunities(candidate_id: str):
     # Defense in depth: recommendations are revalidated against the current
     # candidate location so stale rows cannot bypass the country boundary.
     results = [r for r in results if country_eligible(candidate, dict(r))]
-    total_matching_jobs = min(total_matching_jobs, len(results))
     return [
         {
             "id": str(r["id"]),
