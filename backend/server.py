@@ -3390,9 +3390,9 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
         status = ledger_item.get("status")
         if saved not in (None, "", []) or status == "ANSWERED":
             continue
-        # Do not immediately repeat a question already asked in voice or chat.
-        if status == "ASKED":
-            continue
+        # An ASKED topic is still missing until the candidate provides an
+        # answer. Keep it visible so the candidate can answer it from the
+        # sidebar or chat suggestions; only ANSWERED topics are removed.
         question = _INTAKE_TOPIC_QUESTIONS.get(topic)
         if not question:
             continue
