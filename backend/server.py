@@ -3355,6 +3355,23 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
 
     candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "")
     raw = _parse_raw_data(candidate.get("raw_data"))
+    # Resume parsing and voice extraction may have useful evidence persisted
+    # before the canonical candidate columns are refreshed. Treat a completed
+    # voice answer/known topic as evidence when deciding what is missing, but
+    # never copy conversational prose into the profile field itself.
+    voice_resume = _parse_raw_data(raw.get("voice_intake"))
+    evidence_topics: set[str] = set()
+    for turn in voice_resume.get("completed_turns") or []:
+        if _clean_str(turn.get("answer")):
+            topic = _stable_intake_topic(_clean_str(turn.get("question")))
+            if topic:
+                evidence_topics.add(topic)
+    for topic in voice_resume.get("known_topics") or []:
+        normalized_topic = _normalize_profile_key(topic)
+        for candidate_topic in INTAKE_TOPIC_PRIORITY:
+            if candidate_topic in normalized_topic or normalized_topic in candidate_topic:
+                evidence_topics.add(candidate_topic)
+                break
     preferences = get_canonical_preferences(candidate, prefs_row)
     try:
         ledger = await _load_intake_ledger(candidate_id) if candidate_id else []
@@ -3388,7 +3405,7 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
         saved = values.get(topic)
         ledger_item = ledger_by_topic.get(topic) or {}
         status = ledger_item.get("status")
-        if saved not in (None, "", []) or status == "ANSWERED":
+        if saved not in (None, "", []) or status == "ANSWERED" or topic in evidence_topics:
             continue
         # An ASKED topic is still missing until the candidate provides an
         # answer. Keep it visible so the candidate can answer it from the
@@ -4939,7 +4956,13 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         percent = result.get("percent", 0)
         if percent >= 90:
             return f"Profile is at {percent}% (90%+ reached). Do NOT ask any more profile-completion questions."
-        authoritative_questions = profile.get("missing_questions") or []
+        # Only offer a brand-new topic to Eve. Unanswered ASKED topics remain
+        # visible in the sidebar for candidate follow-up, but must never be
+        # asked again automatically or suggested as a new question.
+        authoritative_questions = [
+            item for item in (profile.get("missing_questions") or [])
+            if str(item.get("status") or "").upper() not in {"ASKED", "ANSWERED"}
+        ]
         if authoritative_questions:
             question = _clean_str(authoritative_questions[0].get("question"))
             if question:

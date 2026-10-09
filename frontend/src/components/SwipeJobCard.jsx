@@ -25,7 +25,13 @@ export const NOT_INTERESTED_REASONS = [
 // For plain-text preview snippets (swipe card summary, job list card)
 function cleanText(str) {
   if (!str || typeof str !== "string") return "";
-  const stripped = str.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
+  const decoded = str
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&").replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"');
+  const stripped = decoded
+    .replace(/<\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)[^>]*>/gi, "\n")
+    .replace(/\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)\b/gi, "\n")
+    .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
   return stripped
     .split("\n")
     .map((l) => l.trim())

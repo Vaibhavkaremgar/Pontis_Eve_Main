@@ -17,7 +17,13 @@ function sanitizeHtml(str) {
 
 function stripHtml(str) {
   if (!str || typeof str !== "string") return "";
-  const clean = DOMPurify.sanitize(str, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+  const decoded = str
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&").replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"');
+  const normalized = decoded
+    .replace(/<\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)[^>]*>/gi, "\n")
+    .replace(/\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)\b/gi, "\n");
+  const clean = DOMPurify.sanitize(normalized, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
   return clean.replace(/\s+/g, " ").trim();
 }
 
