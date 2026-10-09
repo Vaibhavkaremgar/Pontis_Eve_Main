@@ -71,7 +71,7 @@ def test_explicit_current_employer_can_update_current_job():
     assert validated["current_company"] == "Viral Bug"
 
 
-def test_authoritative_missing_questions_exclude_saved_answered_but_keep_unanswered_asked_topics(monkeypatch):
+def test_authoritative_missing_questions_exclude_saved_answered_and_already_asked_topics(monkeypatch):
     async def fake_ledger(_candidate_id):
         return [
             {"topic_id": "expected_salary", "status": "ANSWERED"},
@@ -95,7 +95,7 @@ def test_authoritative_missing_questions_exclude_saved_answered_but_keep_unanswe
     assert "skills" not in topics
     assert "preferred_roles" not in topics
     assert "expected_salary" not in topics
-    assert "notice_period" in topics
+    assert "notice_period" not in topics
     assert "preferred_locations" in topics
 
 

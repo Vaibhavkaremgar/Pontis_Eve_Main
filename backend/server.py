@@ -3402,11 +3402,13 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
         saved = values.get(topic)
         ledger_item = ledger_by_topic.get(topic) or {}
         status = ledger_item.get("status")
+        # A topic asked by voice or chat is no longer an unknown detail. Do
+        # not surface it again in either the sidebar or suggestions, even if
+        # the candidate did not provide a usable answer yet.
+        if status in {"ASKED", "ANSWERED"}:
+            continue
         if saved not in (None, "", []) or status == "ANSWERED" or topic in evidence_topics:
             continue
-        # An ASKED topic is still missing until the candidate provides an
-        # answer. Keep it visible so the candidate can answer it from the
-        # sidebar or chat suggestions; only ANSWERED topics are removed.
         question = _INTAKE_TOPIC_QUESTIONS.get(topic)
         if not question:
             continue
