@@ -1012,7 +1012,14 @@ function Dashboard() {
                 sending={sending}
                 quickActions={(userProfile.missing_questions || [])
                   .filter((item) => item.status !== "ASKED" && item.status !== "ANSWERED")
-                  .map((item) => item.question)}
+                  .map((item) => item.question)
+                  .concat(
+                    (userProfile.missing_questions || []).length === 0
+                      ? (userProfile.profile_strength_detail?.ninety_percent_guidance?.items || [])
+                          .map((item) => item.question)
+                          .filter(Boolean)
+                      : []
+                  )}
                 onSuggestionClick={handleSuggestionClick}
                 composerFocusToken={composerFocusToken}
                 onMicClick={async () => {

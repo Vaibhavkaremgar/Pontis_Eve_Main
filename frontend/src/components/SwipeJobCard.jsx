@@ -31,7 +31,9 @@ function cleanText(str) {
   const stripped = decoded
     .replace(/<\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)[^>]*>/gi, "\n")
     .replace(/\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)\b/gi, "\n")
-    .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
+    .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ")
+    .replace(/&am\b/gi, "&")
+    .replace(/\bA\s*-?\s*driven\b/gi, "AI-driven");
   return stripped
     .split("\n")
     .map((l) => l.trim())
@@ -39,6 +41,26 @@ function cleanText(str) {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function formatJobDescription(str) {
+  const text = cleanText(str);
+  if (!text) return "";
+  const headings = /^(?:job description|opportunity overview|what you(?:'|’)ll do|responsibilities|required qualifications|requirements|nice[- ]to[- ]haves?|education|benefits|about [^:]+|interview process|equal opportunity statement)\s*:?[ \t]*$/i;
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const output = [];
+  let inList = false;
+  for (const line of lines) {
+    if (headings.test(line)) {
+      output.push(`${line.replace(/\s*:?$/, "")}:`);
+      inList = true;
+      continue;
+    }
+    const item = line.replace(/^(?:[-–—*•·]|\d+[.)])\s*/, "").trim();
+    if (inList && item.length > 0) output.push(`• ${item}`);
+    else output.push(item);
+  }
+  return output.join("\n\n");
 }
 
 // Extract 2–3 meaningful bullet points from responsibilities, requirements, or description
@@ -378,7 +400,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
               <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {cleanText(job.description)}
+                {formatJobDescription(job.description)}
               </p>
             </div>
           )}
@@ -388,7 +410,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
               <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {cleanText(job.requirements)}
+                {formatJobDescription(job.requirements)}
               </p>
             </div>
           )}

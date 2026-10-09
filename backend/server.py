@@ -3366,12 +3366,9 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
             topic = _stable_intake_topic(_clean_str(turn.get("question")))
             if topic:
                 evidence_topics.add(topic)
-    for topic in voice_resume.get("known_topics") or []:
-        normalized_topic = _normalize_profile_key(topic)
-        for candidate_topic in INTAKE_TOPIC_PRIORITY:
-            if candidate_topic in normalized_topic or normalized_topic in candidate_topic:
-                evidence_topics.add(candidate_topic)
-                break
+    # `known_topics` is an LLM planning hint, not candidate evidence. It can
+    # contain topics the model inferred or still wants to verify, so only a
+    # completed turn with a non-empty answer counts here.
     preferences = get_canonical_preferences(candidate, prefs_row)
     try:
         ledger = await _load_intake_ledger(candidate_id) if candidate_id else []
@@ -8430,11 +8427,14 @@ def _normalize_certifications(certifications: Any) -> list[str]:
         # sentence (including a typo such as "ahve") instead of the named
         # credential. Persist only the credential name.
         cleaned = re.sub(
-            r"^(?:yes\s*[,;:]?\s*)?(?:i\s+(?:have|ahve|hold|possess|earned|obtained)\s+)",
+            r"^(?:yes\s*[,;:]?\s*)?(?:i\s+(?:have|ahve|hold|possess|earned|obtained)\s+|(?:done|did|completed)\s+)",
             "",
             cleaned,
             flags=re.IGNORECASE,
         ).strip()
+        # Normalize common abbreviations so a follow-up such as “AWS solution
+        # arch” matches an existing “AWS Solution Architect” credential.
+        cleaned = re.sub(r"\barch\b", "architect", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(
             r"^(?:my\s+)?certification\s+(?:is|:|-\s*)\s*",
             "",
