@@ -35,6 +35,140 @@ async def test_llm_resume_parse_returns_sanitized_groq_response():
     assert parsed["skills"] == ["Python"]
 
 
+@pytest.mark.asyncio
+async def test_resume_parse_passes_exact_candidate_correlation_metadata():
+    """Replacement parsing is candidate-attributed without parsing PII."""
+    import server
+    from types import SimpleNamespace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"name": "Jane Doe"}'))]
+        )
+
+    with patch.object(server.openai_client.chat.completions._pool, "chat_completions_create", new=fake_create):
+        await server._parse_resume_with_llm(
+            "Jane Doe\nPython developer", candidate_id="candidate-1",
+            endpoint="/api/candidate/candidate-1/resume/replace", request_id="opaque-request-1",
+        )
+
+    assert captured["_telemetry"] == {
+        "workflow": "resume_parsing", "function_name": "_parse_resume_with_llm",
+        "candidate_id": "candidate-1", "endpoint": "/api/candidate/candidate-1/resume/replace",
+        "request_id": "opaque-request-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_intake_analysis_uses_explicit_chat_endpoint_and_session_id():
+    import server
+    from types import SimpleNamespace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+
+    with patch.object(server.openai_client.chat.completions._pool, "chat_completions_create", new=fake_create):
+        await server._llm_analyze_intake(
+            {"id": "candidate-1"}, [], None, endpoint="/api/chat", session_id="session-1",
+        )
+
+    assert captured["_telemetry"]["endpoint"] == "/api/chat"
+    assert captured["_telemetry"]["session_id"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_intake_analysis_uses_voice_progress_endpoint_and_call_id():
+    import server
+    from types import SimpleNamespace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+
+    with patch.object(server.openai_client.chat.completions._pool, "chat_completions_create", new=fake_create):
+        await server._llm_analyze_intake(
+            {"id": "candidate-1"}, [], None,
+            endpoint="/api/voice/candidate-intake/progress", vapi_call_id="call-1",
+        )
+
+    assert captured["_telemetry"]["endpoint"] == "/api/voice/candidate-intake/progress"
+    assert captured["_telemetry"]["vapi_call_id"] == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_resume_persistence_receives_opaque_request_association():
+    from unittest.mock import AsyncMock, MagicMock
+    import server
+
+    no_duplicate = MagicMock()
+    no_duplicate.fetchone.return_value = None
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=no_duplicate)
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=False)
+    parsed = {"name": "Candidate", "email": "", "phone": ""}
+    upsert = AsyncMock(return_value="candidate-1")
+    with patch.object(server, "SessionLocal", return_value=db), \
+         patch.object(server, "_extract_resume_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm", new=AsyncMock(return_value=parsed)), \
+         patch.object(server, "_upsert_candidate", new=upsert), \
+         patch.object(server, "_trigger_matching", new=AsyncMock()), \
+         patch.object(server, "_seed_employment_gaps_after_parse", new=AsyncMock()):
+        await server.parse_resume(file=_make_fake_file(), existing_id=None)
+
+    assert upsert.await_args.kwargs["telemetry_request_id"]
+    assert upsert.await_args.kwargs["force_new"] is True
+
+
+@pytest.mark.asyncio
+async def test_voice_extraction_passes_candidate_and_vapi_metadata():
+    import server
+    from types import SimpleNamespace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+
+    with patch.object(server.openai_client.chat.completions._pool, "chat_completions_create", new=fake_create):
+        assert await server._extract_voice_info("brief transcript", "candidate-1", "vapi-call-1") == {}
+
+    assert captured["_telemetry"]["candidate_id"] == "candidate-1"
+    assert captured["_telemetry"]["vapi_call_id"] == "vapi-call-1"
+    assert captured["_telemetry"]["workflow"] == "voice_info_extraction"
+
+
+@pytest.mark.asyncio
+async def test_chat_profile_extraction_passes_candidate_and_session_metadata():
+    import server
+    from types import SimpleNamespace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+
+    with patch.object(server.openai_client.chat.completions._pool, "chat_completions_create", new=fake_create):
+        result = await server._extract_multi_field_updates_from_answer(
+            "I prefer remote work", ["remote_preference"], "candidate-1", "session-1",
+        )
+
+    assert isinstance(result, dict)
+
+    assert captured["_telemetry"]["candidate_id"] == "candidate-1"
+    assert captured["_telemetry"]["session_id"] == "session-1"
+
+
 def _build_text_pdf(lines):
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
@@ -376,6 +510,20 @@ async def test_normal_upload_no_existing_id_duplicate_check_runs():
 
     assert exc_info.value.status_code == 409
     assert "Duplicate resume" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_failed_resume_parsing_does_not_reach_candidate_association():
+    from unittest.mock import AsyncMock, patch
+    import server
+
+    with patch.object(server, "_extract_resume_text", return_value=("enough text " * 10, False)), \
+         patch.object(server, "_parse_resume_with_llm", new=AsyncMock(side_effect=RuntimeError("parse failed"))), \
+         patch.object(server, "_upsert_candidate", new=AsyncMock()) as upsert:
+        with pytest.raises(RuntimeError, match="parse failed"):
+            await server.parse_resume(file=_make_fake_file(), existing_id=None)
+
+    upsert.assert_not_awaited()
 
 
 # --- Unit test: Groq 429 rate-limit → endpoint returns 429, not 500 ---

@@ -578,7 +578,13 @@ For projects, extract only explicitly described named projects or products. Keep
 Return only the JSON object, no markdown, no explanation."""
 
 
-async def _parse_resume_with_llm(resume_text: str) -> dict:
+async def _parse_resume_with_llm(
+    resume_text: str, *, candidate_id: Optional[str] = None,
+    endpoint: str = "/api/onboarding/parse-resume", request_id: Optional[str] = None,
+) -> dict:
+    telemetry = {"workflow": "resume_parsing", "function_name": "_parse_resume_with_llm",
+                 "candidate_id": candidate_id, "endpoint": endpoint,
+                 "request_id": request_id or str(uuid.uuid4())}
     request_kwargs = {
         "model": GROQ_MODEL,
         "messages": [
@@ -587,6 +593,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
         ],
         "temperature": 0,
         "response_format": {"type": "json_object"},
+        "_telemetry": telemetry,
     }
     try:
         resp = await openai_client.chat.completions.create(**request_kwargs)
@@ -597,6 +604,7 @@ async def _parse_resume_with_llm(resume_text: str) -> dict:
         # though the chat request itself is valid. Retry as plain JSON and keep
         # the provider error observable if that request also fails.
         request_kwargs.pop("response_format", None)
+        telemetry["is_fallback"] = True
         try:
             resp = await openai_client.chat.completions.create(**request_kwargs)
             raw = resp.choices[0].message.content or "{}"
@@ -2619,6 +2627,10 @@ async def _llm_analyze_intake(
     pending_question: Optional[str],
     partial_answer: str = "",
     authoritative_next_question: Optional[str] = None,
+    vapi_call_id: Optional[str] = None,
+    *,
+    endpoint: str,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Ask the LLM to determine what's known, what's missing, and what to ask next."""
     raw_data = _parse_raw_data(candidate_profile.get("raw_data"))
@@ -2660,6 +2672,10 @@ async def _llm_analyze_intake(
             ],
             temperature=0,
             response_format={"type": "json_object"},
+            _telemetry={"workflow": "voice_intake_analysis", "function_name": "_llm_analyze_intake",
+                        "candidate_id": candidate_profile.get("id") or candidate_profile.get("candidate_id"),
+                        "endpoint": endpoint, "vapi_call_id": vapi_call_id,
+                        "session_id": session_id},
         )
         return json.loads(resp.choices[0].message.content or "{}")
     except Exception as e:
@@ -3430,6 +3446,7 @@ def _voice_intake_resume_to_voice_notes(
 async def _advance_voice_intake_from_chat(
     candidate_id: str,
     candidate_message: str,
+    session_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Advance persisted Voice Intake state when a chat message answers the active question.
@@ -3502,6 +3519,8 @@ async def _advance_voice_intake_from_chat(
         candidate,
         merged_turns,
         None,
+        endpoint="/api/chat",
+        session_id=session_id,
     )
     if not llm_analysis or not llm_analysis.get("current_question_answered"):
         return None
@@ -3620,7 +3639,8 @@ def _merge_resume_into_existing_profile(existing: dict, parsed: dict) -> dict:
 async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                              original_filename: str, resume_text: str = "",
                              existing_id: Optional[str] = None,
-                             force_new: bool = False) -> str:
+                             force_new: bool = False,
+                             telemetry_request_id: Optional[str] = None) -> str:
     """
     Create or update a candidate record.
     Identity: existing_id (re-upload) > email match > fingerprint > new record.
@@ -3877,6 +3897,13 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                 },
             )
 
+        # Link the opaque LLM request before this transaction commits, so a
+        # successful onboarding cannot lose attribution during process exit.
+        # The helper isolates its own failure in a savepoint and logs safely.
+        if telemetry_request_id:
+            from llm_telemetry import associate_candidate_in_transaction
+            await associate_candidate_in_transaction(db, telemetry_request_id, cid)
+
         await db.commit()
 
     logger.info("[parse-resume] final candidate_id returned=%s", cid)
@@ -3942,7 +3969,10 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
             detail="Resume appears empty or unreadable. Please upload a text-based PDF or a clearer scan.",
         )
 
-    parsed = await _parse_resume_with_llm(resume_text)
+    resume_request_id = str(uuid.uuid4())
+    parsed = await _parse_resume_with_llm(
+        resume_text, candidate_id=existing_id, request_id=resume_request_id,
+    )
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
     # Reject duplicate resume when creating a new candidate (force_new path).
@@ -3958,9 +3988,9 @@ async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] 
     # If an existing_id is provided (e.g. test candidate re-onboarding), update that record.
     # Otherwise force_new=True to create a fresh record for a genuinely new candidate.
     if existing_id:
-        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=existing_id)
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=existing_id, telemetry_request_id=resume_request_id)
     else:
-        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, force_new=True)
+        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, force_new=True, telemetry_request_id=resume_request_id)
 
     asyncio.ensure_future(_trigger_matching(cid))
     asyncio.ensure_future(_seed_employment_gaps_after_parse(cid, parsed))
@@ -4417,7 +4447,9 @@ async def verify_resume_identity(candidate_id: str, file: UploadFile = File(...)
     resume_text, _ = _extract_pdf_text(file_bytes)
     if len(resume_text.strip()) < 50:
         raise HTTPException(status_code=400, detail="Resume appears empty or unreadable.")
-    parsed = await _parse_resume_with_llm(resume_text)
+    parsed = await _parse_resume_with_llm(
+        resume_text, candidate_id=candidate_id, endpoint=f"/api/candidate/{candidate_id}/resume/verify",
+    )
     return {"name": parsed.get("name") or "", "email": parsed.get("email") or ""}
 
 
@@ -4434,7 +4466,9 @@ async def replace_resume(candidate_id: str, file: UploadFile = File(...), author
     if len(resume_text.strip()) < 50:
         raise HTTPException(status_code=400, detail="Resume appears empty or unreadable.")
 
-    parsed = await _parse_resume_with_llm(resume_text)
+    parsed = await _parse_resume_with_llm(
+        resume_text, candidate_id=candidate_id, endpoint=f"/api/candidate/{candidate_id}/resume/replace",
+    )
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
     await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=candidate_id)
@@ -4614,7 +4648,7 @@ async def _save_chat_window(candidate_id: str, session_id: str, messages: list[d
         messages = messages[len(messages) - CHAT_PRUNE_KEEP :]
         # Complete compaction before dropping the source turns. This avoids an
         # untracked fire-and-forget task losing candidate facts on shutdown.
-        await _extract_and_merge_chat_facts(candidate_id, overflow)
+        await _extract_and_merge_chat_facts(candidate_id, overflow, session_id)
 
     async with SessionLocal() as db:
         existing = await db.execute(
@@ -4653,7 +4687,7 @@ Return ONLY valid JSON with these keys (omit keys where no information was found
 Do NOT invent or hallucinate. Only include fields explicitly mentioned by the candidate."""
 
 
-async def _extract_and_merge_chat_facts(candidate_id: str, messages: list[dict]) -> None:
+async def _extract_and_merge_chat_facts(candidate_id: str, messages: list[dict], session_id: Optional[str] = None) -> None:
     """Extract long-term facts from pruned messages and merge into candidate raw_data."""
     if not messages:
         return
@@ -4667,6 +4701,8 @@ async def _extract_and_merge_chat_facts(candidate_id: str, messages: list[dict])
             ],
             temperature=0,
             response_format={"type": "json_object"},
+            _telemetry={"workflow": "chat_fact_extraction", "function_name": "_extract_and_merge_chat_facts",
+                        "candidate_id": candidate_id, "endpoint": "/api/chat", "session_id": session_id},
         )
         facts = json.loads(resp.choices[0].message.content or "{}")
         if not facts:
@@ -6832,6 +6868,8 @@ Rules:
 async def _extract_multi_field_updates_from_answer(
     candidate_message: str,
     missing_fields: list[str],
+    candidate_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """
     Scan the candidate's answer against ALL currently missing profile fields and
@@ -6852,6 +6890,8 @@ async def _extract_multi_field_updates_from_answer(
             ],
             temperature=0,
             response_format={"type": "json_object"},
+            _telemetry={"workflow": "chat_profile_extraction", "function_name": "_extract_multi_field_updates_from_answer",
+                        "candidate_id": candidate_id, "endpoint": "/api/chat", "session_id": session_id},
         )
         raw = json.loads(resp.choices[0].message.content or "{}")
         return _correct_profile_categories(_sanitize_profile_updates(raw), candidate_message)
@@ -7507,7 +7547,8 @@ def _is_preference_update_with_job_search(text: str) -> bool:
     return has_preference and has_job_search
 
 
-async def _extract_preferred_roles_from_message(message: str) -> list[str]:
+async def _extract_preferred_roles_from_message(message: str, candidate_id: Optional[str] = None,
+                                                session_id: Optional[str] = None) -> list[str]:
     """Use LLM to extract preferred role(s) from a candidate preference statement."""
     resp = await openai_client.chat.completions.create(
         model=GROQ_MODEL,
@@ -7522,6 +7563,8 @@ async def _extract_preferred_roles_from_message(message: str) -> list[str]:
         ],
         temperature=0,
         response_format={"type": "json_object"},
+        _telemetry={"workflow": "preferred_role_extraction", "function_name": "_extract_preferred_roles_from_message",
+                    "candidate_id": candidate_id, "endpoint": "/api/chat", "session_id": session_id},
     )
     data = json.loads(resp.choices[0].message.content or "{}")
     roles = data.get("preferred_roles") or []
@@ -7726,7 +7769,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                 )
             # Check if this is a preference update + job search — refresh matching with new prefs
             if _is_preference_update_with_job_search(last_user.content):
-                new_roles = await _extract_preferred_roles_from_message(last_user.content)
+                new_roles = await _extract_preferred_roles_from_message(last_user.content, request.candidate_id, request.session_id)
                 if new_roles:
                     await _update_preferred_roles(request.candidate_id, new_roles)
                     # Reload candidate row with updated preferences before matching
@@ -7831,6 +7874,9 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
         # Keep candidate-profile updates deterministic and grounded in the
         # supplied profile/chat context. Structured extractors already use 0.
         "temperature": 0.2,
+        "_telemetry": {"workflow": "chat_generation", "function_name": "chat",
+                       "candidate_id": request.candidate_id, "endpoint": "/api/chat",
+                       "session_id": request.session_id, "request_id": groq_diagnostic_request_id},
     }
     _log_groq_chat_diagnostic(groq_diagnostic_request_id, groq_request_kwargs)
     try:
@@ -7858,7 +7904,8 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
         if not candidate_text.startswith("[PROFILE_QUESTION]"):
             try:
                 multi_updates = await _extract_multi_field_updates_from_answer(
-                    candidate_text, missing_fields + missing_preference_fields
+                    candidate_text, missing_fields + missing_preference_fields,
+                    request.candidate_id, request.session_id,
                 )
                 if multi_updates:
                     profile_updates = _merge_profile_updates(profile_updates or {}, multi_updates) or None
@@ -7938,7 +7985,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
 
     if request.candidate_id:
         try:
-            await _advance_voice_intake_from_chat(request.candidate_id, last_user.content)
+            await _advance_voice_intake_from_chat(request.candidate_id, last_user.content, request.session_id)
         except Exception as e:
             logger.warning("Chat voice intake advance failed: %s", e)
 
@@ -8266,7 +8313,9 @@ For "projects", extract only projects the candidate explicitly says they worked 
 Return only the JSON object."""
 
 
-async def _extract_voice_info(transcript: str) -> dict:
+async def _extract_voice_info(transcript: str, candidate_id: Optional[str] = None,
+                              vapi_call_id: Optional[str] = None,
+                              endpoint: str = "/api/voice/candidate-intake") -> dict:
     """Use LLM to extract structured candidate info from voice transcript."""
     try:
         resp = await openai_client.chat.completions.create(
@@ -8277,6 +8326,8 @@ async def _extract_voice_info(transcript: str) -> dict:
             ],
             temperature=0,
             response_format={"type": "json_object"},
+            _telemetry={"workflow": "voice_info_extraction", "function_name": "_extract_voice_info",
+                        "candidate_id": candidate_id, "endpoint": endpoint, "vapi_call_id": vapi_call_id},
         )
         raw = resp.choices[0].message.content or "{}"
         return _sanitize_profile_field_mapping(json.loads(raw))
@@ -9948,6 +9999,8 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
         # duplicate.  A new transcript must be evaluated on its own rather
         # than inheriting the previous request's active question/status.
         authoritative_next_question="",
+        vapi_call_id=request.vapi_call_id,
+        endpoint="/api/voice/candidate-intake",
     )
     voice_intake_state = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
@@ -10002,7 +10055,9 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
 
     # 4. Extract structured info via LLM
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
-    voice_data = await _extract_voice_info(voice_data_source or transcript)
+    voice_data = await _extract_voice_info(
+        voice_data_source or transcript, request.candidate_id, request.vapi_call_id,
+    )
     voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
 
     # 5. Merge into existing profile, preferences, and resume state.
@@ -10115,6 +10170,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
         completed_turns,
         pending_question,
         authoritative_next_question=(existing_vi.get("current_question") or existing_vi.get("next_question") or ""),
+        vapi_call_id=request.vapi_call_id,
+        endpoint="/api/voice/candidate-intake/progress",
     )
     resume = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
@@ -10132,7 +10189,10 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
 
     await _save_voice_intake_resume(request.candidate_id, resume)
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
-    voice_data = await _extract_voice_info(voice_data_source or transcript) if (voice_data_source or transcript) else {}
+    voice_data = await _extract_voice_info(
+        voice_data_source or transcript, request.candidate_id, request.vapi_call_id,
+        "/api/voice/candidate-intake/progress",
+    ) if (voice_data_source or transcript) else {}
     voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
     await _sync_voice_ledger(request.candidate_id, resume)

@@ -29,7 +29,7 @@ from openai import RateLimitError as OpenAIRateLimitError
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from groq_client import AllKeysRateLimitedError, GroqClientPool, _load_api_keys
+from groq_client import AllKeysRateLimitedError, GroqClientPool, _call_metadata, _load_api_keys
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +145,52 @@ class TestKeyLoading:
     def test_pool_key_count_matches_loaded_keys(self):
         pool = _pool_with_keys("k1", "k2", "k3")
         assert pool.key_count == 3
+
+
+def test_explicit_telemetry_keeps_actual_request_model():
+    kwargs = {
+        "model": "actual-groq-model",
+        "_telemetry": {"workflow": "chat_generation", "candidate_id": "candidate-1"},
+    }
+    assert _call_metadata(kwargs) == {
+        "workflow": "chat_generation", "candidate_id": "candidate-1", "model": "actual-groq-model",
+    }
+    assert "_telemetry" not in kwargs
+
+
+def test_provider_event_retains_candidate_and_correlations():
+    event = GroqClientPool._event(
+        {"model": "m", "workflow": "voice_info_extraction", "candidate_id": "candidate-1",
+         "endpoint": "/api/voice/candidate-intake", "session_id": "session-1", "vapi_call_id": "call-1"},
+        "request-1", 2, 1, 429, False, time.monotonic(), None, None, None,
+    )
+    assert event["candidate_id"] == "candidate-1"
+    assert event["model"] == "m"
+    assert event["endpoint"] == "/api/voice/candidate-intake"
+    assert event["session_id"] == "session-1"
+    assert event["vapi_call_id"] == "call-1"
+    assert event["request_id"] == "request-1"
+    assert event["is_retry"] is True
+    assert event["is_fallback"] is False
+
+
+def test_unknown_candidate_and_fallback_remain_distinct_provider_attempts():
+    base = {"model": "m", "workflow": "resume_parsing", "is_fallback": False}
+    fallback = {"model": "m", "workflow": "resume_parsing", "is_fallback": True}
+    first = GroqClientPool._event(base, "logical-request-1", 1, 1, 400, False, time.monotonic(), None, None, None)
+    second = GroqClientPool._event(fallback, "logical-request-1", 1, 1, 200, True, time.monotonic(), 3, 2, 5)
+    assert first["candidate_id"] is None
+    assert first["total_tokens"] is None  # unknown, not zero
+    assert second["is_fallback"] is True
+    assert {first["request_id"], second["request_id"]} == {"logical-request-1"}
+
+
+def test_telemetry_submit_failure_never_raises(monkeypatch):
+    import llm_telemetry
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(llm_telemetry.asyncio, "create_task", lambda _coro: (_ for _ in ()).throw(RuntimeError("no loop")))
+    llm_telemetry.submit([{"request_id": "request-1"}])
 
 
 # ---------------------------------------------------------------------------

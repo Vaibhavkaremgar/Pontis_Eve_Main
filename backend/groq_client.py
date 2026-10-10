@@ -31,15 +31,19 @@ _WORKFLOW_BY_FUNCTION = {
 
 
 def _call_metadata(kwargs: dict[str, Any]) -> dict[str, Any]:
-    metadata = kwargs.pop("_telemetry", {}) or {}
+    metadata = dict(kwargs.pop("_telemetry", {}) or {})
+    # The requested model is authoritative.  In particular, do not lose it
+    # when callers supplied workflow metadata but omitted model metadata.
     metadata.setdefault("model", kwargs.get("model"))
     if metadata.get("workflow"):
         return metadata
     for frame in inspect.stack()[2:]:
         workflow = _WORKFLOW_BY_FUNCTION.get(frame.function)
         if workflow:
-            return {"workflow": workflow, "function_name": frame.function}
-    return {"workflow": "chat_generation", "function_name": "chat_completions_create"}
+            metadata.update({"workflow": workflow, "function_name": frame.function})
+            return metadata
+    metadata.update({"workflow": "chat_generation", "function_name": "chat_completions_create"})
+    return metadata
 
 
 def _usage(response: Any) -> tuple[int | None, int | None, int | None]:
@@ -186,13 +190,15 @@ class GroqClientPool:
                 "function_name": metadata.get("function_name"), "candidate_id": metadata.get("candidate_id"),
                 "user_id": metadata.get("user_id"), "job_id": metadata.get("job_id"),
                 "endpoint": metadata.get("endpoint"), "request_id": request_id,
+                "session_id": metadata.get("session_id"), "vapi_call_id": metadata.get("vapi_call_id"),
                 "attempt": attempt, "key_id": f"groq_key_{key_label}", "status": status,
                 "success": success, "input_tokens": input_tokens, "output_tokens": output_tokens,
                 "total_tokens": total_tokens, "latency_ms": (time.monotonic() - started) * 1000,
                 "cost_usd": cost_usd(input_tokens, output_tokens),
                 "error_type": type(exc).__name__ if exc else None,
                 "provider_request_id": getattr(response, "id", None), "total_attempts": 1,
-                "is_retry": attempt > 1, "previous_attempt_failed": attempt > 1}
+                "is_retry": attempt > 1, "previous_attempt_failed": attempt > 1,
+                "is_fallback": bool(metadata.get("is_fallback"))}
 
     # ------------------------------------------------------------------
     # Compatibility shim: expose .chat.completions.create attribute path
