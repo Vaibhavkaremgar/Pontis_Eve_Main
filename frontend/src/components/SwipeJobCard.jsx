@@ -4,6 +4,7 @@ import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useApplicationFollowUp } from "./ApplicationFollowUp";
+import { normalizeJobDescription } from "../lib/jobDescription";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -25,7 +26,15 @@ export const NOT_INTERESTED_REASONS = [
 // For plain-text preview snippets (swipe card summary, job list card)
 function cleanText(str) {
   if (!str || typeof str !== "string") return "";
-  const stripped = str.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ");
+  const decoded = str
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&").replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"');
+  const stripped = decoded
+    .replace(/<\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)[^>]*>/gi, "\n")
+    .replace(/\/?(?:li|ul|ol|h[1-6]|p|div|br|strong|b|em|i)\b/gi, "\n")
+    .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ")
+    .replace(/&am\b/gi, "&")
+    .replace(/\bA\s*-?\s*driven\b/gi, "AI-driven");
   return stripped
     .split("\n")
     .map((l) => l.trim())
@@ -33,6 +42,41 @@ function cleanText(str) {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function formatJobDescription(str) {
+  const text = cleanText(str);
+  if (!text) return "";
+  const headings = /^(?:job description|opportunity overview|what you(?:'|’)ll do|responsibilities|required qualifications|requirements|nice[- ]to[- ]haves?|education|benefits|about [^:]+|interview process|equal opportunity statement)\s*:?[ \t]*$/i;
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const output = [];
+  let inList = false;
+  for (const line of lines) {
+    if (headings.test(line)) {
+      output.push(`${line.replace(/\s*:?$/, "")}:`);
+      // Only action/requirements sections are lists. Overview, company
+      // information, and policy sections should remain prose paragraphs.
+      inList = /^(?:what you(?:'|â€™)ll do|responsibilities|required qualifications|requirements|nice[- ]to[- ]haves?|education|benefits|interview process)\s*:?[ \t]*$/i.test(line);
+      continue;
+    }
+    const item = line.replace(/^(?:[-–—*•·]|\d+[.)])\s*/, "").trim();
+    if (inList && item.length > 0) output.push(`• ${item}`);
+    else output.push(item);
+  }
+  return output.join("\n\n");
+}
+
+function JobDescriptionContent({ source }) {
+  return (
+    <div className="space-y-4">
+      {normalizeJobDescription(source).map((block, index) => {
+        if (block.type === "heading") return <h4 key={index} className="font-medium text-[#1F1F1F]">{block.text}</h4>;
+        if (block.type === "ul") return <ul key={index} className="list-disc space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>;
+        if (block.type === "ol") return <ol key={index} className="list-decimal space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ol>;
+        return <p key={index}>{block.text}</p>;
+      })}
+    </div>
+  );
 }
 
 // Extract 2–3 meaningful bullet points from responsibilities, requirements, or description
@@ -371,9 +415,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.description && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Job Description</p>
-              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {cleanText(job.description)}
-              </p>
+              <div className="text-[13px] text-[#4A4A48] leading-relaxed font-normal"><JobDescriptionContent source={job.description} /></div>
             </div>
           )}
 
@@ -381,9 +423,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
           {job.requirements && (
             <div>
               <p className="text-[12px] font-medium text-[#1F1F1F] mb-1.5">Requirements</p>
-              <p className="text-[13px] text-[#4A4A48] leading-relaxed font-normal whitespace-pre-line">
-                {cleanText(job.requirements)}
-              </p>
+              <div className="text-[13px] text-[#4A4A48] leading-relaxed font-normal"><JobDescriptionContent source={job.requirements} /></div>
             </div>
           )}
 

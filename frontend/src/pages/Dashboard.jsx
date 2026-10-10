@@ -1010,7 +1010,10 @@ function Dashboard() {
                 setInputValue={setInputValue}
                 onSend={handleSendMessage}
                 sending={sending}
-                quickActions={(userProfile.missing_questions || []).map((item) => item.question).slice(0, 4)}
+                quickActions={(userProfile.missing_questions || [])
+                  .filter((item) => item.status !== "ASKED" && item.status !== "ANSWERED")
+                  .map((item) => item.question)
+                }
                 onSuggestionClick={handleSuggestionClick}
                 composerFocusToken={composerFocusToken}
                 onMicClick={async () => {

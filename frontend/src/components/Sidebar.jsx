@@ -29,7 +29,8 @@ export default function Sidebar({
   const displayName = (footerIdentity ?? userProfile).name;
   const displayEmail = (footerIdentity ?? userProfile).email;
   const profileGuidance = userProfile?.profile_strength_detail?.ninety_percent_guidance;
-  const guidanceItems = (userProfile?.missing_questions || []).map((item) => ({
+  const authoritativeMissing = userProfile?.missing_questions || [];
+  const guidanceItems = authoritativeMissing.map((item) => ({
     ...item,
     section: item.topic_id,
     action: item.question,

@@ -1,5 +1,5 @@
 import React from "react";
-import { AsYouType, isPossiblePhoneNumber } from "libphonenumber-js";
+import { AsYouType, isValidPhoneNumber } from "libphonenumber-js";
 import { ChevronDown, Search, Check } from "lucide-react";
 
 import { COUNTRIES, DEFAULT_COUNTRY, findCountry } from "../../data/countries";
@@ -17,10 +17,10 @@ export function useCountryPhone({ initialCountry = "US", initialDigits = "" } = 
   const isValid = React.useMemo(() => {
     if (!digits) return false;
     try {
-      // "Possible" = matches the country's expected digit length.
-      // We deliberately don't use isValidPhoneNumber here because it also checks
-      // area-code assignment, which surprises users after they switch countries.
-      return isPossiblePhoneNumber(digits, country.code);
+      // Require a complete, country-valid number. `isPossiblePhoneNumber`
+      // accepts some shorter variable-length numbers, which allowed an
+      // incomplete Indian number (or similar country number) to enable Continue.
+      return isValidPhoneNumber(digits, country.code);
     } catch {
       return false;
     }

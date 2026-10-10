@@ -6,6 +6,7 @@ import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./S
 import { useApplicationFollowUp } from "./ApplicationFollowUp";
 import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
+import { normalizeJobDescription } from "../lib/jobDescription";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -15,10 +16,13 @@ function sanitizeHtml(str) {
   return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
 }
 
-function stripHtml(str) {
-  if (!str || typeof str !== "string") return "";
-  const clean = DOMPurify.sanitize(str, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
-  return clean.replace(/\s+/g, " ").trim();
+function JobDescriptionContent({ source }) {
+  return <div className="space-y-3">{normalizeJobDescription(source).map((block, index) => {
+    if (block.type === "heading") return <h4 key={index} className="font-medium text-[#1F1F1F]">{block.text}</h4>;
+    if (block.type === "ul") return <ul key={index} className="list-disc space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>;
+    if (block.type === "ol") return <ol key={index} className="list-decimal space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ol>;
+    return <p key={index}>{block.text}</p>;
+  })}</div>;
 }
 
 function relativePostedTime(value) {
@@ -1500,13 +1504,13 @@ function OpportunitiesTab({ candidateId, onInterested }) {
         {job.description && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">About the role</p>
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed whitespace-pre-line">{stripHtml(job.description)}</p>
+            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed"><JobDescriptionContent source={job.description} /></div>
           </div>
         )}
         {job.requirements && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">Requirements</p>
-            <p className="text-[12.5px] text-[#4A4A48] leading-relaxed whitespace-pre-line">{stripHtml(job.requirements)}</p>
+            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed"><JobDescriptionContent source={job.requirements} /></div>
           </div>
         )}
         {skills.length > 0 && (
