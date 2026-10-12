@@ -18,6 +18,17 @@ MAX_LOGGED_JOB_FAILURES = 3
 IST = ZoneInfo("Asia/Kolkata")
 # Run at 00:00, 06:00, 12:00, and 18:00 IST.
 SYNC_HOURS_IST = "0,6,12,18"
+
+
+def _scheduler_enabled() -> bool:
+    """Return whether automatic job pulling is enabled.
+
+    Automatic pulls are paused by default so deployments must explicitly opt
+    into background ingestion with JOB_SCHEDULER_ENABLED=true.
+    """
+    return os.getenv("JOB_SCHEDULER_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 METADATA_RETRY_BATCH_SIZE = 25
 
 _scheduler: AsyncIOScheduler | None = None
@@ -573,6 +584,13 @@ def _fantastic_sync_trigger() -> CronTrigger:
 def start_scheduler() -> None:
     """Start the APScheduler. Safe to call from FastAPI startup."""
     global _scheduler, _sync_lock
+
+    if not _scheduler_enabled():
+        logger.info(
+            "[job-scheduler] automatic job pulling is paused; "
+            "set JOB_SCHEDULER_ENABLED=true to resume"
+        )
+        return
 
     # Guard against uvicorn --reload spawning a second scheduler in the same process
     if os.environ.get("_JOB_SCHEDULER_STARTED") == str(os.getpid()):
