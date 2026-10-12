@@ -1627,6 +1627,7 @@ function OpportunitiesTab({ candidateId, onInterested }) {
 
 const TAB_TITLES = {
   jobs: "New jobs",
+  resume: "Latest resume",
   tracked: "Tracked jobs",
   profile: "Profile",
   documents: "Documents",
@@ -1759,6 +1760,7 @@ export default function LivingProfile({
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
         <div className="max-w-2xl mx-auto">
           {activeTab === "profile" && <ProfileTab user={userProfile} candidateId={candidateId} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} />}
+          {activeTab === "resume" && <ResumeContextTab resume={documents?.resume} docsLoading={docsLoading} />}
           {activeTab === "jobs" && (
             <JobsTab
               jobs={jobs}
@@ -1796,5 +1798,28 @@ export default function LivingProfile({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ResumeContextTab({ resume, docsLoading }) {
+  if (docsLoading) {
+    return <p className="text-[13px] text-[#9A9A98]" data-testid="resume-context-loading">Loading resume…</p>;
+  }
+
+  if (!resume) {
+    return (
+      <div className="py-10 text-center" data-testid="resume-context-empty">
+        <p className="text-[13px] text-[#9A9A98]">No resume uploaded yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-2" data-testid="resume-context">
+      <p className="text-[13px] font-medium text-[#1F1F1F]">{resume.filename || "Saved resume"}</p>
+      <p className="text-[12px] text-[#9A9A98] leading-relaxed">
+        This is the latest resume saved to your profile.
+      </p>
+    </section>
   );
 }

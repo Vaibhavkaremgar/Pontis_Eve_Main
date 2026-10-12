@@ -114,13 +114,6 @@ function Dashboard() {
     const rightPanelTab = (persisted && VALID_TABS.includes(persisted)) ? persisted : "profile";
     return rightPanelTab;
   });
-  // The sidebar and the center-view toggle are independent controls. Keep the
-  // panel selection explicit so changing one cannot leave content from the
-  // other visible in the right panel.
-  const [rightPanelTab, setRightPanelTab] = React.useState(() => {
-    const VALID_TABS = ["jobs", "tracked", "profile", "documents", "opportunities", "billing"];
-    return VALID_TABS.includes(stored.activeTab) ? stored.activeTab : "profile";
-  });
 
   const setActiveTabPersisted = React.useCallback((tab) => {
     setActiveSidebarTab(tab);
@@ -176,10 +169,15 @@ function Dashboard() {
   const hasJobsAccess = userProfile.strengthPercent >= 90;
   const handleSidebarTabChange = React.useCallback((tab) => {
     setActiveTabPersisted(tab);
-    setRightPanelTab(tab);
   }, [setActiveTabPersisted]);
 
-  const displayedRightPanelTab = rightPanelTab;
+  // The sidebar owns the dashboard context; the center toggle only refines
+  // the New Jobs context.  Deriving this avoids stale right-panel state when
+  // a user moves between sidebar sections or returns from Resume Editor.
+  const displayedRightPanelTab = React.useMemo(() => {
+    if (activeSidebarTab !== "jobs") return activeSidebarTab;
+    return centerView === "chat" || centerView === "voice" ? "profile" : "resume";
+  }, [activeSidebarTab, centerView]);
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
@@ -300,14 +298,12 @@ function Dashboard() {
       setCenterView(voiceIntakeCenterView);
       // Jobs for You keeps matching jobs in the middle panel; Chat and Voice
       // both use the candidate Profile as their supporting context.
-      setRightPanelTab("profile");
     }
   }, [hasJobsAccess, voiceIntakeCenterView]);
 
   React.useEffect(() => {
     if (!hasJobsAccess && centerView === "swipe") {
       setCenterView("chat");
-      setRightPanelTab("profile");
     }
   }, [centerView, hasJobsAccess]);
 
@@ -638,11 +634,10 @@ function Dashboard() {
     const question = item?.question || questions[item?.action] || item?.action;
     if (!question) return;
     userChoseCenterViewRef.current = true;
-    setActiveSidebarTab("profile");
-    setRightPanelTab("profile");
+    setActiveTabPersisted("profile");
     setCenterView("chat");
     handleSuggestionClick(question);
-  }, [handleSuggestionClick]);
+  }, [handleSuggestionClick, setActiveTabPersisted]);
 
   const handleResumeReplaced = React.useCallback((filename, newProfile) => {
     setDocuments((prev) => ({ ...prev, resume: { filename } }));
@@ -883,7 +878,8 @@ function Dashboard() {
 
         <Panel id="center-panel" order={2} defaultSize={58} minSize={22} className="h-full">
           <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
-            {/* Toggle bar */}
+            {activeSidebarTab === "jobs" ? <>
+            {/* These tabs belong only to the New Jobs sidebar context. */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
               <button
                   data-testid="jobs-tab"
@@ -892,7 +888,6 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
-                    setRightPanelTab("profile");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                     centerView === "swipe"
@@ -909,7 +904,6 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
-                    setRightPanelTab("profile");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                     opportunityType === "intern" && centerView === "swipe"
@@ -926,7 +920,6 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("chat");
-                    setRightPanelTab("profile");
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                   centerView === "chat" || centerView === "voice"
@@ -1019,11 +1012,57 @@ function Dashboard() {
                 onMicClick={async () => {
                   userChoseCenterViewRef.current = true;
                   const fresh = await refreshProfile();
-                  setRightPanelTab("profile");
                   setVoiceIntakeProfile(fresh);
                   setCenterView("voice");
                 }}
               />
+            )}
+            </> : (
+              activeSidebarTab === "profile" ? (
+                <ChatHub
+                  chats={chats}
+                  inputValue={inputValue}
+                  setInputValue={setInputValue}
+                  onSend={handleSendMessage}
+                  sending={sending}
+                  quickActions={(userProfile.missing_questions || []).filter((item) => item.status !== "ASKED" && item.status !== "ANSWERED").map((item) => item.question)}
+                  onSuggestionClick={handleSuggestionClick}
+                  composerFocusToken={composerFocusToken}
+                  onMicClick={async () => {
+                    userChoseCenterViewRef.current = true;
+                    const fresh = await refreshProfile();
+                    setVoiceIntakeProfile(fresh);
+                    setCenterView("voice");
+                  }}
+                />
+              ) : activeSidebarTab === "billing" ? (
+                <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} />
+              ) : (
+                <LivingProfile
+                  activeTab={activeSidebarTab}
+                  userProfile={userProfile}
+                  jobs={availableJobs}
+                  matchingJobsTotal={matchingJobsTotal}
+                  documents={documents}
+                  docsLoading={docsLoading}
+                  candidateId={candidateId}
+                  candidateToken={candidateToken}
+                  selectedJob={selectedJob}
+                  setSelectedJob={setSelectedJob}
+                  onTrackJob={handleTrackJob}
+                  onDismissJob={handleDismissJob}
+                  onToggleOpenToMatches={handleToggleOpenToMatches}
+                  onResumeReplaced={handleResumeReplaced}
+                  onCertUploaded={handleCertUploaded}
+                  onCertReplaced={handleCertReplaced}
+                  onResumeDeleted={handleResumeDeleted}
+                  onCertDeleted={handleCertDeleted}
+                  onInterested={fetchJobs}
+                  onPhotoChange={handlePhotoChange}
+                  onJobViewed={(jobId) => setAvailableJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j)))}
+                  onLockedJobClick={() => setShowSubscriptionPopup(true)}
+                />
+              )
             )}
           </div>
         </Panel>
