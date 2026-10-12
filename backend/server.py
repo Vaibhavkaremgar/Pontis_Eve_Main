@@ -12325,6 +12325,15 @@ def _oauth_state_cookie_name(provider: str) -> str:
     return f"{provider}_oauth_state"
 
 
+def _oauth_cookie_secure() -> bool:
+    return (
+        _runtime_environment() in _PRODUCTION_ENVIRONMENTS
+        or FRONTEND_URL.startswith("https://")
+        or LINKEDIN_REDIRECT_URI.startswith("https://")
+        or GOOGLE_REDIRECT_URI.startswith("https://")
+    )
+
+
 def _oauth_state_response(provider: str, state: str, payload: dict) -> JSONResponse:
     response = JSONResponse(payload)
     response.set_cookie(
@@ -12332,7 +12341,7 @@ def _oauth_state_response(provider: str, state: str, payload: dict) -> JSONRespo
         value=state,
         max_age=OAUTH_STATE_TTL_SECONDS,
         httponly=True,
-        secure=FRONTEND_URL.startswith("https://"),
+        secure=_oauth_cookie_secure(),
         samesite="lax",
         path=f"/api/auth/{provider}",
     )
@@ -12362,6 +12371,9 @@ def _consume_oauth_state(response: RedirectResponse, provider: str) -> None:
     response.delete_cookie(
         key=_oauth_state_cookie_name(provider),
         path=f"/api/auth/{provider}",
+        secure=_oauth_cookie_secure(),
+        httponly=True,
+        samesite="lax",
     )
 
 
@@ -12378,7 +12390,7 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:30
 
 
 @api_router.get("/auth/linkedin/init")
-async def linkedin_init(redirect: bool = False):
+async def linkedin_init(redirect: bool = True):
     if not LINKEDIN_CLIENT_ID:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     state = secrets.token_urlsafe(32)
@@ -12399,7 +12411,7 @@ async def linkedin_init(redirect: bool = False):
         response.set_cookie(
             key=_oauth_state_cookie_name("linkedin"), value=state,
             max_age=OAUTH_STATE_TTL_SECONDS, httponly=True,
-            secure=FRONTEND_URL.startswith("https://"), samesite="lax",
+            secure=_oauth_cookie_secure(), samesite="lax",
             path="/api/auth/linkedin",
         )
         return response
@@ -12497,7 +12509,7 @@ async def linkedin_callback(
 # ---------- Google OAuth ----------
 
 @api_router.get("/auth/google/init")
-async def google_init(redirect: bool = False):
+async def google_init(redirect: bool = True):
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
     state = secrets.token_urlsafe(32)
@@ -12519,7 +12531,7 @@ async def google_init(redirect: bool = False):
         response.set_cookie(
             key=_oauth_state_cookie_name("google"), value=state,
             max_age=OAUTH_STATE_TTL_SECONDS, httponly=True,
-            secure=FRONTEND_URL.startswith("https://"), samesite="lax",
+            secure=_oauth_cookie_secure(), samesite="lax",
             path="/api/auth/google",
         )
         return response
