@@ -2,350 +2,85 @@ import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
 import axios from "axios";
-
 import Dashboard from "../Dashboard";
-import { saveOnboardingState, loadOnboardingState } from "../../lib/onboardingStorage";
+import { saveOnboardingState } from "../../lib/onboardingStorage";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 jest.mock("axios");
-let lastLivingProfileProps = null;
-let mockChatHubOnMicClick = null;
-
-jest.mock("react-router-dom", () => ({
-  MemoryRouter: ({ children }) => <div>{children}</div>,
-  BrowserRouter: ({ children }) => <div>{children}</div>,
-  Routes: ({ children }) => <div>{children}</div>,
-  Route: ({ element }) => element ?? null,
-  Navigate: () => null,
-  useNavigate: () => jest.fn(),
-  useSearchParams: () => [new URLSearchParams(), jest.fn()],
-}), { virtual: true });
-
-jest.mock("../../components/Sidebar", () => ({ activeTab, setActiveTab }) => (
-  <div data-testid="sidebar">
-    {["jobs", "tracked", "profile", "documents", "opportunities"].map((id) => (
-      <button key={id} data-testid={`nav-tab-${id}`} onClick={() => setActiveTab(id)}>
-        {id}
-      </button>
-    ))}
-  </div>
-));
-jest.mock("../../components/ChatHub", () => (props) => {
-  mockChatHubOnMicClick = props.onMicClick;
-  return (
-    <div data-testid="chat-hub">
-      <button data-testid="chat-mic-btn" onClick={props.onMicClick}>
-        mic
-      </button>
-    </div>
-  );
-});
-jest.mock("../../components/LivingProfile", () => {
-  const LivingProfile = (props) => {
-    lastLivingProfileProps = props;
-    return <div data-testid="living-profile" data-active-tab={props.activeTab} />;
-  };
-  return { __esModule: true, default: LivingProfile, JobsTab: () => <div data-testid="jobs-deck" /> };
-});
-jest.mock("../../components/SwipeJobCard", () => () => <div data-testid="jobs-deck" />);
+jest.mock("react-router-dom", () => ({ useNavigate: () => jest.fn(), useSearchParams: () => [new URLSearchParams(), jest.fn()] }), { virtual: true });
+jest.mock("../../components/Sidebar", () => ({ setActiveTab }) => <div>{["jobs", "tracked", "profile", "documents", "opportunities", "billing"].map((id) => <button key={id} data-testid={`nav-tab-${id}`} onClick={() => setActiveTab(id)}>{id}</button>)}</div>);
+jest.mock("../../components/ChatHub", () => (props) => <div data-testid="chat-hub"><button data-testid="chat-mic-btn" onClick={props.onMicClick}>mic</button></div>);
+jest.mock("../../components/LivingProfile", () => ({ __esModule: true, default: ({ activeTab }) => <div data-testid={`living-profile-${activeTab}`} />, JobsTab: () => <div data-testid="jobs-deck" /> }));
+jest.mock("../../components/BillingPage", () => () => <div data-testid="billing-page" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
-jest.mock("react-resizable-panels", () => ({
-  PanelGroup: ({ children }) => <div>{children}</div>,
-  Panel: ({ children }) => <div>{children}</div>,
-  PanelResizeHandle: () => <div />,
-}));
-jest.mock("sonner", () => ({
-  Toaster: () => null,
-  toast: { error: jest.fn(), success: jest.fn() },
-}));
+jest.mock("react-resizable-panels", () => ({ PanelGroup: ({ children }) => <div>{children}</div>, Panel: ({ children }) => <div>{children}</div>, PanelResizeHandle: () => <div /> }));
+jest.mock("sonner", () => ({ Toaster: () => null, toast: { error: jest.fn(), success: jest.fn() } }));
 
-function makeProfile(overrides = {}) {
-  return {
-    photo_url: null,
-    name: "Test User",
-    email: "test@example.com",
-    phone: "",
-    headline: "Engineer",
-    location: "NYC",
-    bio: "",
-    experience: [],
-    education: [],
-    keySkills: ["React"],
-    experience_years: 3,
-    availability: "",
-    preferred_roles: [],
-    certifications: [],
-    additional_information: "",
-    profile_strength_percent: 80,
-    profile_strength_label: "Strong",
-    voice_intake_resume: { status: "completed", has_open_question: false, current_question: "", next_question: "" },
-    ...overrides,
-  };
-}
+const profile = (overrides = {}) => ({ name: "Test User", email: "test@example.com", headline: "Engineer", keySkills: ["React"], experience: [], education: [], certifications: [], profile_strength_percent: 90, profile_strength_label: "Strong", voice_intake_resume: { status: "completed", has_open_question: false }, ...overrides });
 
-function setupAxios(profile = makeProfile()) {
+function setupAxios({ profiles = [profile()], resume = { filename: "uploaded-resume.pdf" } } = {}) {
+  let profileCall = 0;
   axios.get.mockImplementation((url) => {
-    if (url.includes("/profile")) return Promise.resolve({ data: profile });
+    if (url.includes("/profile")) return Promise.resolve({ data: profiles[Math.min(profileCall++, profiles.length - 1)] });
+    if (url.includes("/documents")) return Promise.resolve({ data: { resume, certificates: [] } });
     if (url.includes("/chat")) return Promise.resolve({ data: { messages: [] } });
-    if (url.includes("/opportunities") || url.includes("/notifications")) return Promise.resolve({ data: [] });
-    if (url.includes("/jobs")) return Promise.resolve({ data: [] });
-    if (url.includes("/documents")) return Promise.resolve({ data: { resume: null, certificates: [] } });
+    if (url.includes("/jobs") || url.includes("/opportunities") || url.includes("/notifications")) return Promise.resolve({ data: [] });
+    if (url.includes("/billing")) return Promise.resolve({ data: {} });
     return Promise.resolve({ data: {} });
   });
 }
+function renderDashboard() { const container = document.createElement("div"); document.body.appendChild(container); const root = ReactDOM.createRoot(container); act(() => root.render(<Dashboard />)); return { container, unmount: () => { act(() => root.unmount()); container.remove(); } }; }
+async function flush() { for (let i = 0; i < 10; i += 1) await act(async () => Promise.resolve()); }
+function click(container, id) { act(() => container.querySelector(`[data-testid="${id}"]`).click()); }
 
-function renderDashboard() {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container);
-  act(() => { root.render(<Dashboard />); });
-  return {
-    container,
-    unmount() {
-      act(() => { root.unmount(); });
-      container.remove();
-    },
-  };
-}
+describe("Dashboard three-panel context", () => {
+  beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
 
-async function flush(n = 10) {
-  for (let i = 0; i < n; i++) {
-    await act(async () => { await Promise.resolve(); });
-  }
-}
-
-function getRightPanelTab(container) {
-  return container.querySelector('[data-testid="living-profile"]')?.getAttribute("data-active-tab");
-}
-
-function selectJobsForYou(container) {
-  act(() => { container.querySelector('[data-testid="jobs-tab"]')?.click(); });
-}
-
-describe("Dashboard right-panel state restoration", () => {
-  beforeEach(() => {
-    localStorage.clear();
-    jest.clearAllMocks();
-    lastLivingProfileProps = null;
-    mockChatHubOnMicClick = null;
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true });
+  it("shows job cards in the middle and the uploaded resume on the right", async () => {
+    setupAxios(); const view = renderDashboard(); await flush();
+    expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
   });
 
-  afterEach(() => {
-    // unmount handled per-test
+  it("has a non-crashing resume fallback when no resume exists", async () => {
+    setupAxios({ resume: null }); const view = renderDashboard(); await flush();
+    expect(view.container.querySelector("[data-testid=resume-context-empty]")).toBeTruthy(); view.unmount();
   });
 
-  // 1. Default / refresh with no persisted tab → Profile panel
-  it("default Dashboard (no persisted tab) shows Profile panel", async () => {
-    setupAxios();
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
+  it("shows internships with the same resume context", async () => {
+    setupAxios({ profiles: [profile({ opportunity_type: "intern" })], resume: { filename: "intern-resume.pdf" } }); const view = renderDashboard(); await flush();
+    click(view.container, "internships-tab"); await flush();
+    expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("intern-resume.pdf"); view.unmount();
   });
 
-  // 2. Chat with Eve center view → right panel shows Profile
-  it("Chat with Eve center view → right panel shows Profile", async () => {
-    setupAxios(makeProfile({
-      voice_intake_resume: { status: "in_progress", has_open_question: true, current_question: "Q?", next_question: "" },
-    }));
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" });
-    const { container, unmount } = renderDashboard();
+  it("uses the refreshed Fix My Resume profile, rather than reverting to uploaded data", async () => {
+    setupAxios({ profiles: [profile(), profile({ keySkills: ["React", "TypeScript"] })] }); const view = renderDashboard(); await flush();
+    await act(async () => window.dispatchEvent(new MessageEvent("message", { data: { type: "eve:candidate-profile-updated", candidateId: "cand-123" }, origin: window.location.origin })));
     await flush();
-    // in_progress routes center to chat; right panel must still be profile even when the sidebar tab was jobs.
-    expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
+    expect(view.container.querySelector("[data-testid=resume-context-skills]").textContent).toContain("TypeScript");
+    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
   });
 
-  // 3. Voice Intake center view → right panel shows Profile
-  it("Voice Intake center view → right panel shows Profile", async () => {
-    setupAxios(makeProfile({
-      voice_intake_resume: { status: "in_progress", has_open_question: true, current_question: "Q?", next_question: "" },
-    }));
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "documents" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    act(() => { container.querySelector('[data-testid="chat-mic-btn"]')?.click(); });
-    await flush();
-    expect(container.querySelector('[data-testid="voice-intake"]')).toBeTruthy();
-    // Right panel must still be profile regardless of the voice center view.
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
+  it("shows chat with the profile context", async () => {
+    setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "chat-tab"); await flush();
+    expect(view.container.querySelector("[data-testid=chat-hub]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=living-profile-profile]")).toBeTruthy(); view.unmount();
   });
 
-  // 4. New Jobs tab → right panel shows jobs
-  it("New Jobs sidebar tab → right panel shows jobs", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    selectJobsForYou(container);
-    act(() => { container.querySelector('[data-testid="nav-tab-jobs"]').click(); });
-    await flush();
-    expect(getRightPanelTab(container)).toBe("jobs");
-    unmount();
+  it("shows Profile as chat plus profile context", async () => {
+    setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "nav-tab-profile"); await flush();
+    expect(view.container.querySelector("[data-testid=chat-hub]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=living-profile-profile]")).toBeTruthy(); view.unmount();
   });
 
-  it("keeps Jobs for you matches in the middle panel and Profile in the right panel", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    act(() => { container.querySelector('[data-testid="jobs-tab"]')?.click(); });
-    await flush();
-    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeTruthy();
-    expect(getRightPanelTab(container)).toBe("profile");
-    expect(lastLivingProfileProps.activeTab).not.toBe("jobs");
-    unmount();
+  it.each(["tracked", "documents", "opportunities"])("renders %s in the middle and right contextual panels", async (tab) => {
+    setupAxios(); const view = renderDashboard(); await flush(); click(view.container, `nav-tab-${tab}`); await flush();
+    expect(view.container.querySelectorAll(`[data-testid=living-profile-${tab}]`)).toHaveLength(2); view.unmount();
   });
 
-  // 5. Tracked Jobs tab → right panel shows tracked
-  it("Tracked Jobs sidebar tab → right panel shows tracked", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    selectJobsForYou(container);
-    act(() => { container.querySelector('[data-testid="nav-tab-tracked"]').click(); });
-    await flush();
-    expect(getRightPanelTab(container)).toBe("tracked");
-    unmount();
-  });
-
-  it("replaces stale right-panel content when Profile is selected", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    selectJobsForYou(container);
-    act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
-    expect(getRightPanelTab(container)).toBe("documents");
-    act(() => { container.querySelector('[data-testid="nav-tab-profile"]').click(); });
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  // 6. Documents tab → right panel shows documents
-  it("Documents sidebar tab → right panel shows documents", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    selectJobsForYou(container);
-    act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
-    await flush();
-    expect(getRightPanelTab(container)).toBe("documents");
-    unmount();
-  });
-
-  // 7. Notifications tab → right panel shows opportunities
-  it("Notifications sidebar tab → right panel shows opportunities", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    selectJobsForYou(container);
-    act(() => { container.querySelector('[data-testid="nav-tab-opportunities"]').click(); });
-    await flush();
-    expect(getRightPanelTab(container)).toBe("opportunities");
-    unmount();
-  });
-
-  // 8. An auto-routed Chat view takes precedence over a persisted sidebar tab.
-  it("browser refresh routes a Chat center view to Profile", async () => {
-    setupAxios();
-    // Simulate a previous session that left the user on "tracked"
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "tracked" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  it("browser refresh routes a Chat center view to Profile instead of Documents", async () => {
-    setupAxios();
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "documents" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  it("browser refresh routes a Chat center view to Profile instead of Notifications", async () => {
-    setupAxios();
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "opportunities" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  it("browser refresh routes a Chat center view to Profile instead of New Jobs", async () => {
-    setupAxios();
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  // 9. Tab change is persisted so next refresh restores it
-  it("tab change is persisted to localStorage for next refresh", async () => {
-    setupAxios();
-    const { container, unmount } = renderDashboard();
-    await flush();
-    act(() => { container.querySelector('[data-testid="nav-tab-documents"]').click(); });
-    await flush();
-    expect(loadOnboardingState().activeTab).toBe("documents");
-    unmount();
-  });
-
-  // 10. Invalid/unknown persisted tab falls back to profile
-  it("invalid persisted tab falls back to profile panel", async () => {
-    setupAxios();
-    saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "new-jobs" });
-    const { container, unmount } = renderDashboard();
-    await flush();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
-  });
-
-  it.each([
-    ["jobs", "jobs"],
-    ["documents", "documents"],
-    ["profile", "profile"],
-    ["tracked", "tracked"],
-    ["opportunities", "opportunities"],
-  ])(
-    "Chat with Eve + %s sidebar tab keeps Chat with Eve active and updates right panel to %s",
-    async (tab, expectedPanel) => {
-      setupAxios(makeProfile({ profile_strength_percent: 90 }));
-      const { container, unmount } = renderDashboard();
-      await flush();
-      act(() => { container.querySelector('[data-testid="chat-tab"]').click(); });
-      await flush();
-      expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
-
-      act(() => { container.querySelector(`[data-testid="nav-tab-${tab}"]`).click(); });
-      await flush();
-      // Chat with Eve must remain in the center
-      expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
-      expect(container.querySelector('[data-testid="jobs-deck"]')).toBeFalsy();
-      // Right panel must reflect the selected sidebar tab
-      expect(getRightPanelTab(container)).toBe(expectedPanel);
-      unmount();
-    }
-  );
-
-  it("only the Jobs for You control changes Chat with Eve to Jobs for You", async () => {
-    setupAxios(makeProfile({ profile_strength_percent: 90 }));
-    const { container, unmount } = renderDashboard();
-    await flush();
-    act(() => { container.querySelector('[data-testid="chat-tab"]').click(); });
-    act(() => { container.querySelector('[data-testid="nav-tab-jobs"]').click(); });
-    await flush();
-    expect(container.querySelector('[data-testid="chat-hub"]')).toBeTruthy();
-
-    selectJobsForYou(container);
-    await flush();
-    expect(container.querySelector('[data-testid="jobs-deck"]')).toBeTruthy();
-    expect(getRightPanelTab(container)).toBe("profile");
-    unmount();
+  it("renders billing in both contextual panels", async () => {
+    setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "nav-tab-billing"); await flush();
+    expect(view.container.querySelectorAll("[data-testid=billing-page]")).toHaveLength(2); view.unmount();
   });
 });

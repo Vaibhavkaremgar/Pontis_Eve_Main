@@ -90,6 +90,49 @@ function ResizeHandle({ testId, subtle = false }) {
   );
 }
 
+// The document endpoint is the canonical source for an uploaded resume while
+// the profile endpoint is the canonical source for edits saved by Fix My
+// Resume.  Showing both here means a saved profile refresh is immediately
+// reflected without introducing another resume cache or storage mechanism.
+function ResumeContextPanel({ candidateId, documents, userProfile }) {
+  const resume = documents?.resume;
+  const skills = Array.isArray(userProfile?.keySkills) ? userProfile.keySkills : [];
+
+  return (
+    <aside data-testid="right-resume-context" className="h-full overflow-y-auto eve-scroll bg-[#FDFDFC] px-8 py-6">
+      <p className="text-[12px] font-semibold uppercase tracking-[.12em] text-[#7B6FB8]">Resume</p>
+      <h1 className="mt-1 text-[16px] font-medium tracking-tight text-[#1F1F1F]">Latest saved resume</h1>
+      {resume ? (
+        <div className="mt-5 rounded-xl border border-black/[0.07] bg-white p-4">
+          <p className="break-words text-sm font-medium text-[#1F1F1F]">{resume.filename || "Uploaded resume"}</p>
+          <a
+            href={`${API}/candidate/${candidateId}/resume/view`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-block text-[12.5px] text-[#62578F] underline underline-offset-2"
+          >
+            View resume
+          </a>
+        </div>
+      ) : (
+        <p data-testid="resume-context-empty" className="mt-5 text-[13px] leading-6 text-[#777571]">
+          No resume has been uploaded yet.
+        </p>
+      )}
+      <section className="mt-6 border-t border-black/[0.06] pt-5">
+        <p className="text-[12px] font-medium text-[#4A4A48]">Saved profile details</p>
+        <p className="mt-2 text-sm font-medium text-[#1F1F1F]">{userProfile?.name || "Your profile"}</p>
+        {userProfile?.headline && <p className="mt-1 text-[13px] text-[#777571]">{userProfile.headline}</p>}
+        {skills.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5" data-testid="resume-context-skills">
+            {skills.map((skill) => <span key={skill} className="rounded-full bg-[#F1EFF7] px-2 py-1 text-[11px] text-[#514875]">{skill}</span>)}
+          </div>
+        )}
+      </section>
+    </aside>
+  );
+}
+
 function Dashboard() {
   const navigate = useNavigate();
   const stored = React.useMemo(() => loadOnboardingState(), []);
@@ -177,9 +220,17 @@ function Dashboard() {
   const handleSidebarTabChange = React.useCallback((tab) => {
     setActiveTabPersisted(tab);
     setRightPanelTab(tab);
+    // Profile is a conversational workspace.  Other sections own the middle
+    // panel and therefore do not alter the saved Jobs/Chat sub-tab selection.
+    if (tab === "profile") {
+      userChoseCenterViewRef.current = true;
+      setCenterView("chat");
+    }
   }, [setActiveTabPersisted]);
 
-  const displayedRightPanelTab = rightPanelTab;
+  const displayedRightPanelTab = activeSidebarTab === "jobs"
+    ? (centerView === "swipe" ? "resume" : "profile")
+    : activeSidebarTab;
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
@@ -885,7 +936,57 @@ function Dashboard() {
         <ResizeHandle testId="resize-handle-left" />
 
         <Panel id="center-panel" order={2} defaultSize={58} minSize={22} className="h-full">
-          <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
+          {activeSidebarTab === "profile" ? (
+            <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
+              <ChatHub
+                chats={chats}
+                inputValue={inputValue}
+                setInputValue={setInputValue}
+                onSend={handleSendMessage}
+                sending={sending}
+                quickActions={(userProfile.missing_questions || []).filter((item) => item.status !== "ASKED" && item.status !== "ANSWERED").map((item) => item.question)}
+                onSuggestionClick={handleSuggestionClick}
+                composerFocusToken={composerFocusToken}
+                onMicClick={async () => {
+                  userChoseCenterViewRef.current = true;
+                  const fresh = await refreshProfile();
+                  setRightPanelTab("profile");
+                  setVoiceIntakeProfile(fresh);
+                  setCenterView("voice");
+                }}
+              />
+            </div>
+          ) : activeSidebarTab !== "jobs" ? (
+            activeSidebarTab === "billing" ? (
+              <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} />
+            ) : (
+              <LivingProfile
+                activeTab={activeSidebarTab}
+                userProfile={userProfile}
+                jobs={availableJobs}
+                matchingJobsTotal={matchingJobsTotal}
+                documents={documents}
+                docsLoading={docsLoading}
+                candidateId={candidateId}
+                candidateToken={candidateToken}
+                selectedJob={selectedJob}
+                setSelectedJob={setSelectedJob}
+                onTrackJob={handleTrackJob}
+                onDismissJob={handleDismissJob}
+                onToggleOpenToMatches={handleToggleOpenToMatches}
+                onResumeReplaced={handleResumeReplaced}
+                onCertUploaded={handleCertUploaded}
+                onCertReplaced={handleCertReplaced}
+                onResumeDeleted={handleResumeDeleted}
+                onCertDeleted={handleCertDeleted}
+                onInterested={fetchJobs}
+                onPhotoChange={handlePhotoChange}
+                onProfileUpdated={refreshProfile}
+                onJobViewed={(jobId) => setAvailableJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j)))}
+                onLockedJobClick={() => setShowSubscriptionPopup(true)}
+              />
+            )
+          ) : <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
             {/* Toggle bar */}
             <div className="shrink-0 flex items-center gap-1 px-4 pt-3 pb-2 border-b border-black/[0.05]">
               <button
@@ -895,7 +996,7 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
-                    setRightPanelTab("profile");
+                    setRightPanelTab("resume");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                     centerView === "swipe"
@@ -912,7 +1013,7 @@ function Dashboard() {
                   onClick={() => {
                     userChoseCenterViewRef.current = true;
                     setCenterView("swipe");
-                    setRightPanelTab("profile");
+                    setRightPanelTab("resume");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
                     opportunityType === "intern" && centerView === "swipe"
@@ -1028,13 +1129,15 @@ function Dashboard() {
                 }}
               />
             )}
-          </div>
+          </div>}
         </Panel>
 
         <ResizeHandle testId="resize-handle-right" subtle />
 
         <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full">
-          {displayedRightPanelTab === "billing" ? <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} /> : <LivingProfile
+          {displayedRightPanelTab === "resume" ? (
+            <ResumeContextPanel candidateId={candidateId} documents={documents} userProfile={userProfile} />
+          ) : displayedRightPanelTab === "billing" ? <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} /> : <LivingProfile
             activeTab={displayedRightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}
