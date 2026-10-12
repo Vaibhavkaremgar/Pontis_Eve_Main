@@ -73,7 +73,6 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
 
       vapi.on("call-start", () => {
         callIdRef.current = null;
-        console.log("[voice-intake] Vapi call started");
         setCallState(VAPI_STATES.LISTENING);
         setTerminationReason(null);
       });
@@ -93,37 +92,19 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
       });
 
       vapi.on("error", (err) => {
-        console.error("[voice-intake] Vapi error", err);
+        console.error("[voice-intake] Vapi error");
         setError(err?.message || "Voice call error.");
         setTerminationReason("vapi_error");
         setCallState(VAPI_STATES.ERROR);
       });
 
       vapi.on("call-end", () => {
-        console.log("[voice-intake] call ended");
         setTerminationReason("disconnect");
         setCallState(VAPI_STATES.PROCESSING);
       });
 
       const overrides = assistantOverridesRef.current;
-      console.log("[voice-intake] starting Vapi call");
       const vv = overrides?.variableValues || {};
-      console.log("[vapi][DEBUG] pre-start — assistantOverrides exists:", !!overrides);
-      console.log("[vapi][DEBUG] pre-start — candidate_name present:", !!vv.candidate_name, "len:", (vv.candidate_name || "").length);
-      console.log("[vapi][DEBUG] pre-start — candidate_id present:", !!vv.candidate_id, "len:", (vv.candidate_id || "").length);
-      console.log("[vapi][DEBUG] pre-start — current_company present:", !!vv.current_company, "len:", (vv.current_company || "").length);
-      console.log("[vapi][DEBUG] pre-start — skills present:", !!vv.skills, "len:", (vv.skills || "").length);
-      console.log("[vapi][DEBUG] pre-start — work_experience present:", !!vv.work_experience, "len:", (vv.work_experience || "").length);
-      // Resume-path verification: log the full overrides so we can confirm
-      // firstMessage and voice_intake_* fields are populated correctly.
-      console.log("[vapi][DEBUG] vapi.start() overrides:", JSON.stringify({
-        firstMessage: overrides?.firstMessage,
-        voice_intake_status: vv.voice_intake_status,
-        voice_intake_current_question: vv.voice_intake_current_question,
-        voice_intake_completed_topics: vv.voice_intake_completed_topics,
-        voice_intake_missing_topics: vv.voice_intake_missing_topics,
-        voice_intake_answers_len: (vv.voice_intake_answers || "").length,
-      }));
       await vapi.start(assistantId, overrides);
     } catch (err) {
       setError(err?.message || "Failed to start voice call.");

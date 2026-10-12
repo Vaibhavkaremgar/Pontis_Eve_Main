@@ -2,6 +2,7 @@ import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
 import axios from "axios";
+import { saveOnboardingState } from "../../lib/onboardingStorage";
 
 import { ProfilePhotoUpload } from "../LivingProfile";
 
@@ -62,19 +63,19 @@ async function flush() {
 describe("ProfilePhotoUpload", () => {
   let alerts;
   let confirms;
-  let debugSpy;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
+    global.URL.createObjectURL = jest.fn(() => "blob:photo");
+    global.URL.revokeObjectURL = jest.fn();
     alerts = jest.spyOn(window, "alert").mockImplementation(() => {});
     confirms = jest.spyOn(window, "confirm").mockReturnValue(true);
-    debugSpy = jest.spyOn(console, "debug").mockImplementation(() => {});
   });
 
   afterEach(() => {
     alerts.mockRestore();
     confirms.mockRestore();
-    debugSpy.mockRestore();
   });
 
   it("shows the default placeholder when no photo exists", () => {
@@ -84,7 +85,9 @@ describe("ProfilePhotoUpload", () => {
     view.unmount();
   });
 
-  it("resolves relative photo urls against the backend base url on dashboard reload", () => {
+  it("loads private photos with the candidate bearer token and renders an object URL", async () => {
+    saveOnboardingState({ candidateToken: "candidate-token-for-test" });
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     const view = renderPhotoUpload({
       user: {
         name: "Jane Doe",
@@ -93,12 +96,13 @@ describe("ProfilePhotoUpload", () => {
       },
     });
 
+    await flush();
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view");
-    expect(debugSpy).toHaveBeenCalledWith(
-      "[ProfilePhotoUpload] resolved image src:",
-      "http://localhost:8001/api/candidate/cand-123/photo/view"
+    expect(img.getAttribute("src")).toBe("blob:photo");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/candidate/cand-123/photo/view",
+      { responseType: "blob", headers: { Authorization: "Bearer candidate-token-for-test" } }
     );
     view.unmount();
   });
@@ -115,6 +119,29 @@ describe("ProfilePhotoUpload", () => {
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
     expect(img.getAttribute("src")).toBe("https://cdn.example.com/photos/cand-123.webp");
+    expect(axios.get).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("falls back without exposing a token when the private photo request fails", async () => {
+    saveOnboardingState({ candidateToken: "candidate-token-for-test" });
+    axios.get.mockRejectedValue(new Error("expired session"));
+    const view = renderPhotoUpload({
+      user: {
+        name: "Jane Doe",
+        avatar: "/api/candidate/cand-123/photo/view",
+        candidate_id: "cand-123",
+      },
+    });
+
+    await flush();
+
+    expect(view.container.querySelector("img")).toBeNull();
+    expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeTruthy();
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/candidate/cand-123/photo/view",
+      { responseType: "blob", headers: { Authorization: "Bearer candidate-token-for-test" } }
+    );
     view.unmount();
   });
 
@@ -139,6 +166,7 @@ describe("ProfilePhotoUpload", () => {
 
   it("uploads a first photo, renders the returned url, and then deletes it", async () => {
     axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view?rev=first" } });
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     axios.delete.mockResolvedValue({ data: { status: "deleted" } });
     const onPhotoChange = jest.fn();
     const view = renderPhotoUpload({ onPhotoChange });
@@ -158,11 +186,7 @@ describe("ProfilePhotoUpload", () => {
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeNull();
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=first");
-    expect(debugSpy).toHaveBeenCalledWith(
-      "[ProfilePhotoUpload] resolved image src:",
-      "http://localhost:8001/api/candidate/cand-123/photo/view?rev=first"
-    );
+    expect(img.getAttribute("src")).toBe("blob:photo");
 
     const deleteBtn = view.container.querySelector('button[aria-label="Delete profile photo"]');
     expect(deleteBtn).toBeTruthy();
@@ -173,7 +197,7 @@ describe("ProfilePhotoUpload", () => {
 
     await flush();
 
-    expect(axios.delete).toHaveBeenCalledWith("http://localhost:8001/api/candidate/cand-123/photo");
+    expect(axios.delete).toHaveBeenCalledWith("undefined/api/candidate/cand-123/photo");
     expect(onPhotoChange).toHaveBeenLastCalledWith(null);
     expect(view.container.querySelector('[data-testid="candidate-photo-placeholder"]')).toBeTruthy();
     view.unmount();
@@ -181,6 +205,7 @@ describe("ProfilePhotoUpload", () => {
 
   it("replaces an existing photo without requiring deletion first", async () => {
     axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view?rev=replacement" } });
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     const onPhotoChange = jest.fn();
     const view = renderPhotoUpload({
       onPhotoChange,
@@ -191,9 +216,10 @@ describe("ProfilePhotoUpload", () => {
       },
     });
 
+    await flush();
     const existingImg = view.container.querySelector("img");
     expect(existingImg).toBeTruthy();
-    expect(existingImg.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=old");
+    expect(existingImg.getAttribute("src")).toBe("blob:photo");
 
     const input = view.container.querySelector('input[type="file"]');
     const file = new File(["png"], "replacement.png", { type: "image/png" });
@@ -209,12 +235,14 @@ describe("ProfilePhotoUpload", () => {
     expect(axios.delete).not.toHaveBeenCalled();
     expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view?rev=replacement");
     const img = view.container.querySelector("img");
-    expect(img.getAttribute("src")).toBe("http://localhost:8001/api/candidate/cand-123/photo/view?rev=replacement");
+    expect(img.getAttribute("src")).toBe("blob:photo");
+    expect(global.URL.revokeObjectURL).toHaveBeenCalled();
     view.unmount();
   });
 
-  it("keeps the replacement visible after a remount with the refreshed profile data", () => {
+  it("keeps the replacement visible after a remount with the refreshed profile data", async () => {
     const replacementUrl = "/api/candidate/cand-123/photo/view?rev=replacement";
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     const view = renderPhotoUpload({
       user: {
         name: "Jane Doe",
@@ -223,14 +251,17 @@ describe("ProfilePhotoUpload", () => {
       },
     });
 
+    await flush();
     const img = view.container.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img.getAttribute("src")).toBe(`http://localhost:8001${replacementUrl}`);
+    expect(img.getAttribute("src")).toBe("blob:photo");
     view.unmount();
+    expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:photo");
   });
 
   it("keeps the upload trigger from submitting a parent form and uploads a selected photo", async () => {
     axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-123/photo/view" } });
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     const onPhotoChange = jest.fn();
     const view = renderPhotoUpload({ onPhotoChange, wrapInForm: true });
 
@@ -254,7 +285,7 @@ describe("ProfilePhotoUpload", () => {
     await flush();
 
     expect(axios.post).toHaveBeenCalledWith(
-      "http://localhost:8001/api/candidate/cand-123/photo",
+      "undefined/api/candidate/cand-123/photo",
       expect.any(FormData)
     );
     expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-123/photo/view");
@@ -263,6 +294,7 @@ describe("ProfilePhotoUpload", () => {
 
   it("uses the candidate id from the user object when the prop is missing", async () => {
     axios.post.mockResolvedValue({ data: { photo_url: "/api/candidate/cand-456/photo/view" } });
+    axios.get.mockResolvedValue({ data: new Blob(["photo"], { type: "image/png" }) });
     const onPhotoChange = jest.fn();
     const view = renderPhotoUpload({
       onPhotoChange,
@@ -281,7 +313,7 @@ describe("ProfilePhotoUpload", () => {
     await flush();
 
     expect(axios.post).toHaveBeenCalledWith(
-      "http://localhost:8001/api/candidate/cand-456/photo",
+      "undefined/api/candidate/cand-456/photo",
       expect.any(FormData)
     );
     expect(onPhotoChange).toHaveBeenCalledWith("/api/candidate/cand-456/photo/view");

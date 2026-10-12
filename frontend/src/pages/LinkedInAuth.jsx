@@ -16,9 +16,35 @@ export default function LinkedInAuth() {
   //   returning candidate → /?candidate_id=...
  //   new candidate      → /?linkedin_profile=... (fallback if router sends here)
   React.useEffect(() => {
+    const exchangeCode = searchParams.get("exchange_code");
     const candidateId = searchParams.get("candidate_id");
     const candidateToken = searchParams.get("candidate_token");
     const linkedInProfile = searchParams.get("linkedin_profile");
+
+    if (exchangeCode) {
+      fetch(`${BACKEND_URL}/api/auth/session/exchange`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ exchange_code: exchangeCode }),
+      }).then((response) => {
+        if (!response.ok) throw new Error("exchange_failed");
+        return response.json();
+      }).then((session) => {
+        const exchangedCandidateId = session.candidate_id;
+        const exchangedToken = session.candidate_token || null;
+        const profile = session.linkedin_profile || null;
+        if (session.needs_onboarding || !exchangedCandidateId) {
+          clearOnboardingState();
+          saveOnboardingState({ linkedInAuthenticated: true, candidateId: exchangedCandidateId || null, candidateToken: exchangedToken, linkedInProfile: profile });
+          navigate("/onboarding", { replace: true });
+        } else {
+          saveOnboardingState({ ...loadOnboardingState(), linkedInAuthenticated: true, candidateId: exchangedCandidateId, candidateToken: exchangedToken });
+          navigate("/dashboard", { replace: true });
+        }
+      }).catch(() => setError("Sign-in could not be completed. Please try again."));
+      return;
+    }
 
     if (candidateId) {
       const needsOnboarding = searchParams.get("needs_onboarding") === "true";
@@ -77,7 +103,7 @@ export default function LinkedInAuth() {
   const handleLinkedIn = () => {
     setLoading(true); 
     setError(null);
-    fetch(`${BACKEND_URL}/api/auth/linkedin/init`)
+    fetch(`${BACKEND_URL}/api/auth/linkedin/init`, { credentials: "include" })
       .then((r) => r.json())
        .then((data) => {
         sessionStorage.setItem("linkedin_oauth_state", data.state);
@@ -91,7 +117,7 @@ export default function LinkedInAuth() {
   const handleGoogle = () => {
     setGoogleLoading(true);
     setError(null);
-    fetch(`${BACKEND_URL}/api/auth/google/init`)
+    fetch(`${BACKEND_URL}/api/auth/google/init`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
         sessionStorage.setItem("google_oauth_state", data.state);

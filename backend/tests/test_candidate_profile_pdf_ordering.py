@@ -59,7 +59,7 @@ def test_candidate_profile_download_orders_experience_newest_first(monkeypatch):
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-999"))
+    response = asyncio.run(server.download_candidate_profile("cand-999", authorization=f"Bearer {server._issue_candidate_session_token('cand-999')}"))
     text = _extract_pdf_text(response.body)
 
     viral_bug_index = text.index("Viral Bug")

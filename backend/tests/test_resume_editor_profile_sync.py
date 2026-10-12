@@ -377,7 +377,7 @@ def test_match_improvement_endpoint_extracts_competencies_from_live_failure_shap
     monkeypatch.setattr(server, "_get_job_match_improvement_row", get_row)
     monkeypatch.setattr(server, "_get_candidate_profile_payload", get_profile)
 
-    response = asyncio.run(server.get_job_match_improvement("candidate-live-shape", "rec-live-shape"))
+    response = asyncio.run(server.get_job_match_improvement("candidate-live-shape", "rec-live-shape", authorization=f"Bearer {server._issue_candidate_session_token('candidate-live-shape')}"))
 
     assert response["missing_skills"]
     assert response["requirements"]
@@ -502,6 +502,7 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
         "candidate-1",
         "rec-1",
         server.JobMatchImprovementRequest(profile_updates={"skills": ["Python", "Rust"]}, confirmed_skills=["Rust"]),
+        authorization=f"Bearer {server._issue_candidate_session_token('candidate-1')}",
     ))
 
     assert response["match_score"] == 84.0
@@ -527,7 +528,7 @@ def test_updated_resume_download_serves_the_pdf_generated_by_resume_editor_save(
     asyncio.run(server._save_resume_editor_updates("candidate-1", {"skills": ["Python", "FastAPI"]}))
     saved_raw = json.loads(_candidate_update_params(state)["raw_data"])
     candidate["raw_data"] = saved_raw
-    response = asyncio.run(server.download_updated_resume("candidate-1"))
+    response = asyncio.run(server.download_updated_resume("candidate-1", authorization=f"Bearer {server._issue_candidate_session_token('candidate-1')}"))
 
     assert response.path == saved_raw["updated_resume_file_path"]
     assert Path(response.path).read_bytes().startswith(b"%PDF")
@@ -568,7 +569,7 @@ def test_updated_resume_download_returns_404_when_generated_pdf_is_missing(monke
     monkeypatch.setattr(server, "_updated_resume_pdf_path", lambda _candidate_id: missing_path)
 
     with pytest.raises(server.HTTPException) as exc_info:
-        asyncio.run(server.download_updated_resume("candidate-1"))
+        asyncio.run(server.download_updated_resume("candidate-1", authorization=f"Bearer {server._issue_candidate_session_token('candidate-1')}"))
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Updated resume PDF not found."

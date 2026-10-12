@@ -164,17 +164,6 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const terminalRef = React.useRef(false);
   const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, candidateProfile);
 
-  // Debug: confirm candidateProfile is populated at mount time
-  React.useEffect(() => {
-    console.log("[voice-intake][DEBUG] mount — candidateProfile present:", !!candidateProfile);
-    console.log("[voice-intake][DEBUG] name present:", !!candidateProfile?.name, "len:", (candidateProfile?.name || "").length);
-    console.log("[voice-intake][DEBUG] current_company present:", !!candidateProfile?.current_company, "len:", (candidateProfile?.current_company || "").length);
-    console.log("[voice-intake][DEBUG] experience entries:", candidateProfile?.experience?.length ?? 0);
-    console.log("[voice-intake][DEBUG] skills entries:", candidateProfile?.keySkills?.length ?? 0);
-    console.log("[voice-intake][DEBUG] candidateId present:", !!resolvedCandidateId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidateProfile, candidateId, resolvedCandidateId]);
-
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
   const persistProgress = React.useCallback((turns) => {
     const candidateTurns = turns.filter((t) => t.role === "user" && t.final !== false).length;
@@ -273,7 +262,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
           termination_reason: terminationReason || "disconnect",
         });
       } catch (err) {
-        console.warn("[voice-intake] interrupted-state save failed", err);
+        console.warn("[voice-intake] interrupted-state save failed");
       }
 
       onComplete({ status: "no_interaction" });
@@ -295,7 +284,6 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     const transcriptText = buildTranscriptText(transcript);
     if (!transcriptText.trim()) {
       // Empty transcript — skip backend call, go to completed
-      console.log("[voice-intake] navigating to summary");
       onComplete({ status: "partial" });
       return;
     }
@@ -315,13 +303,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
           transcript_revision: String(transcript.length),
       })
       .then((res) => {
-        console.log("[voice-intake] navigating to summary");
         onComplete(res.data);
       })
       .catch((err) => {
-        console.error("Voice intake submission failed", err);
+        console.error("Voice intake submission failed");
         toast.error("Couldn't save your voice intake — your profile is still intact.");
-        console.log("[voice-intake] navigating to summary");
         // Still advance — don't block onboarding
         onComplete({ status: "partial" });
       })
@@ -330,19 +316,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   }, [callState, terminationReason]);
 
   const handleStartCall = () => {
-    console.log("[voice-intake] button clicked");
     const vv = assistantOverrides?.variableValues || {};
-    console.log("[voice-intake][DEBUG] pre-start — candidate_name present:", !!vv.candidate_name, "len:", (vv.candidate_name || "").length);
-    console.log("[voice-intake][DEBUG] pre-start — candidate_id present:", !!vv.candidate_id, "len:", (vv.candidate_id || "").length);
-    console.log("[voice-intake][DEBUG] pre-start — current_company present:", !!vv.current_company, "len:", (vv.current_company || "").length);
-    console.log("[voice-intake][DEBUG] pre-start — skills present:", !!vv.skills, "len:", (vv.skills || "").length);
-    console.log("[voice-intake][DEBUG] pre-start — work_experience present:", !!vv.work_experience, "len:", (vv.work_experience || "").length);
-    console.log("[voice-intake][DEBUG] pre-start — assistantOverrides exists:", !!assistantOverrides);
     startCall();
   };
 
   const handleRetry = () => {
-    console.log("[voice-intake] button clicked");
     setRetryCount((n) => n + 1);
     startCall();
   };

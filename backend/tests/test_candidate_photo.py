@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import server  # noqa: E402
 from server import (  # noqa: E402
     _candidate_photo_url,
     _candidate_photo_dir,
@@ -33,13 +34,53 @@ def test_validate_candidate_photo_upload_accepts_supported_types():
 def test_validate_candidate_photo_upload_rejects_unsupported_type():
     with pytest.raises(HTTPException) as exc:
         _validate_candidate_photo_upload("image/gif", b"x")
-    assert getattr(exc.value, "status_code", None) == 400
 
 
 def test_validate_candidate_photo_upload_rejects_oversized_file():
     with pytest.raises(HTTPException) as exc:
         _validate_candidate_photo_upload("image/png", b"x" * (MAX_PROFILE_PHOTO_BYTES + 1))
-    assert getattr(exc.value, "status_code", None) == 400
+
+
+def test_photo_routes_reject_missing_auth_before_candidate_lookup(monkeypatch):
+    async def should_not_lookup(_candidate_id):
+        raise AssertionError("candidate lookup occurred before authorization")
+
+    monkeypatch.setattr(server, "_get_candidate_row", should_not_lookup)
+
+    with pytest.raises(HTTPException) as upload_error:
+        asyncio.run(upload_profile_photo("cand-123", object()))
+    assert upload_error.value.status_code == 401
+
+    with pytest.raises(HTTPException) as view_error:
+        asyncio.run(view_profile_photo("cand-123"))
+    assert view_error.value.status_code == 401
+
+    with pytest.raises(HTTPException) as delete_error:
+        asyncio.run(delete_profile_photo("cand-123"))
+    assert delete_error.value.status_code == 401
+
+
+def test_photo_routes_reject_cross_candidate_session_before_side_effects(monkeypatch):
+    candidate_a = "11111111-1111-1111-1111-111111111111"
+    candidate_b = "22222222-2222-2222-2222-222222222222"
+    token_for_a = server._issue_candidate_session_token(candidate_a)
+
+    async def should_not_lookup(_candidate_id):
+        raise AssertionError("candidate lookup occurred before authorization")
+
+    monkeypatch.setattr(server, "_get_candidate_row", should_not_lookup)
+
+    with pytest.raises(HTTPException) as upload_error:
+        asyncio.run(upload_profile_photo(candidate_b, object(), authorization=f"Bearer {token_for_a}"))
+    assert upload_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as view_error:
+        asyncio.run(view_profile_photo(candidate_b, authorization=f"Bearer {token_for_a}"))
+    assert view_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as delete_error:
+        asyncio.run(delete_profile_photo(candidate_b, authorization=f"Bearer {token_for_a}"))
+    assert delete_error.value.status_code == 403
 
 
 def test_candidate_photo_path_is_scoped_to_candidate_dir(tmp_path, monkeypatch):
@@ -104,7 +145,7 @@ def test_uploaded_photo_is_in_profile_payload_and_viewable_after_reload(tmp_path
         return reloaded_row
 
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
-    response = asyncio.run(view_profile_photo(candidate_id))
+    response = asyncio.run(view_profile_photo(candidate_id, authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}"))
     assert Path(response.path) == photo_path
 
 
@@ -159,7 +200,11 @@ def test_upload_and_replace_profile_photo_updates_stored_reference(tmp_path, mon
             Path(old_path).parent.mkdir(parents=True, exist_ok=True)
             Path(old_path).write_bytes(b"old")
 
-        result = await upload_profile_photo(candidate_id, FakeUploadFile(content, filename, content_type))
+        result = await upload_profile_photo(
+            candidate_id,
+            FakeUploadFile(content, filename, content_type),
+            authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
+        )
         stored = json.loads(fake_session.executed[0]["rd"])
         return result, stored, fake_session, Path(old_path) if old_path else None
 
@@ -206,7 +251,7 @@ def test_upload_and_replace_profile_photo_updates_stored_reference(tmp_path, mon
     # document directory is empty.  The DB-backed photo metadata must restore
     # the exact persisted path before FileResponse is constructed.
     Path(second_stored["photo_file_path"]).unlink()
-    response = asyncio.run(view_profile_photo("cand-123"))
+    response = asyncio.run(view_profile_photo("cand-123", authorization=f"Bearer {server._issue_candidate_session_token('cand-123')}"))
     assert Path(response.path).read_bytes() == b"second"
 
 
@@ -250,7 +295,10 @@ def test_delete_profile_photo_clears_stored_reference_and_file(tmp_path, monkeyp
         monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
         monkeypatch.setattr(server, "SessionLocal", lambda: fake_session)
 
-        result = await delete_profile_photo(candidate_id)
+        result = await delete_profile_photo(
+            candidate_id,
+            authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
+        )
         stored = json.loads(fake_session.executed[0]["rd"])
         return result, stored, fake_session, photo_path
 

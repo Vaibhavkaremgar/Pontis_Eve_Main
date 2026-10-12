@@ -1,5 +1,6 @@
 ﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi import Cookie
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -72,16 +73,82 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 DOCS_DIR = Path(os.environ.get("EVE_DOCS_DIR", str(ROOT_DIR / "data" / "documents")))
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024
+MAX_RESUME_BYTES = 10 * 1024 * 1024
+MAX_RESUME_PAGES = 12
+MAX_UPLOAD_READ_CHUNK = 1024 * 1024
+RESUME_REQUESTS_PER_WINDOW = 8
+RESUME_RATE_WINDOW_SECONDS = 300
+RESUME_PROCESSING_CONCURRENCY = 2
+RESUME_PROCESSING_TIMEOUT_SECONDS = 180
 ALLOWED_PROFILE_PHOTO_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
 }
-CANDIDATE_SESSION_SECRET = os.environ.get("CANDIDATE_SESSION_SECRET") or os.environ.get("EVE_INTERNAL_TOKEN") or "dev-candidate-session-secret"
+_PRODUCTION_ENVIRONMENTS = {"production", "prod"}
+_INSECURE_CANDIDATE_SESSION_SECRETS = {
+    "change-me",
+    "changeme",
+    "dev-candidate-session-secret",
+    "password",
+    "replace-me",
+    "secret",
+    "test",
+    "your-secret-here",
+}
+CANDIDATE_SESSION_SECRET_MIN_LENGTH = 32
+CANDIDATE_SESSION_SECRET = os.environ.get("CANDIDATE_SESSION_SECRET", "").strip()
 CANDIDATE_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
 SUPPORT_EMAIL_TO = "info@pontis.one"
 
-app = FastAPI()
+
+def _runtime_environment() -> str:
+    """Return the explicitly selected runtime environment.
+
+    Local development remains opt-in to its own configured secret.  Production
+    detection is intentionally based only on explicit environment markers; the
+    repository does not infer Railway's deployment state.
+    """
+    return (
+        os.environ.get("EVE_ENVIRONMENT")
+        or os.environ.get("ENVIRONMENT")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or "development"
+    ).strip().lower()
+
+
+def _validated_candidate_session_secret(
+    secret: Optional[str] = None, *, environment: Optional[str] = None
+) -> str:
+    """Validate the dedicated candidate-session signing secret.
+
+    This function never logs or includes the secret in an exception.  It is
+    callable from startup tests and is also used by signing/verification so a
+    misconfigured process cannot silently issue or accept sessions.
+    """
+    value = CANDIDATE_SESSION_SECRET if secret is None else secret
+    value = (value or "").strip()
+    runtime_environment = (environment or _runtime_environment()).strip().lower()
+    normalized = value.lower()
+
+    if not value:
+        if runtime_environment in _PRODUCTION_ENVIRONMENTS:
+            raise RuntimeError("CANDIDATE_SESSION_SECRET is required in production.")
+        raise RuntimeError("CANDIDATE_SESSION_SECRET must be configured for candidate sessions.")
+    if normalized in _INSECURE_CANDIDATE_SESSION_SECRETS:
+        raise RuntimeError("CANDIDATE_SESSION_SECRET is an insecure placeholder.")
+    if len(value) < CANDIDATE_SESSION_SECRET_MIN_LENGTH:
+        raise RuntimeError("CANDIDATE_SESSION_SECRET does not meet the minimum strength requirement.")
+    if value == os.environ.get("EVE_INTERNAL_TOKEN", "").strip():
+        raise RuntimeError("CANDIDATE_SESSION_SECRET must be separate from EVE_INTERNAL_TOKEN.")
+    return value
+
+_production_runtime = _runtime_environment() in _PRODUCTION_ENVIRONMENTS
+app = FastAPI(
+    docs_url=None if _production_runtime else "/docs",
+    redoc_url=None if _production_runtime else "/redoc",
+    openapi_url=None if _production_runtime else "/openapi.json",
+)
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -100,6 +167,25 @@ def _configured_cors_origins() -> list[str]:
 
 CORS_ORIGINS = _configured_cors_origins()
 logger.info("Configured CORS origins: %s", CORS_ORIGINS)
+
+_resume_rate_state: dict[str, list[float]] = {}
+_resume_processing_semaphore = asyncio.Semaphore(RESUME_PROCESSING_CONCURRENCY)
+
+
+def _resume_rate_limited(client_key: str) -> bool:
+    now = asyncio.get_running_loop().time()
+    recent = [timestamp for timestamp in _resume_rate_state.get(client_key, [])
+              if now - timestamp < RESUME_RATE_WINDOW_SECONDS]
+    if len(recent) >= RESUME_REQUESTS_PER_WINDOW:
+        _resume_rate_state[client_key] = recent
+        return True
+    recent.append(now)
+    _resume_rate_state[client_key] = recent
+    if len(_resume_rate_state) > 10000:
+        cutoff = now - RESUME_RATE_WINDOW_SECONDS
+        _resume_rate_state.clear()
+        _resume_rate_state[client_key] = [now]
+    return False
 
 
 def _groq_sdk_version() -> str:
@@ -157,6 +243,30 @@ async def reject_empty_voice_transcript_early(request: StarletteRequest, call_ne
 
 
 @app.middleware("http")
+async def protect_resume_processing(request: StarletteRequest, call_next):
+    resume_route = request.method == "POST" and (
+        request.url.path == "/api/onboarding/parse-resume"
+        or bool(re.match(r"^/api/candidate/[0-9a-fA-F-]{36}/resume/replace$", request.url.path))
+    )
+    if resume_route and request.url.path == "/api/onboarding/parse-resume":
+        client_key = request.client.host if request.client else "unknown"
+        if _resume_rate_limited(client_key):
+            return JSONResponse(status_code=429, content={"detail": "Too many resume-processing requests. Please try again later."})
+    if not resume_route:
+        return await call_next(request)
+    try:
+        await asyncio.wait_for(_resume_processing_semaphore.acquire(), timeout=1)
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=503, content={"detail": "Resume processing is busy. Please retry shortly."})
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=RESUME_PROCESSING_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=504, content={"detail": "Resume processing timed out. Please retry."})
+    finally:
+        _resume_processing_semaphore.release()
+
+
+@app.middleware("http")
 async def enforce_candidate_route_ownership(request: StarletteRequest, call_next):
     """Protect every /candidate/{id}/ resource, including newly added routes.
 
@@ -173,6 +283,17 @@ async def enforce_candidate_route_ownership(request: StarletteRequest, call_next
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def add_security_headers(request: StarletteRequest, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if _runtime_environment() in _PRODUCTION_ENVIRONMENTS:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 # ---------- Pydantic models ----------
@@ -244,6 +365,8 @@ class CouponApplyRequest(BaseModel):
 def _extract_pdf_text(file_bytes: bytes) -> tuple[str, bool]:
     """Extract text from PDF; fall back to OCR if text layer is thin."""
     reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+    if len(reader.pages) > MAX_RESUME_PAGES:
+        raise HTTPException(status_code=413, detail="Resume has too many pages.")
     text = "\n".join((p.extract_text() or "") for p in reader.pages).strip()
     if len(text) >= 100:
         return text, False
@@ -278,10 +401,36 @@ def _extract_word_text(file_bytes: bytes, extension: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=30,
     )
     if result.returncode != 0:
         raise ValueError("Unable to read the Word document")
     return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in bounded chunks and reject oversized content early."""
+    chunks = []
+    total = 0
+    while True:
+        used_unbounded_compat_read = False
+        try:
+            chunk = await file.read(min(MAX_UPLOAD_READ_CHUNK, max_bytes - total + 1))
+        except TypeError:
+            # Small unit-test fakes and older UploadFile-compatible wrappers
+            # may expose only read(). The production Starlette UploadFile
+            # supports bounded reads.
+            chunk = await file.read()
+            used_unbounded_compat_read = True
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+        chunks.append(chunk)
+        if used_unbounded_compat_read:
+            break
+    return b"".join(chunks)
 
 
 def _extract_resume_text(file_bytes: bytes, extension: str) -> tuple[str, bool]:
@@ -1499,6 +1648,7 @@ def _document_media_type(path: Path) -> str:
 
 
 def _issue_candidate_session_token(candidate_id: str) -> str:
+    signing_secret = _validated_candidate_session_secret()
     now = int(datetime.now(timezone.utc).timestamp())
     payload = {
         "sub": candidate_id,
@@ -1506,14 +1656,15 @@ def _issue_candidate_session_token(candidate_id: str) -> str:
         "exp": now + CANDIDATE_SESSION_TTL_SECONDS,
         "scope": "candidate",
     }
-    return jwt.encode(payload, CANDIDATE_SESSION_SECRET, algorithm="HS256")
+    return jwt.encode(payload, signing_secret, algorithm="HS256")
 
 
 def _verify_candidate_session_token(token: str, candidate_id: str) -> None:
     if not token:
         raise HTTPException(status_code=401, detail="Missing candidate session.")
+    signing_secret = _validated_candidate_session_secret()
     try:
-        payload = jwt.decode(token, CANDIDATE_SESSION_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, signing_secret, algorithms=["HS256"])
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid candidate session.")
     if payload.get("scope") != "candidate" or payload.get("sub") != candidate_id:
@@ -2843,7 +2994,6 @@ def _build_voice_intake_resume_from_notes(
     completed_turns is ALWAYS the union of previously persisted turns and
     newly parsed turns — never a replacement.
     """
-    print("VOICE DEBUG: entered _build_voice_intake_resume_from_notes()", flush=True)
     new_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
 
     existing_turns = (existing_resume or {}).get("completed_turns") or []
@@ -4002,13 +4152,24 @@ async def root():
 
 
 @api_router.post("/onboarding/parse-resume")
-async def parse_resume(file: UploadFile = File(...), existing_id: Optional[str] = None):
+async def parse_resume(
+    file: UploadFile = File(...),
+    existing_id: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    # Public onboarding may create a new candidate, but an existing-candidate
+    # continuation must prove ownership before any upload or processing work.
+    if existing_id:
+        _verify_candidate_session_token(_get_bearer_token(authorization), existing_id)
+
     filename = (file.filename or "").lower()
     extension = Path(filename).suffix
     if extension not in {".pdf", ".doc", ".docx"}:
         raise HTTPException(status_code=400, detail="Unsupported resume type. Please upload a PDF, DOC, or DOCX file.")
 
-    file_bytes = await file.read()
+    file_bytes = await _read_upload_limited(file, MAX_RESUME_BYTES)
+    if extension == ".pdf" and not file_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
     resume_text, used_ocr = _extract_resume_text(file_bytes, extension)
 
     if len(resume_text.strip()) < 50:
@@ -4108,13 +4269,18 @@ async def _seed_employment_gaps_after_parse(candidate_id: str, parsed: dict) -> 
 
 
 @api_router.post("/candidate/{candidate_id}/photo")
-async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
+async def upload_profile_photo(
+    candidate_id: str,
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(default=None),
+):
+    _authorize_candidate(candidate_id, authorization)
     existing = await _get_candidate_row(candidate_id)
     # Always derive storage and URLs from the row we found.  This prevents an
     # alias/stale client-side id from writing a photo under a different
     # candidate directory than the profile GET endpoint reads.
     canonical_candidate_id = str(existing.get("id") or existing.get("candidate_id") or candidate_id)
-    file_bytes = await file.read()
+    file_bytes = await _read_upload_limited(file, MAX_PROFILE_PHOTO_BYTES)
     ext = _validate_candidate_photo_upload(file.content_type or "", file_bytes)
     photo_version = uuid.uuid4().hex
 
@@ -4154,7 +4320,11 @@ async def upload_profile_photo(candidate_id: str, file: UploadFile = File(...)):
 
 
 @api_router.get("/candidate/{candidate_id}/photo/view")
-async def view_profile_photo(candidate_id: str):
+async def view_profile_photo(
+    candidate_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    _authorize_candidate(candidate_id, authorization)
     existing = await _get_candidate_row(candidate_id)
     canonical_candidate_id = str(existing.get("id") or existing.get("candidate_id") or candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
@@ -4175,7 +4345,11 @@ async def view_profile_photo(candidate_id: str):
 
 
 @api_router.delete("/candidate/{candidate_id}/photo")
-async def delete_profile_photo(candidate_id: str):
+async def delete_profile_photo(
+    candidate_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    _authorize_candidate(candidate_id, authorization)
     existing = await _get_candidate_row(candidate_id)
     raw_data = _parse_raw_data(existing.get("raw_data"))
     photo_path = raw_data.get("photo_file_path")
@@ -4414,7 +4588,8 @@ async def get_candidate_profile_strength(candidate_id: str, authorization: Optio
     return result
 
 @api_router.get("/candidate/{candidate_id}/profile/download")
-async def download_candidate_profile(candidate_id: str):
+async def download_candidate_profile(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     profile = await _get_candidate_profile_payload(candidate_id)
     candidate_row = await _get_candidate_row(candidate_id)
     profile["raw_data"] = _parse_raw_data(candidate_row.get("raw_data"))
@@ -4549,11 +4724,12 @@ async def delete_resume(candidate_id: str, authorization: Optional[str] = Header
 
 
 @api_router.post("/candidate/{candidate_id}/resume/verify")
-async def verify_resume_identity(candidate_id: str, file: UploadFile = File(...)):
+async def verify_resume_identity(candidate_id: str, file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
     """Parse a resume PDF and return the extracted name and email for identity pre-check."""
+    _authorize_candidate(candidate_id, authorization)
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF resumes are supported.")
-    file_bytes = await file.read()
+    file_bytes = await _read_upload_limited(file, MAX_RESUME_BYTES)
     resume_text, _ = _extract_pdf_text(file_bytes)
     if len(resume_text.strip()) < 50:
         raise HTTPException(status_code=400, detail="Resume appears empty or unreadable.")
@@ -8055,7 +8231,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     except Exception as e:
         _log_groq_chat_exception(e, groq_diagnostic_request_id)
         logger.exception("LLM chat failure")
-        raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
+        raise HTTPException(status_code=502, detail="The assistant service is temporarily unavailable.")
 
     clean_reply, profile_updates = _extract_profile_updates(raw_reply, last_user.content)
 
@@ -8444,6 +8620,7 @@ async def _ensure_schema():
 
 @app.on_event("startup")
 async def on_startup():
+    _validated_candidate_session_secret()
     await _ensure_schema()
     asyncio.ensure_future(_retry_worker())
     from app.job_ingestion.scheduler import start_scheduler
@@ -10047,7 +10224,8 @@ def _resume_editor_pdf_profile(values: dict, raw_data: dict) -> dict:
 
 
 @api_router.get("/candidate/{candidate_id}/resume/updated/download")
-async def download_updated_resume(candidate_id: str):
+async def download_updated_resume(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Download the PDF generated by the most recent Resume Editor save."""
     candidate = await _get_candidate_row(candidate_id)
     raw_data = _parse_raw_data(candidate.get("raw_data"))
@@ -10071,7 +10249,8 @@ async def download_updated_resume(candidate_id: str):
 
 
 @api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/resume/download")
-async def download_application_resume(candidate_id: str, rec_id: str):
+async def download_application_resume(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Persist and download the edited PDF for the selected application."""
     candidate = await _get_candidate_row(candidate_id)
     # Ownership and job/company lookup are server-authoritative; never trust a
@@ -10236,21 +10415,6 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
                 voice_intake_state["transcript_revision"] = int(request.transcript_revision)
             except (TypeError, ValueError):
                 pass
-    print("\n===== VOICE DEBUG =====", flush=True)
-    print("existing_status=", existing_vi.get("status"), flush=True)
-    print("existing_turns=", existing_vi.get("completed_turns") or [], flush=True)
-    print("new_turns=", completed_turns, flush=True)
-    print("pending_question=", pending_question, flush=True)
-    print("llm_completed=", (llm_analysis or {}).get("completed"), flush=True)
-    print("llm_next_question=", (llm_analysis or {}).get("next_question"), flush=True)
-    print("completed_turns=", voice_intake_state.get("completed_turns") or [], flush=True)
-    print("current_question=", voice_intake_state.get("current_question"), flush=True)
-    print("next_question=", voice_intake_state.get("next_question"), flush=True)
-    print("genuinely_new_completed_transcript=", genuinely_new_completed_transcript, flush=True)
-    print("is_completed=", voice_intake_state.get("status") == "completed", flush=True)
-    print("final_status=", voice_intake_state.get("status"), flush=True)
-    print("=======================", flush=True)
-
     # 4. Extract structured info via LLM
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
     voice_data = await _extract_voice_info(
@@ -10419,7 +10583,8 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
 # ---------- Mutual Interest endpoints ----------
 
 @api_router.get("/candidate/{candidate_id}/opportunities")
-async def get_opportunities(candidate_id: str):
+async def get_opportunities(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """
     Return recruiter-interested job opportunities for the given candidate.
     Scoped strictly by candidate_id — never returns another candidate's data.
@@ -10494,7 +10659,8 @@ class JobDismissRequest(BaseModel):
 
 
 @api_router.post("/candidate/{candidate_id}/opportunities/{rec_id}/respond")
-async def respond_to_opportunity(candidate_id: str, rec_id: str, body: OpportunityResponseIn):
+async def respond_to_opportunity(candidate_id: str, rec_id: str, body: OpportunityResponseIn, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """
     Store the candidate's interest/rejection for a specific opportunity.
     Enforces candidate_id ownership — a candidate cannot respond on behalf of another.
@@ -10809,7 +10975,7 @@ async def create_candidate_billing_order(candidate_id: str, body: CouponApplyReq
             "notes": {"candidate_id": candidate_id, "plan": RAZORPAY_PLAN_ID, "coupon": body.coupon_code or ""},
         })
     if response.is_error:
-        logger.error("Razorpay order creation failed: %s", response.text)
+        logger.error("Razorpay order creation failed with status %s", response.status_code)
         raise HTTPException(status_code=502, detail="Unable to start payment. Please try again.")
     order = response.json()
     subscription_id = str(uuid.uuid4())
@@ -10872,7 +11038,8 @@ async def razorpay_webhook(request: StarletteRequest):
 
 
 @api_router.get("/candidate/{candidate_id}/billing")
-async def get_candidate_billing(candidate_id: str):
+async def get_candidate_billing(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     await _get_candidate_row(candidate_id)
     await _ensure_candidate_billing_tables()
     async with SessionLocal() as db:
@@ -11093,14 +11260,16 @@ async def _claim_resume_fix_entitlement(candidate_id: str, candidate: dict, rec_
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/resume-fix-credit-claim")
-async def claim_resume_fix_credits(candidate_id: str, rec_id: str):
+async def claim_resume_fix_credits(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Charge a free candidate before opening a job-scoped resume editor."""
     candidate = await _get_candidate_row(candidate_id)
     return await _claim_resume_fix_entitlement(candidate_id, candidate, rec_id)
 
 
 @api_router.get("/candidate/{candidate_id}/resume-fix-credits")
-async def get_resume_fix_credit_balance(candidate_id: str):
+async def get_resume_fix_credit_balance(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Expose the backend-authoritative daily Fix My Resume balance."""
     candidate = await _get_candidate_row(candidate_id)
     return await _get_resume_fix_credit_balance(candidate_id, candidate)
@@ -11157,7 +11326,8 @@ async def _claim_daily_job_access(
     return True
 
 @api_router.get("/candidate/{candidate_id}/jobs")
-async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type: str | None = None, response: Response = None):
+async def get_candidate_jobs(candidate_id: str, request_more: bool = False, type: str | None = None, response: Response = None, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Return semantic job recommendations for this candidate, joined with job_descriptions."""
     candidate = await _get_candidate_row(candidate_id)
     from profile_strength_service import get_canonical_preferences
@@ -11680,7 +11850,14 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         ("projects", _merge_projects),
     ):
         if field in supplied and supplied[field]:
-            next_values[field] = merger(existing_values[field], supplied[field])
+            # The editor's skills list is an authoritative replacement.  A
+            # stale legacy skills column must not be resurrected when the
+            # editor intentionally omitted those entries.  Other collections
+            # remain additive for backward-compatible partial editor payloads.
+            if field == "skills":
+                next_values[field] = merger([], supplied[field])
+            else:
+                next_values[field] = merger(existing_values[field], supplied[field])
         else:
             next_values[field] = existing_values[field]
     if "certifications" in supplied and supplied["certifications"]:
@@ -11767,7 +11944,8 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
 
 
 @api_router.get("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
-async def get_job_match_improvement(candidate_id: str, rec_id: str):
+async def get_job_match_improvement(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Return only the selected job's gaps, scoped to an existing recommendation."""
     candidate = await _get_candidate_row(candidate_id)
     row = await _get_job_match_improvement_row(candidate_id, rec_id)
@@ -11816,9 +11994,12 @@ async def get_job_match_improvement(candidate_id: str, rec_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/match-improvement")
-async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImprovementRequest):
+async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImprovementRequest, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Persist candidate-confirmed profile edits, then reuse the normal matcher."""
-    guidance = await get_job_match_improvement(candidate_id, rec_id)  # ownership check; no daily-limit mutation
+    guidance = await get_job_match_improvement(
+        candidate_id, rec_id, authorization=authorization
+    )  # ownership check; no daily-limit mutation
     job_context = await _get_job_match_improvement_row(candidate_id, rec_id)
     previous_score = guidance["match_score"]
     before = await _get_candidate_row(candidate_id)
@@ -11900,7 +12081,8 @@ async def improve_job_match(candidate_id: str, rec_id: str, request: JobMatchImp
 
 
 @api_router.get("/candidate/{candidate_id}/tracked-jobs")
-async def get_tracked_jobs(candidate_id: str):
+async def get_tracked_jobs(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Return only jobs the candidate has explicitly tracked."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -11947,7 +12129,8 @@ async def get_tracked_jobs(candidate_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/track")
-async def track_job(candidate_id: str, rec_id: str):
+async def track_job(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Mark a recommendation as tracked by this candidate."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -11966,7 +12149,8 @@ async def track_job(candidate_id: str, rec_id: str):
 
 
 @api_router.delete("/candidate/{candidate_id}/jobs/{rec_id}/track")
-async def untrack_job(candidate_id: str, rec_id: str):
+async def untrack_job(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Remove tracking for a recommendation."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -11985,7 +12169,8 @@ async def untrack_job(candidate_id: str, rec_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/view")
-async def view_job(candidate_id: str, rec_id: str):
+async def view_job(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Mark a recommendation as viewed by this candidate."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -12004,7 +12189,8 @@ async def view_job(candidate_id: str, rec_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/dismiss")
-async def dismiss_job(candidate_id: str, rec_id: str, body: Optional[JobDismissRequest] = None):
+async def dismiss_job(candidate_id: str, rec_id: str, body: Optional[JobDismissRequest] = None, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Hide a recommendation (Not for me)."""
     await _get_candidate_row(candidate_id)
     hidden_reason = _clean_str(body.reason) if body else ""
@@ -12029,7 +12215,8 @@ async def dismiss_job(candidate_id: str, rec_id: str, body: Optional[JobDismissR
 
 
 @api_router.post("/candidate/{candidate_id}/jobs/{rec_id}/apply")
-async def apply_job(candidate_id: str, rec_id: str):
+async def apply_job(candidate_id: str, rec_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Record application: sets applied_at, updated_at, status, agency_id, job_role on this
     recommendation row only. Never touches candidates.job_id / agency_id / stage.
     One candidate may apply to many jobs; each row is independent.
@@ -12097,6 +12284,84 @@ LINKEDIN_CLIENT_ID = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+OAUTH_STATE_TTL_SECONDS = 10 * 60
+OAUTH_EXCHANGE_TTL_SECONDS = 60
+_oauth_exchange_store: dict[str, tuple[float, dict[str, Any]]] = {}
+_oauth_state_store: dict[str, dict[str, float]] = {"google": {}, "linkedin": {}}
+_oauth_pkce_store: dict[str, str] = {}
+
+
+def _create_oauth_exchange(payload: dict[str, Any]) -> str:
+    now = datetime.now(timezone.utc).timestamp()
+    for key, (expires_at, _) in list(_oauth_exchange_store.items()):
+        if expires_at <= now:
+            _oauth_exchange_store.pop(key, None)
+    code = secrets.token_urlsafe(32)
+    _oauth_exchange_store[code] = (now + OAUTH_EXCHANGE_TTL_SECONDS, payload)
+    return code
+
+
+def _remember_oauth_state(provider: str, state: str) -> None:
+    now = datetime.now(timezone.utc).timestamp()
+    states = _oauth_state_store[provider]
+    for key, expires_at in list(states.items()):
+        if expires_at <= now:
+            states.pop(key, None)
+    states[state] = now + OAUTH_STATE_TTL_SECONDS
+
+
+def _create_oauth_pkce(state: str) -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    _oauth_pkce_store[state] = verifier
+    return verifier, challenge
+
+
+def _consume_oauth_pkce(state: str) -> str:
+    return _oauth_pkce_store.pop(state, "")
+
+
+def _oauth_state_cookie_name(provider: str) -> str:
+    return f"{provider}_oauth_state"
+
+
+def _oauth_state_response(provider: str, state: str, payload: dict) -> JSONResponse:
+    response = JSONResponse(payload)
+    response.set_cookie(
+        key=_oauth_state_cookie_name(provider),
+        value=state,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=FRONTEND_URL.startswith("https://"),
+        samesite="lax",
+        path=f"/api/auth/{provider}",
+    )
+    return response
+
+
+def _validate_oauth_state(provider: str, returned_state: Optional[str], stored_state: Optional[str]) -> None:
+    if not returned_state or not stored_state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    if not hmac.compare_digest(returned_state, stored_state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    expires_at = _oauth_state_store.get(provider, {}).pop(returned_state, None)
+    if not expires_at or expires_at <= datetime.now(timezone.utc).timestamp():
+        raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
+
+
+def _consume_oauth_state(response: RedirectResponse, provider: str) -> None:
+    response.delete_cookie(
+        key=_oauth_state_cookie_name(provider),
+        path=f"/api/auth/{provider}",
+    )
+
+
+@api_router.post("/auth/session/exchange")
+async def exchange_oauth_session(exchange_code: str = Form(...)):
+    record = _oauth_exchange_store.pop(exchange_code, None)
+    if not record or record[0] <= datetime.now(timezone.utc).timestamp():
+        raise HTTPException(status_code=400, detail="Invalid or expired sign-in exchange.")
+    return record[1]
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -12107,22 +12372,34 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:30
 async def linkedin_init():
     if not LINKEDIN_CLIENT_ID:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
-    state = secrets.token_urlsafe(16)
+    state = secrets.token_urlsafe(32)
+    _remember_oauth_state("linkedin", state)
+    _, code_challenge = _create_oauth_pkce(state)
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": LINKEDIN_REDIRECT_URI,
         "state": state,
         "scope": "openid profile email",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     })
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{params}"
-    return {"auth_url": auth_url, "state": state}
+    return _oauth_state_response("linkedin", state, {"auth_url": auth_url, "state": state})
 
 
 @api_router.get("/auth/linkedin/callback")
-async def linkedin_callback(code: str, state: str):
+async def linkedin_callback(
+    code: str,
+    state: Optional[str] = None,
+    linkedin_oauth_state: Optional[str] = Cookie(default=None),
+):
     if not LINKEDIN_CLIENT_ID:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+    _validate_oauth_state("linkedin", state, linkedin_oauth_state)
+    code_verifier = _consume_oauth_pkce(state or "")
+    if not code_verifier:
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -12133,17 +12410,12 @@ async def linkedin_callback(code: str, state: str):
                 "redirect_uri": LINKEDIN_REDIRECT_URI,
                 "client_id": LINKEDIN_CLIENT_ID,
                 "client_secret": LINKEDIN_CLIENT_SECRET,
+                "code_verifier": code_verifier,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_resp.status_code != 200:
-            print("========== LINKEDIN TOKEN ERROR ==========")
-            print("STATUS:", token_resp.status_code)
-            print("RESPONSE:", token_resp.text)
-            print("REDIRECT URI USED:", LINKEDIN_REDIRECT_URI)
-            print("CLIENT ID PRESENT:", bool(LINKEDIN_CLIENT_ID))
-            print("CLIENT SECRET PRESENT:", bool(LINKEDIN_CLIENT_SECRET))
-            print("==========================================")
+            logger.warning("LinkedIn OAuth token exchange failed with status %s", token_resp.status_code)
             raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
         access_token = token_resp.json().get("access_token")
 
@@ -12185,19 +12457,23 @@ async def linkedin_callback(code: str, state: str):
     if test_email and email.strip().lower() == test_email.lower():
         needs_onboarding = True
 
-    profile_param = urllib.parse.quote_plus(
-        json.dumps({"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id})
-    )
-
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
+    exchange_code = _create_oauth_exchange({
+        "candidate_id": candidate_id,
+        "candidate_token": candidate_token,
+        "linkedin_profile": {"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id},
+        "needs_onboarding": needs_onboarding,
+    })
     if candidate_id and not needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}&candidate_token={candidate_token}"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
     elif candidate_id and needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&candidate_token={candidate_token}&linkedin_profile={profile_param}&needs_onboarding=true"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
     else:
-        redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
 
-    return RedirectResponse(url=redirect_url, status_code=302)
+    response = RedirectResponse(url=redirect_url, status_code=302)
+    _consume_oauth_state(response, "linkedin")
+    return response
 
 
 # ---------- Google OAuth ----------
@@ -12206,7 +12482,9 @@ async def linkedin_callback(code: str, state: str):
 async def google_init():
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
-    state = secrets.token_urlsafe(16)
+    state = secrets.token_urlsafe(32)
+    _remember_oauth_state("google", state)
+    _, code_challenge = _create_oauth_pkce(state)
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": GOOGLE_CLIENT_ID,
@@ -12214,15 +12492,25 @@ async def google_init():
         "state": state,
         "scope": "openid profile email",
         "access_type": "online",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     })
     auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
-    return {"auth_url": auth_url, "state": state}
+    return _oauth_state_response("google", state, {"auth_url": auth_url, "state": state})
 
 
 @api_router.get("/auth/google/callback")
-async def google_callback(code: str, state: str):
+async def google_callback(
+    code: str,
+    state: Optional[str] = None,
+    google_oauth_state: Optional[str] = Cookie(default=None),
+):
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
+    _validate_oauth_state("google", state, google_oauth_state)
+    code_verifier = _consume_oauth_pkce(state or "")
+    if not code_verifier:
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -12233,6 +12521,7 @@ async def google_callback(code: str, state: str):
                 "redirect_uri": GOOGLE_REDIRECT_URI,
                 "client_id": GOOGLE_CLIENT_ID,
                 "client_secret": GOOGLE_CLIENT_SECRET,
+                "code_verifier": code_verifier,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -12276,19 +12565,23 @@ async def google_callback(code: str, state: str):
     if test_email and email.strip().lower() == test_email.lower():
         needs_onboarding = True
 
-    profile_param = urllib.parse.quote_plus(
-        json.dumps({"name": name, "email": email, "picture": picture, "google_id": google_id})
-    )
-
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
+    exchange_code = _create_oauth_exchange({
+        "candidate_id": candidate_id,
+        "candidate_token": candidate_token,
+        "linkedin_profile": {"name": name, "email": email, "picture": picture, "google_id": google_id},
+        "needs_onboarding": needs_onboarding,
+    })
     if candidate_id and not needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/dashboard?candidate_id={candidate_id}&candidate_token={candidate_token}"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
     elif candidate_id and needs_onboarding:
-        redirect_url = f"{FRONTEND_URL}/onboarding?candidate_id={candidate_id}&candidate_token={candidate_token}&linkedin_profile={profile_param}&needs_onboarding=true"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
     else:
-        redirect_url = f"{FRONTEND_URL}/onboarding?linkedin_profile={profile_param}"
+        redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"
 
-    return RedirectResponse(url=redirect_url, status_code=302)
+    response = RedirectResponse(url=redirect_url, status_code=302)
+    _consume_oauth_state(response, "google")
+    return response
 
 
 # ---------- Service-to-service auth ----------
@@ -12418,7 +12711,8 @@ async def internal_candidate_notification(
 
 
 @api_router.get("/candidate/{candidate_id}/notifications")
-async def get_candidate_notifications(candidate_id: str):
+async def get_candidate_notifications(candidate_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Return candidate_activity_feed entries for this candidate, newest first."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -12448,7 +12742,8 @@ async def get_candidate_notifications(candidate_id: str):
 
 
 @api_router.post("/candidate/{candidate_id}/notifications/{notif_id}/read")
-async def mark_notification_read(candidate_id: str, notif_id: str):
+async def mark_notification_read(candidate_id: str, notif_id: str, authorization: Optional[str] = Header(default=None)):
+    _authorize_candidate(candidate_id, authorization)
     """Mark a candidate_activity_feed entry as read."""
     await _get_candidate_row(candidate_id)
     async with SessionLocal() as db:
@@ -12875,6 +13170,8 @@ async def reset_test_candidate(
     Requires TEST_RESET_SECRET in Authorization header.
     Only operates on the candidate identified by TEST_CANDIDATE_EMAIL.
     """
+    if _runtime_environment() in _PRODUCTION_ENVIRONMENTS:
+        raise HTTPException(status_code=404, detail="Not found.")
     if not TEST_RESET_SECRET:
         raise HTTPException(status_code=503, detail="Test reset is not configured.")
     if not TEST_CANDIDATE_EMAIL:

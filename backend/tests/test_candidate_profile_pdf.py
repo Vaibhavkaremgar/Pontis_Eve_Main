@@ -66,7 +66,7 @@ def test_candidate_profile_download_renders_clean_pdf_without_candidate_id_or_ex
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-123"))
+    response = asyncio.run(server.download_candidate_profile("cand-123", authorization=f"Bearer {server._issue_candidate_session_token('cand-123')}"))
     text = _extract_pdf_text(response.body)
 
     assert response.headers["content-type"] == "application/pdf"
@@ -139,7 +139,7 @@ def test_candidate_profile_download_paginates_large_profiles(monkeypatch):
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-456"))
+    response = asyncio.run(server.download_candidate_profile("cand-456", authorization=f"Bearer {server._issue_candidate_session_token('cand-456')}"))
     reader = PdfReader(io.BytesIO(response.body))
     text = _extract_pdf_text(response.body)
 
@@ -187,7 +187,7 @@ def test_candidate_profile_download_excludes_project_features_from_skills(monkey
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-789"))
+    response = asyncio.run(server.download_candidate_profile("cand-789", authorization=f"Bearer {server._issue_candidate_session_token('cand-789')}"))
     text = _extract_pdf_text(response.body)
     text_lower = text.lower()
 
@@ -234,7 +234,7 @@ def test_candidate_profile_download_normalizes_unicode_dashes(monkeypatch):
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-321"))
+    response = asyncio.run(server.download_candidate_profile("cand-321", authorization=f"Bearer {server._issue_candidate_session_token('cand-321')}"))
     text = _extract_pdf_text(response.body).lower()
 
     assert "third-party" in text

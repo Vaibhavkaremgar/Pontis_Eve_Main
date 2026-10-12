@@ -85,6 +85,10 @@ let webpackConfig = {
     },
     configure: (webpackConfig) => {
 
+      if (!isDevServer) {
+        webpackConfig.devtool = false;
+      }
+
       // Add ignored patterns to reduce watched directories
         webpackConfig.watchOptions = {
           ...webpackConfig.watchOptions,

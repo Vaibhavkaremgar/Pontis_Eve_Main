@@ -384,7 +384,11 @@ async def test_identity_mismatch_email_stops_before_duplicate_check():
                       new=AsyncMock(return_value={"name": "Other", "email": "other@example.com", "phone": ""})):
 
         with pytest.raises(HTTPException) as exc_info:
-            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+            await server.parse_resume(
+                file=_make_fake_file(),
+                existing_id="some-candidate-uuid",
+                authorization=f"Bearer {server._issue_candidate_session_token('some-candidate-uuid')}",
+            )
 
     assert exc_info.value.status_code == 422
     assert "email" in exc_info.value.detail.lower()
@@ -420,7 +424,11 @@ async def test_identity_mismatch_phone_stops_before_duplicate_check():
                       new=AsyncMock(return_value={"name": "Other", "email": "", "phone": "+1-555-999-9999"})):
 
         with pytest.raises(HTTPException) as exc_info:
-            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+            await server.parse_resume(
+                file=_make_fake_file(),
+                existing_id="some-candidate-uuid",
+                authorization=f"Bearer {server._issue_candidate_session_token('some-candidate-uuid')}",
+            )
 
     assert exc_info.value.status_code == 422
     assert "mobile" in exc_info.value.detail.lower() or "phone" in exc_info.value.detail.lower()
@@ -471,7 +479,11 @@ async def test_duplicate_resume_returns_409_after_identity_match():
         mock_sha.return_value.hexdigest.return_value = fake_fingerprint
 
         with pytest.raises(HTTPException) as exc_info:
-            await server.parse_resume(file=_make_fake_file(), existing_id="some-candidate-uuid")
+            await server.parse_resume(
+                file=_make_fake_file(),
+                existing_id="some-candidate-uuid",
+                authorization=f"Bearer {server._issue_candidate_session_token('some-candidate-uuid')}",
+            )
 
     assert exc_info.value.status_code == 409
     assert "Duplicate resume" in exc_info.value.detail

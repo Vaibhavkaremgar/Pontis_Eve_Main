@@ -747,9 +747,6 @@ export default function Onboarding() {
           candidateToken: candidateTokenParam || current.candidateToken || null,
         };
         saveOnboardingState(next);
-        console.log("[LinkedIn] current URL:", window.location.href);
-        console.log("[LinkedIn] linkedin_profile exists:", true);
-        console.log("[LinkedIn] persisted state:", next);
         return next;
       } catch (_) {}
     }
@@ -773,7 +770,6 @@ export default function Onboarding() {
     }
     // Clean the URL after saving the param
     if (isOAuthCallback || resumeVoiceParam) {
-      console.log("[LinkedIn] redirecting to: /onboarding");
       navigate("/onboarding", { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -939,7 +935,6 @@ export default function Onboarding() {
       // state. VoiceIntake uses this as a safe handoff while the new-candidate
       // state update is settling.
       const profileWithCandidateId = candidate_id ? { ...profile, candidate_id } : profile;
-      console.log("Resume parsing candidate_id:", candidate_id);
       // Immediately persist the new candidate_id to storage before any state update
       // so Dashboard always reads the correct ID even if it mounts before the effect runs
       if (candidate_id) {
@@ -977,7 +972,7 @@ export default function Onboarding() {
       setParsedProfile(profileWithCandidateId);
       setParsingReady(true);
     } catch (err) {
-      console.error("resume parse failed", err);
+      console.error("resume parse failed");
       if (err?.response?.status === 409) {
         setVerificationErrors(["duplicate_resume"]);
         setParsingReady(false);

@@ -80,7 +80,7 @@ def test_fix_my_resume_download_persists_exact_pdf_with_job_company_and_is_viewa
     monkeypatch.setattr(server, "_get_job_match_improvement_row", selected_job)
     monkeypatch.setattr(server, "SessionLocal", lambda: _Session(state))
 
-    response = asyncio.run(server.download_application_resume(candidate_id, recommendation_id))
+    response = asyncio.run(server.download_application_resume(candidate_id, recommendation_id, authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}"))
 
     persisted = tmp_path / candidate_id / "application_resumes" / recommendation_id / "pontis_sai_vignesh.pdf"
     assert response.path == str(persisted)
@@ -151,7 +151,7 @@ def test_application_resume_uses_generic_company_only_when_authoritative_company
     monkeypatch.setattr(server, "_get_job_match_improvement_row", selected_job)
     monkeypatch.setattr(server, "SessionLocal", lambda: _Session(state))
 
-    asyncio.run(server.download_application_resume(candidate_id, recommendation_id))
+    asyncio.run(server.download_application_resume(candidate_id, recommendation_id, authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}"))
 
     assert state["params"][-1]["company"] == "Company"
     assert state["params"][-1]["filename"] == "company_sai_vignesh.pdf"

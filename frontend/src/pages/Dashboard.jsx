@@ -312,7 +312,6 @@ function Dashboard() {
   // Load real profile from PostgreSQL on mount
   React.useEffect(() => {
     if (!candidateId) return;
-    console.log("Current candidateId:", candidateId);
     axios
       .get(`${API}/candidate/${candidateId}/profile`)
       .then((res) => {
@@ -460,13 +459,9 @@ function Dashboard() {
         avatar: data.photo_url ?? null,
         voice_intake_resume: data.voice_intake_resume ?? null,
       }));
-      console.log(
-        "[refreshProfile] voice_intake_resume from backend:",
-        JSON.stringify(data.voice_intake_resume ?? null)
-      );
       return directFresh;
     } catch (err) {
-      console.error("refreshProfile failed", err);
+      console.error("refreshProfile failed");
       return null;
     }
   }, [candidateId]);
@@ -707,7 +702,7 @@ function Dashboard() {
       // profile that was actually persisted by the backend.
       if (candidateId) await refreshProfile();
     } catch (err) {
-      console.error("chat error", err);
+      console.error("chat request failed");
       toast.error("Couldn't reach Eve right now.");
     } finally {
       if (turnId === latestChatTurnRef.current) setSending(false);
@@ -1257,9 +1252,6 @@ export default function DashboardGuard() {
   const candidateId = React.useMemo(() => {
     const fromUrl = searchParams.get("candidate_id");
     const candidateToken = searchParams.get("candidate_token");
-    console.log("[LinkedIn] current URL:", window.location.href);
-    console.log("[LinkedIn] candidate_id:", fromUrl);
-    console.log("[LinkedIn] persisted state:", loadOnboardingState());
     if (fromUrl) {
       const s = loadOnboardingState();
       saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl, candidateToken: candidateToken || s.candidateToken || null });
@@ -1271,7 +1263,6 @@ export default function DashboardGuard() {
   React.useEffect(() => {
     if (candidateId) {
       if (searchParams.get("candidate_id")) {
-        console.log("[LinkedIn] redirecting to: /dashboard");
         navigate("/dashboard", { replace: true });
       }
       return;

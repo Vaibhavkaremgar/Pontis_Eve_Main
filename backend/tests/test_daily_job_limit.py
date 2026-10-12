@@ -187,7 +187,7 @@ def _get_jobs(monkeypatch, state, day, refresh, candidate=None, response=None):
     monkeypatch.setattr(server, "SessionLocal", _JobsEndpointSessionFactory(state))
     import candidate_job_matching_service as matcher
     monkeypatch.setattr(matcher, "refresh_candidate_job_matches", refresh)
-    return asyncio.run(server.get_candidate_jobs("candidate", response=response))
+    return asyncio.run(server.get_candidate_jobs("candidate", response=response, authorization=f"Bearer {server._issue_candidate_session_token('candidate')}"))
 
 
 def test_jobs_exposes_all_matches_and_redacts_locked_free_jobs(monkeypatch):

@@ -312,7 +312,7 @@ def test_ats_download_endpoint_continues_to_work(monkeypatch):
     monkeypatch.setattr(server, "_get_candidate_profile_payload", fake_get_candidate_profile_payload)
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    response = asyncio.run(server.download_candidate_profile("cand-ats-001"))
+    response = asyncio.run(server.download_candidate_profile("cand-ats-001", authorization=f"Bearer {server._issue_candidate_session_token('cand-ats-001')}"))
     assert response.headers["content-type"] == "application/pdf"
     assert "filename=" in response.headers["content-disposition"]
     assert response.body.startswith(b"%PDF")

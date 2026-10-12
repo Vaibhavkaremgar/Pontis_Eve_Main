@@ -853,7 +853,7 @@ def test_dismiss_job_persists_hidden_reason(monkeypatch):
     monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
     monkeypatch.setattr(server, "_get_candidate_row", fake_get_candidate_row)
 
-    result = asyncio.run(server.dismiss_job("cand-1", "rec-1", server.JobDismissRequest(reason="Salary is too low")))
+    result = asyncio.run(server.dismiss_job("cand-1", "rec-1", server.JobDismissRequest(reason="Salary is too low"), authorization=f"Bearer {server._issue_candidate_session_token('cand-1')}"))
 
     assert result["status"] == "dismissed"
     update_sql, update_params = next(

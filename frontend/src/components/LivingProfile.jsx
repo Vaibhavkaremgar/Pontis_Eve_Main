@@ -1,5 +1,6 @@
 import React from "react";
 import axios from "axios";
+import { candidateAuthHeaders } from "../lib/candidateApiAuth";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole, BriefcaseBusiness, CircleDollarSign, Clock3, Monitor, Sparkles, UsersRound, Pencil, Plus, X } from "lucide-react";
 import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
@@ -271,15 +272,51 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const inputRef = React.useRef(null);
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
+  const [displayPhotoSrc, setDisplayPhotoSrc] = React.useState(null);
   const [deleting, setDeleting] = React.useState(false);
+  const photoObjectUrlRef = React.useRef(null);
   const resolvedPhotoSrc = React.useMemo(() => resolvePhotoSrc(photoUrl), [photoUrl]);
   const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
 
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
 
   React.useEffect(() => {
-    if (!resolvedPhotoSrc) return;
-    console.debug("[ProfilePhotoUpload] resolved image src:", resolvedPhotoSrc);
+    let cancelled = false;
+    if (photoObjectUrlRef.current) {
+      URL.revokeObjectURL(photoObjectUrlRef.current);
+      photoObjectUrlRef.current = null;
+    }
+    setDisplayPhotoSrc(null);
+
+    if (!resolvedPhotoSrc) {
+      return () => { cancelled = true; };
+    }
+
+    const isPrivatePhoto = /\/api\/candidate\/[^/]+\/photo\/view(?:[?#]|$)/i.test(resolvedPhotoSrc);
+    if (!isPrivatePhoto) {
+      setDisplayPhotoSrc(resolvedPhotoSrc);
+      return () => { cancelled = true; };
+    }
+
+    axios.get(resolvedPhotoSrc, {
+      responseType: "blob",
+      headers: candidateAuthHeaders(),
+    }).then((response) => {
+      if (cancelled) return;
+      const objectUrl = URL.createObjectURL(response.data);
+      photoObjectUrlRef.current = objectUrl;
+      setDisplayPhotoSrc(objectUrl);
+    }).catch(() => {
+      if (!cancelled) setDisplayPhotoSrc(null);
+    });
+
+    return () => {
+      cancelled = true;
+      if (photoObjectUrlRef.current) {
+        URL.revokeObjectURL(photoObjectUrlRef.current);
+        photoObjectUrlRef.current = null;
+      }
+    };
   }, [resolvedPhotoSrc]);
 
   const clearInput = () => {
@@ -331,9 +368,9 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 
   return (
     <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
-      {photoUrl ? (
+      {displayPhotoSrc ? (
         <img
-          src={resolvedPhotoSrc}
+          src={displayPhotoSrc}
           alt={user.name || "Candidate profile photo"}
           className="w-14 h-14 rounded-full object-cover"
         />
