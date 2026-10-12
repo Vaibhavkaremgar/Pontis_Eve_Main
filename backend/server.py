@@ -4370,7 +4370,7 @@ async def update_candidate_profile(candidate_id: str, body: ManualProfileUpdateR
     years = max(0.0, min(float(body.experience_years or 0), 80.0))
     async with SessionLocal() as db:
         await db.execute(text("""
-            UPDATE candidates SET name = :name, current_role = :headline, location = :location,
+            UPDATE candidates SET name = :name, "current_role" = :headline, location = :location,
                 experience_years = :experience_years, summary = :bio,
                 work_experience = CAST(:work_experience AS json), education = CAST(:education AS json),
                 skills = CAST(:skills AS json), raw_data = CAST(:raw_data AS jsonb),
