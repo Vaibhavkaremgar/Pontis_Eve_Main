@@ -105,3 +105,35 @@ def test_certification_normalization_keeps_name_not_candidate_sentence():
     assert server._normalize_certifications([
         "yes i ahve N8N workflow automation engineer certification",
     ]) == ["N8N workflow automation engineer"]
+
+
+def test_profile_question_reply_is_replaced_when_topic_is_not_eligible():
+    reply = "What is your highest level of education?"
+    eligible = [{"topic_id": "projects", "question": "Tell me about a project that best demonstrates your skills."}]
+    assert server._validate_profile_question_reply(reply, eligible).startswith(
+        "To complete your profile,"
+    )
+    assert "project that best demonstrates" in server._validate_profile_question_reply(reply, eligible)
+
+
+def test_profile_question_reply_allows_eligible_topic_and_normal_conversation():
+    eligible = [{"topic_id": "education", "question": "What's your highest level of education?"}]
+    assert server._validate_profile_question_reply(
+        "What's your highest level of education?", eligible
+    ) == "What's your highest level of education?"
+    assert server._validate_profile_question_reply("What do you think about this job?", []) == "What do you think about this job?"
+
+
+def test_profile_question_reply_removes_only_ineligible_question_from_mixed_response():
+    eligible = [{"topic_id": "projects", "question": "Tell me about a project that best demonstrates your skills."}]
+    reply = "Your profile is looking good. What's your highest level of education? Tell me about a project that best demonstrates your skills?"
+    result = server._validate_profile_question_reply(reply, eligible)
+    assert "highest level of education" not in result
+    assert "project that best demonstrates" in result
+    assert "Your profile is looking good" in result
+
+
+def test_profile_question_reply_with_no_eligible_topics_does_not_invent_one():
+    result = server._validate_profile_question_reply("What's your education?", [])
+    assert "education" not in result.lower()
+    assert "What would you like to explore?" in result

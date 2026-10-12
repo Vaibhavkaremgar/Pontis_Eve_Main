@@ -3371,12 +3371,26 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
 
     candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "")
     raw = _parse_raw_data(candidate.get("raw_data"))
+    resume_text = _normalize_profile_text(
+        candidate.get("resume_text") or candidate.get("parsed_resume_text") or ""
+    ).lower()
     # Resume parsing and voice extraction may have useful evidence persisted
     # before the canonical candidate columns are refreshed. Treat a completed
     # voice answer/known topic as evidence when deciding what is missing, but
     # never copy conversational prose into the profile field itself.
     voice_resume = _parse_raw_data(raw.get("voice_intake"))
     evidence_topics: set[str] = set()
+    # Use explicit resume section/credential markers as evidence when the LLM
+    # extraction missed a structured field. This is deliberately conservative:
+    # a resume existing alone never marks a topic complete.
+    if re.search(r"\b(education|academic background|university|college|bachelor|master|b\.tech|m\.tech|ph\.d)\b", resume_text):
+        evidence_topics.add("education")
+    if re.search(r"\b(projects?|portfolio|selected work)\b", resume_text):
+        evidence_topics.add("projects")
+    if re.search(r"\b(certifications?|certified|credentials?|licenses?)\b", resume_text):
+        evidence_topics.add("certifications")
+    if re.search(r"\b(skills?|technologies|technical stack|proficienc(?:y|ies))\b", resume_text):
+        evidence_topics.add("skills")
     for turn in voice_resume.get("completed_turns") or []:
         if _clean_str(turn.get("answer")):
             topic = _stable_intake_topic(_clean_str(turn.get("question")))
@@ -5043,6 +5057,58 @@ def _build_profile_completion_guidance(profile: dict) -> str:
         )
     except Exception:
         return "No profile completion guidance available."
+
+
+def _validate_profile_question_reply(reply: str, eligible_questions: list[dict]) -> str:
+    """Block an LLM profile question whose canonical topic is not eligible.
+
+    This is intentionally conservative: normal conversational replies and
+    questions that do not map to a canonical intake topic are untouched.
+    """
+    text = _clean_str(reply)
+    if not text or "?" not in text:
+        return reply
+    eligible_topics = {str(item.get("topic_id") or "") for item in eligible_questions}
+    profile_markers = (
+        "your profile", "tell me about", "what is your", "what's your",
+        "which locations", "what kinds of roles", "do you have any",
+        "how many years", "could you share your",
+    )
+    segments = re.split(r"(?<=[?])\s+", text)
+    kept: list[str] = []
+    removed_profile_question = False
+    for segment in segments:
+        topic = _stable_intake_topic(segment)
+        lower_segment = segment.lower()
+        # Prefer an eligible topic's explicit subject over broad keyword
+        # matches (for example, a project question often also contains the
+        # word "skills").
+        for eligible_topic in eligible_topics:
+            if eligible_topic == "projects" and "project" in lower_segment:
+                topic = eligible_topic
+            elif eligible_topic == "education" and re.search(r"\b(education|degree|university|college)\b", lower_segment):
+                topic = eligible_topic
+            elif eligible_topic == "certifications" and re.search(r"\b(certification|certificate)\b", lower_segment):
+                topic = eligible_topic
+        is_profile_question = "?" in segment and any(marker in segment.lower() for marker in profile_markers)
+        if is_profile_question and not topic.startswith("conversation_") and topic not in eligible_topics:
+            removed_profile_question = True
+            prefix_match = re.search(r"\b(?:what|which|do you|could you|tell me|how many)\b", segment, re.IGNORECASE)
+            if prefix_match and segment[:prefix_match.start()].strip():
+                kept.append(segment[:prefix_match.start()].strip())
+            continue
+        kept.append(segment)
+
+    if not removed_profile_question:
+        return reply
+    result = " ".join(part.strip() for part in kept if part.strip()).strip()
+    # If the response contained only an ineligible profile question, use one
+    # current eligible question, already selected from the authoritative list.
+    if not result and eligible_questions:
+        question = _clean_str(eligible_questions[0].get("question"))
+        if question and str(eligible_questions[0].get("topic_id") or "") in eligible_topics:
+            return f"To complete your profile, {question}"
+    return result or "I’ve captured the profile details available so far. What would you like to explore?"
 
 
 _CONTRADICTORY_PROFILE_COMPLETION_RE = re.compile(
@@ -7694,6 +7760,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     frontend_profile: Optional[dict] = None
     candidate_row_for_edit: Optional[dict] = None
     missing_preference_fields: list[str] = []
+    current_eligible_questions: list[dict] = []
     if request.candidate_id:
         try:
             row = await _get_candidate_row(request.candidate_id)
@@ -7719,6 +7786,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
             frontend_profile["missing_questions"] = await _build_authoritative_missing_questions(
                 row, frontend_profile["_prefs_row"]
             )
+            current_eligible_questions = list(frontend_profile["missing_questions"])
             profile_context, missing_fields = _build_profile_context(frontend_profile)
             missing_preference_fields = _missing_canonical_preference_fields(
                 row, frontend_profile["_prefs_row"]
@@ -7982,6 +8050,11 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                 )
             asyncio.ensure_future(_trigger_matching(request.candidate_id))
             await _sync_profile_updates_to_ledger(request.candidate_id, profile_updates, "chat")
+            # Rebuild the authoritative state after persistence. The initial
+            # profile snapshot predates this answer and must not drive final
+            # question validation.
+            refreshed_profile = await _get_candidate_profile_payload(request.candidate_id)
+            current_eligible_questions = list(refreshed_profile.get("missing_questions") or [])
         except Exception as e:
             logger.exception("Profile update failed: %s", e)
             clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
@@ -7990,6 +8063,15 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     # Do not show an empty model-generated profile heading after a successful
     # update; confirm the exact fields that survived persistence instead.
     clean_reply = _replace_generic_profile_update_reply(clean_reply, profile_updates)
+
+    # The LLM may still ask an out-of-band profile question despite the
+    # authoritative eligibility context. Validate the final text before it is
+    # returned; ordinary conversational questions remain untouched.
+    if frontend_profile is not None:
+        clean_reply = _validate_profile_question_reply(
+            clean_reply,
+            current_eligible_questions,
+        )
 
     # A direct candidate statement can demonstrate a skill already on their
     # profile even when it does not produce a normal profile field update.

@@ -41,6 +41,29 @@ async def test_new_salary_turn_uses_current_message_not_previous_assistant_reply
         )
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
 
+    class FakeMappings:
+        def fetchone(self):
+            return None
+        def fetchall(self):
+            return []
+
+    class FakeResult:
+        def mappings(self):
+            return FakeMappings()
+
+        def fetchall(self):
+            return []
+
+    class FakeSession:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+        async def execute(self, *_args, **_kwargs): return FakeResult()
+
+    # This unit test uses an isolated in-memory candidate fixture. Preserve the
+    # endpoint's production authorization implementation, but bypass ownership
+    # lookup here just as the other isolated chat test does below.
+    monkeypatch.setattr(server, "_authorize_candidate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "SessionLocal", lambda: FakeSession())
     monkeypatch.setattr(server, "_load_chat_window", load_window)
     monkeypatch.setattr(server, "_save_chat_window", save_window)
     monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
