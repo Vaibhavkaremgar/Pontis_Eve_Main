@@ -50,3 +50,16 @@ async def test_google_and_linkedin_init_bind_state_to_http_only_cookie(monkeypat
     assert "linkedin_oauth_state=" in linkedin_response.headers["set-cookie"]
     assert "HttpOnly" in google_response.headers["set-cookie"]
     assert "HttpOnly" in linkedin_response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_linkedin_top_level_init_redirect_sets_state_cookie(monkeypatch):
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "configured-linkedin-client")
+
+    response = await server.linkedin_init(redirect=True)
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://www.linkedin.com/oauth/v2/authorization?")
+    assert "linkedin_oauth_state=" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "SameSite=lax" in response.headers["set-cookie"]

@@ -103,30 +103,12 @@ export default function LinkedInAuth() {
   const handleLinkedIn = () => {
     setLoading(true); 
     setError(null);
-    fetch(`${BACKEND_URL}/api/auth/linkedin/init`, { credentials: "include" })
-      .then((r) => r.json())
-       .then((data) => {
-        sessionStorage.setItem("linkedin_oauth_state", data.state);
-        window.location.href = data.auth_url;
-      })
-      .catch(() => {
-        setError("Could not start sign-in. Please try again.");
-        setLoading(false);
-      });
+    window.location.assign(`${BACKEND_URL}/api/auth/linkedin/init?redirect=true`);
   };
   const handleGoogle = () => {
     setGoogleLoading(true);
     setError(null);
-    fetch(`${BACKEND_URL}/api/auth/google/init`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((data) => {
-        sessionStorage.setItem("google_oauth_state", data.state);
-        window.location.href = data.auth_url;
-      })
-      .catch(() => {
-        setError("Could not start Google sign-in. Please try again.");
-        setGoogleLoading(false);
-      });
+    window.location.assign(`${BACKEND_URL}/api/auth/google/init?redirect=true`);
   };
 
   return (
