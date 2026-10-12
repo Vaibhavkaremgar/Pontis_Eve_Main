@@ -15,6 +15,7 @@ import server
 @pytest.fixture(autouse=True)
 def _use_test_updated_resume_directory(monkeypatch, tmp_path):
     """Keep Resume Editor PDF artifacts out of the development document store."""
+    monkeypatch.setattr(server, "DOCS_DIR", tmp_path / "documents")
     monkeypatch.setattr(
         server, "_updated_resume_pdf_path",
         lambda candidate_id: tmp_path / candidate_id / "updated_resume.pdf",
@@ -34,6 +35,8 @@ class _Session:
     async def execute(self, statement, params=None):
         self.state["statement"] = str(statement)
         self.state["params"] = params or {}
+        self.state.setdefault("calls", []).append((str(statement), params or {}))
+        return _Result()
 
     async def commit(self):
         self.state["committed"] = True
@@ -45,6 +48,15 @@ class _SessionFactory:
 
     def __call__(self):
         return _Session(self.state)
+
+
+class _Result:
+    def fetchone(self):
+        return None
+
+
+def _candidate_update_params(state):
+    return next(params for sql, params in state["calls"] if "UPDATE candidates SET" in sql)
 
 
 def _candidate():
@@ -122,8 +134,9 @@ def test_resume_editor_save_persists_deduplicated_canonical_skills_and_parse(mon
     }))
 
     assert result["updated"] is True
-    saved_skills = json.loads(state["params"]["skills"])
-    saved_parse = json.loads(state["params"]["parsed_resume_json"])
+    persisted = _candidate_update_params(state)
+    saved_skills = json.loads(persisted["skills"])
+    saved_parse = json.loads(persisted["parsed_resume_json"])
     assert saved_skills == ["Python", "FastAPI", "PostgreSQL", "Java", "Spring Boot"]
     assert saved_parse["skills"] == saved_skills
     assert state["committed"] is True
@@ -150,7 +163,7 @@ def test_resume_editor_save_never_persists_a_delimited_skill_as_one_item(monkeyp
         "skills": ["React.js, Node.js; Frontend Development\nAI Applications"],
     }))
 
-    saved_skills = json.loads(state["params"]["skills"])
+    saved_skills = json.loads(_candidate_update_params(state)["skills"])
     assert all(skill in saved_skills for skill in ["React.js", "Node.js", "Frontend Development", "AI Applications"])
     assert all("React.js, Node.js" not in skill for skill in saved_skills)
 
@@ -172,9 +185,10 @@ def test_resume_editor_save_keeps_new_comma_separated_multi_word_skills_as_disti
         ],
     }))
 
-    saved_skills = json.loads(state["params"]["skills"])
-    saved_parse = json.loads(state["params"]["parsed_resume_json"])
-    assert saved_skills == [
+    persisted = _candidate_update_params(state)
+    saved_skills = json.loads(persisted["skills"])
+    saved_parse = json.loads(persisted["parsed_resume_json"])
+    assert saved_skills[-4:] == [
         "OpenCV", "Computer Vision", "Responsive Web Development", "Data Structures",
     ]
     assert saved_parse["skills"] == saved_skills
@@ -197,7 +211,7 @@ def test_resume_editor_save_canonicalizes_new_combined_skills_and_refreshes_gaps
         "skills": ["HTML5 Express.js FlaskCSS3"],
     }))
 
-    saved_skills = json.loads(state["params"]["skills"])
+    saved_skills = json.loads(_candidate_update_params(state)["skills"])
     assert saved_skills[-4:] == ["HTML5", "Express.js", "Flask", "CSS3"]
     assert all(skill != "HTML5 Express.js FlaskCSS3" for skill in saved_skills)
     assert server._job_missing_requirements(
@@ -239,7 +253,7 @@ def test_resume_editor_save_does_not_restore_legacy_members_omitted_by_editor(mo
         "skills": ["React.jsNode.js", "HTML5", "SQL"],
     }))
 
-    saved_skills = json.loads(state["params"]["skills"])
+    saved_skills = json.loads(_candidate_update_params(state)["skills"])
     assert saved_skills == ["React.js", "Node.js", "HTML5", "SQL"]
     assert server._job_missing_requirements(saved_skills, "", {"skills": saved_skills})["missing_skills"] == []
 
@@ -260,7 +274,7 @@ def test_resume_editor_save_repairs_exact_legacy_case_before_persisting(monkeypa
         "skills": ["CSS3", "CSS3 OpenCV Computer Vision"],
     }))
 
-    assert json.loads(state["params"]["skills"]) == ["CSS3", "OpenCV", "Computer Vision"]
+    assert json.loads(_candidate_update_params(state)["skills"]) == ["CSS3", "OpenCV", "Computer Vision"]
 
 
 def test_missing_skills_uses_normalized_canonical_profile_skills():
@@ -511,13 +525,37 @@ def test_updated_resume_download_serves_the_pdf_generated_by_resume_editor_save(
     monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
 
     asyncio.run(server._save_resume_editor_updates("candidate-1", {"skills": ["Python", "FastAPI"]}))
-    saved_raw = json.loads(state["params"]["raw_data"])
+    saved_raw = json.loads(_candidate_update_params(state)["raw_data"])
     candidate["raw_data"] = saved_raw
     response = asyncio.run(server.download_updated_resume("candidate-1"))
 
     assert response.path == saved_raw["updated_resume_file_path"]
     assert Path(response.path).read_bytes().startswith(b"%PDF")
     assert response.headers["content-type"] == "application/pdf"
+
+
+def test_resume_editor_save_promotes_generated_pdf_to_canonical_resume(monkeypatch):
+    state = {}
+    candidate = _candidate()
+    generated_pdf = b"%PDF-1.4 generated canonical resume"
+
+    async def get_candidate(_candidate_id):
+        return candidate
+
+    monkeypatch.setattr(server, "_get_candidate_row", get_candidate)
+    monkeypatch.setattr(server, "_build_candidate_profile_pdf", lambda _profile: generated_pdf)
+    monkeypatch.setattr(server, "SessionLocal", _SessionFactory(state))
+
+    asyncio.run(server._save_resume_editor_updates("candidate-1", {"skills": ["Python"]}))
+
+    candidate_update = _candidate_update_params(state)
+    stored_name = candidate_update["resume_file_path"]
+    stored_path = server._candidate_storage_dir("candidate-1") / "resume" / stored_name
+    assert stored_path.read_bytes() == generated_pdf
+    resume_insert = next(params for sql, params in state["calls"] if "INSERT INTO internal_candidate_resumes" in sql)
+    assert resume_insert["cid"] == "candidate-1"
+    assert resume_insert["path"] == stored_name
+    assert resume_insert["fingerprint"] == server.hashlib.sha256(generated_pdf).hexdigest()
 
 
 def test_updated_resume_download_returns_404_when_generated_pdf_is_missing(monkeypatch, tmp_path):

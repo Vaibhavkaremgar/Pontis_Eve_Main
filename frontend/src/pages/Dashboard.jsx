@@ -90,47 +90,111 @@ function ResizeHandle({ testId, subtle = false }) {
   );
 }
 
-// The document endpoint is the canonical source for an uploaded resume while
-// the profile endpoint is the canonical source for edits saved by Fix My
-// Resume.  Showing both here means a saved profile refresh is immediately
-// reflected without introducing another resume cache or storage mechanism.
-function ResumeContextPanel({ candidateId, documents, userProfile }) {
+// The documents endpoint and authenticated view endpoint both select the
+// newest persisted candidate resume, so the inline viewer never treats a
+// display filename as a file URL.
+function openAuthenticatedResume(candidateId, candidateToken) {
+  if (!candidateId) return;
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = `${API}/candidate/${candidateId}/resume/view`;
+  form.target = "_blank";
+  const token = document.createElement("input");
+  token.type = "hidden";
+  token.name = "candidate_token";
+  token.value = candidateToken || "";
+  form.appendChild(token);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+}
+
+function ResumeContextPanel({ candidateId, candidateToken, documents, docsLoading }) {
   const resume = documents?.resume;
-  const skills = Array.isArray(userProfile?.keySkills) ? userProfile.keySkills : [];
+  const [previewUrl, setPreviewUrl] = React.useState(null);
+  const [previewError, setPreviewError] = React.useState(false);
+
+  React.useEffect(() => {
+    let objectUrl = null;
+    let active = true;
+    setPreviewUrl(null);
+    setPreviewError(false);
+    if (!candidateId || !resume) return undefined;
+
+    axios.get(`${API}/candidate/${candidateId}/resume/view`, {
+      responseType: "blob",
+      headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
+    }).then(({ data }) => {
+      if (!active || !data || data.type && data.type !== "application/pdf") {
+        if (active) setPreviewError(true);
+        return;
+      }
+      objectUrl = URL.createObjectURL(data);
+      if (active) setPreviewUrl(objectUrl);
+    }).catch(() => {
+      if (active) setPreviewError(true);
+    });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [candidateId, candidateToken, resume]);
 
   return (
     <aside data-testid="right-resume-context" className="h-full overflow-y-auto eve-scroll bg-[#FDFDFC] px-8 py-6">
       <p className="text-[12px] font-semibold uppercase tracking-[.12em] text-[#7B6FB8]">Resume</p>
       <h1 className="mt-1 text-[16px] font-medium tracking-tight text-[#1F1F1F]">Latest saved resume</h1>
-      {resume ? (
-        <div className="mt-5 rounded-xl border border-black/[0.07] bg-white p-4">
-          <p className="break-words text-sm font-medium text-[#1F1F1F]">{resume.filename || "Uploaded resume"}</p>
-          <a
-            href={`${API}/candidate/${candidateId}/resume/view`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-block text-[12.5px] text-[#62578F] underline underline-offset-2"
-          >
-            View resume
-          </a>
+      {docsLoading ? (
+        <p data-testid="resume-preview-loading" className="mt-5 text-[13px] text-[#777571]">Loading resume preview…</p>
+      ) : resume ? (
+        <div className="mt-5 overflow-hidden rounded-xl border border-black/[0.07] bg-white">
+          <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-4 py-3">
+            <p className="min-w-0 truncate text-sm font-medium text-[#1F1F1F]">{resume.filename || "Uploaded resume"}</p>
+            <button type="button" onClick={() => openAuthenticatedResume(candidateId, candidateToken)} className="shrink-0 text-[12.5px] text-[#62578F] underline underline-offset-2">Open</button>
+          </div>
+          {previewUrl ? <iframe title="Resume preview" data-testid="resume-inline-preview" src={previewUrl} className="h-[620px] w-full bg-white" /> : previewError ? (
+            <div data-testid="resume-preview-fallback" className="p-4 text-[13px] leading-6 text-[#777571]">This resume can’t be previewed here. Use Open to view the saved document.</div>
+          ) : <p data-testid="resume-preview-loading" className="p-4 text-[13px] text-[#777571]">Loading resume preview…</p>}
         </div>
       ) : (
         <p data-testid="resume-context-empty" className="mt-5 text-[13px] leading-6 text-[#777571]">
           No resume has been uploaded yet.
         </p>
       )}
-      <section className="mt-6 border-t border-black/[0.06] pt-5">
-        <p className="text-[12px] font-medium text-[#4A4A48]">Saved profile details</p>
-        <p className="mt-2 text-sm font-medium text-[#1F1F1F]">{userProfile?.name || "Your profile"}</p>
-        {userProfile?.headline && <p className="mt-1 text-[13px] text-[#777571]">{userProfile.headline}</p>}
-        {skills.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5" data-testid="resume-context-skills">
-            {skills.map((skill) => <span key={skill} className="rounded-full bg-[#F1EFF7] px-2 py-1 text-[11px] text-[#514875]">{skill}</span>)}
-          </div>
-        )}
-      </section>
     </aside>
   );
+}
+
+function BillingContextPanel({ candidateId }) {
+  const [billing, setBilling] = React.useState(null);
+  React.useEffect(() => {
+    if (!candidateId) return;
+    axios.get(`${API}/candidate/${candidateId}/billing`).then(({ data }) => setBilling(data)).catch(() => setBilling({}));
+  }, [candidateId]);
+  if (!billing) return <aside data-testid="billing-context" className="h-full p-6 text-sm text-[#777571]">Loading billing summary…</aside>;
+  const latest = billing.history?.[0];
+  return <aside data-testid="billing-context" className="h-full overflow-y-auto eve-scroll bg-[#FDFDFC] px-8 py-6">
+    <p className="text-[12px] font-semibold uppercase tracking-[.12em] text-[#7B6FB8]">Billing summary</p>
+    <h2 className="mt-1 text-[16px] font-medium text-[#1F1F1F]">{billing.status || "Subscription"}</h2>
+    <section className="mt-5 rounded-xl border border-black/[0.07] bg-white p-4">
+      <p className="text-[12px] font-medium text-[#777571]">Latest payment</p>
+      {latest ? <><p className="mt-2 text-sm font-medium capitalize text-[#1F1F1F]">{latest.status || "Payment"}</p><p className="mt-1 text-[13px] text-[#777571]">₹{((latest.amount_paise || 0) / 100).toLocaleString("en-IN")}</p></> : <p className="mt-2 text-[13px] text-[#777571]">No payment history yet.</p>}
+    </section>
+  </aside>;
+}
+
+function SectionContextPanel({ tab, selectedJob, documents, opportunitiesCount }) {
+  const content = tab === "tracked"
+    ? { heading: "Tracked job details", body: selectedJob ? `${selectedJob.title || "Job"}${selectedJob.company ? ` at ${selectedJob.company}` : ""}` : "Select a tracked job to see its details." }
+    : tab === "documents"
+      ? { heading: "Document summary", body: documents?.resume ? `Current resume: ${documents.resume.filename}` : "No resume has been uploaded yet." }
+      : { heading: "Notifications", body: opportunitiesCount ? `${opportunitiesCount} notification${opportunitiesCount === 1 ? "" : "s"} available.` : "You’re all caught up." };
+  return <aside data-testid={`right-${tab}-context`} className="h-full overflow-y-auto eve-scroll bg-[#FDFDFC] px-8 py-6">
+    <p className="text-[12px] font-semibold uppercase tracking-[.12em] text-[#7B6FB8]">Context</p>
+    <h2 className="mt-1 text-[16px] font-medium text-[#1F1F1F]">{content.heading}</h2>
+    <p className="mt-5 rounded-xl border border-black/[0.07] bg-white p-4 text-[13px] leading-6 text-[#777571]">{content.body}</p>
+  </aside>;
 }
 
 function Dashboard() {
@@ -553,11 +617,14 @@ function Dashboard() {
       // Reload both resources so the card and Apply Now gauge use that final
       // backend score, rather than any prior score or calculated delta.
       refreshProfile();
+      axios.get(`${API}/candidate/${candidateId}/documents`, {
+        headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
+      }).then((res) => setDocuments(res.data)).catch(() => {});
       fetchJobs();
     };
     window.addEventListener("message", onProfileUpdated);
     return () => window.removeEventListener("message", onProfileUpdated);
-  }, [candidateId, fetchJobs, refreshProfile]);
+  }, [candidateId, candidateToken, fetchJobs, refreshProfile]);
 
   React.useEffect(() => {
     const showResumeFixSubscription = () => setShowSubscriptionPopup(true);
@@ -1136,8 +1203,9 @@ function Dashboard() {
 
         <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full">
           {displayedRightPanelTab === "resume" ? (
-            <ResumeContextPanel candidateId={candidateId} documents={documents} userProfile={userProfile} />
-          ) : displayedRightPanelTab === "billing" ? <BillingPage candidateId={candidateId} onUpgrade={() => setShowSubscriptionPlanPopup(true)} /> : <LivingProfile
+            <ResumeContextPanel candidateId={candidateId} candidateToken={candidateToken} documents={documents} docsLoading={docsLoading} />
+          ) : displayedRightPanelTab === "billing" ? <BillingContextPanel candidateId={candidateId} />
+            : ["tracked", "documents", "opportunities"].includes(displayedRightPanelTab) ? <SectionContextPanel tab={displayedRightPanelTab} selectedJob={selectedJob} documents={documents} opportunitiesCount={opportunitiesCount} /> : <LivingProfile
             activeTab={displayedRightPanelTab}
             userProfile={userProfile}
             jobs={availableJobs}

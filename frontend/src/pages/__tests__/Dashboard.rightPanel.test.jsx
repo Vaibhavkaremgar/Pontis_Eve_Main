@@ -23,6 +23,7 @@ function setupAxios({ profiles = [profile()], resume = { filename: "uploaded-res
   axios.get.mockImplementation((url) => {
     if (url.includes("/profile")) return Promise.resolve({ data: profiles[Math.min(profileCall++, profiles.length - 1)] });
     if (url.includes("/documents")) return Promise.resolve({ data: { resume, certificates: [] } });
+    if (url.includes("/resume/view")) return Promise.resolve({ data: new Blob(["%PDF-1.4"], { type: "application/pdf" }) });
     if (url.includes("/chat")) return Promise.resolve({ data: { messages: [] } });
     if (url.includes("/jobs") || url.includes("/opportunities") || url.includes("/notifications")) return Promise.resolve({ data: [] });
     if (url.includes("/billing")) return Promise.resolve({ data: {} });
@@ -34,11 +35,12 @@ async function flush() { for (let i = 0; i < 10; i += 1) await act(async () => P
 function click(container, id) { act(() => container.querySelector(`[data-testid="${id}"]`).click()); }
 
 describe("Dashboard three-panel context", () => {
-  beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
+  beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); global.URL.createObjectURL = jest.fn(() => "blob:resume"); global.URL.revokeObjectURL = jest.fn(); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
 
   it("shows job cards in the middle and the uploaded resume on the right", async () => {
     setupAxios(); const view = renderDashboard(); await flush();
     expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=resume-inline-preview]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
   });
 
@@ -54,12 +56,12 @@ describe("Dashboard three-panel context", () => {
     expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("intern-resume.pdf"); view.unmount();
   });
 
-  it("uses the refreshed Fix My Resume profile, rather than reverting to uploaded data", async () => {
+  it("refreshes the canonical resume document after Fix My Resume saves", async () => {
     setupAxios({ profiles: [profile(), profile({ keySkills: ["React", "TypeScript"] })] }); const view = renderDashboard(); await flush();
     await act(async () => window.dispatchEvent(new MessageEvent("message", { data: { type: "eve:candidate-profile-updated", candidateId: "cand-123" }, origin: window.location.origin })));
     await flush();
-    expect(view.container.querySelector("[data-testid=resume-context-skills]").textContent).toContain("TypeScript");
-    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining("/documents"), expect.any(Object));
+    expect(view.container.querySelector("[data-testid=resume-inline-preview]")).toBeTruthy(); view.unmount();
   });
 
   it("shows chat with the profile context", async () => {
@@ -76,11 +78,13 @@ describe("Dashboard three-panel context", () => {
 
   it.each(["tracked", "documents", "opportunities"])("renders %s in the middle and right contextual panels", async (tab) => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, `nav-tab-${tab}`); await flush();
-    expect(view.container.querySelectorAll(`[data-testid=living-profile-${tab}]`)).toHaveLength(2); view.unmount();
+    expect(view.container.querySelectorAll(`[data-testid=living-profile-${tab}]`)).toHaveLength(1);
+    expect(view.container.querySelector(`[data-testid=right-${tab}-context]`)).toBeTruthy(); view.unmount();
   });
 
-  it("renders billing in both contextual panels", async () => {
+  it("renders billing only in the middle with a complementary summary on the right", async () => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "nav-tab-billing"); await flush();
-    expect(view.container.querySelectorAll("[data-testid=billing-page]")).toHaveLength(2); view.unmount();
+    expect(view.container.querySelectorAll("[data-testid=billing-page]")).toHaveLength(1);
+    expect(view.container.querySelector("[data-testid=billing-context]")).toBeTruthy(); view.unmount();
   });
 });
