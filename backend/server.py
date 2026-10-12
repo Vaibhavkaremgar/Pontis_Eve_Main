@@ -204,6 +204,24 @@ class CandidateHelpRequest(BaseModel):
     message: str
 
 
+class ManualProfileUpdateRequest(BaseModel):
+    """Candidate-authored replacement values from the profile editor."""
+    name: str = ""
+    headline: str = ""
+    location: str = ""
+    experience_years: Optional[float] = None
+    availability: str = ""
+    salary_expectation: str = ""
+    bio: str = ""
+    work_experience: List[Dict[str, Any]] = Field(default_factory=list)
+    education: List[Dict[str, Any]] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    preferred_roles: List[str] = Field(default_factory=list)
+    additional_information: str = ""
+    hobbies: List[str] = Field(default_factory=list)
+
+
 class JobMatchImprovementRequest(BaseModel):
     """Edits to the uploaded resume's canonical representation for one recommendation."""
     profile_updates: Dict[str, Any] = Field(default_factory=dict)
@@ -4303,6 +4321,68 @@ async def get_candidate_chat(candidate_id: str, authorization: Optional[str] = H
 @api_router.get("/candidate/{candidate_id}/profile")
 async def get_candidate_profile(candidate_id: str, authorization: Optional[str] = Header(default=None)):
     _authorize_candidate(candidate_id, authorization)
+    return await _get_candidate_profile_payload(candidate_id)
+
+
+@api_router.put("/candidate/{candidate_id}/profile")
+async def update_candidate_profile(candidate_id: str, body: ManualProfileUpdateRequest, authorization: Optional[str] = Header(default=None)):
+    """Replace every editable profile section with candidate-authored values."""
+    _authorize_candidate(candidate_id, authorization)
+    existing = await _get_candidate_row(candidate_id)
+    raw = _parse_raw_data(existing.get("raw_data"))
+    parsed = _parse_raw_data(existing.get("parsed_resume_json"))
+
+    def clean_text(value: Any, limit: int = 5000) -> str:
+        return str(value or "").strip()[:limit]
+
+    def clean_list(values: list[Any], limit: int = 100) -> list[str]:
+        result: list[str] = []
+        for value in values[:limit]:
+            item = clean_text(value, 300)
+            if item and item.casefold() not in {entry.casefold() for entry in result}:
+                result.append(item)
+        return result
+
+    work_experience = []
+    for record in body.work_experience[:50]:
+        item = {key: clean_text(record.get(key), 5000 if key == "description" else 300) for key in ("title", "company", "dates", "description")}
+        if item["title"] or item["company"]:
+            work_experience.append(item)
+    education = []
+    for record in body.education[:30]:
+        item = {key: clean_text(record.get(key), 300) for key in ("degree", "institution", "dates")}
+        if item["degree"] or item["institution"]:
+            education.append(item)
+
+    skills = clean_list(body.skills)
+    certifications = clean_list(body.certifications)
+    preferred_roles = clean_list(body.preferred_roles)
+    hobbies = clean_list(body.hobbies)
+    availability = clean_text(body.availability, 200)
+    raw.update({
+        "availability": availability, "notice_period": availability,
+        "expected_salary": clean_text(body.salary_expectation, 200),
+        "certifications": certifications, "preferred_roles": preferred_roles,
+        "additional_information": clean_text(body.additional_information),
+        "hobbies": hobbies, "interests": hobbies,
+    })
+    parsed.update({"work_experience": work_experience, "education": education, "skills": skills, "certifications": certifications})
+    years = max(0.0, min(float(body.experience_years or 0), 80.0))
+    async with SessionLocal() as db:
+        await db.execute(text("""
+            UPDATE candidates SET name = :name, current_role = :headline, location = :location,
+                experience_years = :experience_years, summary = :bio,
+                work_experience = CAST(:work_experience AS json), education = CAST(:education AS json),
+                skills = CAST(:skills AS json), raw_data = CAST(:raw_data AS jsonb),
+                parsed_resume_json = CAST(:parsed_resume AS jsonb), updated_at = now()
+            WHERE id = :cid
+        """), {
+            "cid": candidate_id, "name": clean_text(body.name, 300), "headline": clean_text(body.headline, 300),
+            "location": clean_text(body.location, 300), "experience_years": years, "bio": clean_text(body.bio),
+            "work_experience": json.dumps(work_experience), "education": json.dumps(education), "skills": json.dumps(skills),
+            "raw_data": json.dumps(raw), "parsed_resume": json.dumps(parsed),
+        })
+        await db.commit()
     return await _get_candidate_profile_payload(candidate_id)
 
 

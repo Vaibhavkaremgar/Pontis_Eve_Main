@@ -786,33 +786,36 @@ function Dashboard() {
       )}
 
       {/* Dashboard top header with Bell */}
-      <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 sm:gap-3 sm:px-5 border-b border-black/[0.05]">
+      <div className="shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 sm:px-5 border-b border-black/[0.05]">
+        <div aria-hidden="true" />
         {userProfile.strengthPercent < 90 && (
-          <span data-testid="profile-90-navbar-guidance" className="min-w-0 text-right text-xs leading-5 text-[#514875] font-semibold sm:whitespace-nowrap">
+          <span data-testid="profile-90-navbar-guidance" className="col-start-2 min-w-0 text-center text-xs leading-5 text-[#514875] font-semibold sm:whitespace-nowrap">
             Complete your profile to 90% to get personalized job matches.
           </span>
         )}
-        {resumeFixCreditBalance != null && (
-          <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
-            {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits
-          </span>
-        )}
-        <button
-          data-testid="header-bell-btn"
-          onClick={() => handleSidebarTabChange("opportunities")}
-          className="relative p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
-          aria-label="Notifications"
-        >
-          <Bell className="w-[18px] h-[18px]" strokeWidth={1.5} />
-          {opportunitiesCount > 0 && (
-            <span
-              data-testid="header-bell-badge"
-              className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#1F1F1F] text-white text-[9px] font-medium flex items-center justify-center"
-            >
-              {opportunitiesCount}
+        <div className="col-start-3 flex items-center justify-self-end gap-2 sm:gap-3">
+          {resumeFixCreditBalance != null && (
+            <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
+              {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits
             </span>
           )}
-        </button>
+          <button
+            data-testid="header-bell-btn"
+            onClick={() => handleSidebarTabChange("opportunities")}
+            className="relative p-1.5 rounded-lg text-[#4A4A48] hover:bg-black/[0.04] transition-colors"
+            aria-label="Notifications"
+          >
+            <Bell className="w-[18px] h-[18px]" strokeWidth={1.5} />
+            {opportunitiesCount > 0 && (
+              <span
+                data-testid="header-bell-badge"
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#1F1F1F] text-white text-[9px] font-medium flex items-center justify-center"
+              >
+                {opportunitiesCount}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Weak profile popup */}
@@ -1052,6 +1055,7 @@ function Dashboard() {
             onCertDeleted={handleCertDeleted}
             onInterested={fetchJobs}
             onPhotoChange={handlePhotoChange}
+            onProfileUpdated={refreshProfile}
             onJobViewed={(jobId) =>
               setAvailableJobs((prev) =>
                 prev.map((j) => (j.id === jobId ? { ...j, viewed: true } : j))
