@@ -452,13 +452,11 @@ const editorRemoveButton = "inline-flex h-8 w-8 shrink-0 items-center justify-ce
 
 function EditorRecordCard({ children, onRemove, removeLabel, className = "" }) {
   return (
-    <div className={`mb-3 rounded-xl border p-3 ${className}`}>
-      <div className="mb-2 flex justify-end">
-        <button type="button" onClick={onRemove} className={editorRemoveButton} aria-label={removeLabel}>
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      {children}
+    <div className="relative mb-3 rounded-xl border p-3">
+      <button type="button" onClick={onRemove} className={`absolute right-2 top-2 ${editorRemoveButton}`} aria-label={removeLabel}>
+        <X className="h-4 w-4" />
+      </button>
+      <div className={`pt-8 ${className}`}>{children}</div>
     </div>
   );
 }
