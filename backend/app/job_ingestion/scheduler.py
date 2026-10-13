@@ -35,6 +35,7 @@ _scheduler: AsyncIOScheduler | None = None
 _sync_lock: asyncio.Lock | None = None
 
 
+
 async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, current_ats_ids: set[str]) -> list[str]:
     """Close jobs absent from a *complete successful* current ATS board.
 
