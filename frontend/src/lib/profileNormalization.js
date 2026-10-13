@@ -225,6 +225,41 @@ function formatExperienceDateRange(exp) {
 
 // Education does not inherit the work-history rule that assumes a missing end
 // date means an active role. "Present" is shown only when explicitly supplied.
+function formatEducationDateLabel(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  if (isOpenEndedExperienceValue(text)) return "Present";
+
+  const yearOnly = text.match(/^(\d{4})$/);
+  if (yearOnly) return yearOnly[1];
+
+  const yearMonth = text.match(/^(\d{4})[-/.](\d{1,2})$/);
+  if (yearMonth) {
+    const month = Number(yearMonth[2]);
+    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${yearMonth[1]}` : "";
+  }
+
+  const monthYear = text.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (monthYear) {
+    const month = EXPERIENCE_MONTHS.get(monthYear[1].toLowerCase());
+    return month != null ? `${MONTH_LABELS[month]} ${monthYear[2]}` : "";
+  }
+
+  const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (iso) {
+    const month = Number(iso[2]);
+    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${iso[1]}` : "";
+  }
+
+  const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (dayFirst) {
+    const month = Number(dayFirst[2]);
+    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${dayFirst[3]}` : "";
+  }
+
+  return "";
+}
+
 function formatEducationDateRange(education) {
   if (!education || typeof education !== "object") return "";
 
@@ -243,10 +278,10 @@ function formatEducationDateRange(education) {
     }
   }
 
-  const startLabel = formatExperienceDateLabel(start);
-  const endLabel = formatExperienceDateLabel(end);
+  const startLabel = formatEducationDateLabel(start);
+  const endLabel = formatEducationDateLabel(end);
   if (startLabel && endLabel) return `${startLabel} — ${endLabel}`;
-  return endLabel || startLabel || rawDates;
+  return endLabel || startLabel;
 }
 
 function extractExperienceSortValues(exp) {
@@ -871,7 +906,7 @@ function normalizeEducation(education) {
     const key = educationKey(entry);
     if (indexByKey.has(key)) {
       const target = merged[indexByKey.get(key)];
-      ["degree", "institution", "dates", "duration", "start_date", "end_date", "field_of_study", "location", "description"].forEach(
+      ["degree", "institution", "dates", "duration", "start_date", "startDate", "end_date", "endDate", "field_of_study", "location", "description", "cgpa", "CGPA", "gpa", "GPA", "percentage", "percent", "grade", "score", "marks"].forEach(
         (field) => {
           if (!normalizeText(target[field]) && normalizeText(entry[field])) {
             target[field] = normalizeText(entry[field]);
@@ -886,7 +921,9 @@ function normalizeEducation(education) {
 
   return merged.map((entry) => {
     const formatted = formatEducationDateRange(entry);
-    return formatted ? { ...entry, dates: formatted } : entry;
+    // Keep raw source fields intact, but never pass an invalid date string to
+    // the display layer.
+    return { ...entry, dates: formatted };
   });
 }
 

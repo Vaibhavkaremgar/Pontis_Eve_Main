@@ -285,7 +285,7 @@ describe("LivingProfile experience toggle", () => {
     expect(rows[0].textContent).not.toMatch(/Project \d+/);
   });
 
-  it("renders education start and end years as a range", () => {
+  it("renders education start and end dates at month precision", () => {
     view = renderLivingProfile({
       userProfile: {
         education: [
@@ -301,7 +301,27 @@ describe("LivingProfile experience toggle", () => {
     });
 
     const row = view.container.querySelector('[data-testid="education-row-education-masters"]');
-    expect(row.textContent).toContain("2020 – 2022");
+    expect(row.textContent).toContain("Aug 2020 — May 2022");
+  });
+
+  it("renders month-year dates and available education scores", () => {
+    view = renderLivingProfile({
+      userProfile: {
+        education: [
+          { id: "bachelors", degree: "B.Tech", institution: "University", start_date: "2020-01", end_date: "2024-05", cgpa: "8.5" },
+          { id: "intermediate", degree: "Intermediate", institution: "College", start_date: "2018", end_date: "2020", percentage: "92%" },
+          { id: "ssc", degree: "SSC", institution: "School", end_date: "2017", grade: "A+" },
+          { id: "no-score", degree: "Certificate", institution: "Institute", end_date: "invalid" },
+        ],
+      },
+    });
+
+    expect(view.container.querySelector('[data-testid="education-row-bachelors"]').textContent).toContain("Jan 2020");
+    expect(view.container.querySelector('[data-testid="education-row-bachelors"]').textContent).toContain("CGPA: 8.5");
+    expect(view.container.querySelector('[data-testid="education-row-intermediate"]').textContent).toContain("Percentage: 92%");
+    expect(view.container.querySelector('[data-testid="education-row-ssc"]').textContent).toContain("Grade: A+");
+    expect(view.container.querySelector('[data-testid="education-row-no-score"]').textContent).not.toContain("null");
+    expect(view.container.textContent).not.toContain("Invalid Date");
   });
 
   it("renders availability and salary expectation as separate profile header fields", () => {

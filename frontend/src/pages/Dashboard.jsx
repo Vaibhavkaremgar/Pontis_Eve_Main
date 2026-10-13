@@ -203,6 +203,9 @@ function Dashboard() {
   const [candidateToken] = React.useState(() => loadOnboardingState().candidateToken ?? null);
   const isOpenToMatches = stored.isOpenToMatches ?? true;
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const leftPanelRef = React.useRef(null);
+  const expandedSidebarSizeRef = React.useRef(12);
 
   const [showWeakProfilePopup, setShowWeakProfilePopup] = React.useState(false);
   const popupShownThisSessionRef = React.useRef(false);
@@ -297,6 +300,18 @@ function Dashboard() {
   // These section interfaces already contain their complete workflows. Hide
   // their supplementary context panel so the content can use all remaining width.
   const usesSingleContentPanel = ["tracked", "documents", "opportunities", "billing"].includes(activeSidebarTab);
+
+  const toggleSidebar = React.useCallback(() => {
+    const leftPanel = leftPanelRef.current;
+    if (sidebarCollapsed) {
+      leftPanel?.resize(expandedSidebarSizeRef.current);
+    } else {
+      const currentSize = leftPanel?.getSize();
+      if (currentSize && currentSize > 8) expandedSidebarSizeRef.current = currentSize;
+      leftPanel?.resize(8);
+    }
+    setSidebarCollapsed((value) => !value);
+  }, [sidebarCollapsed]);
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
@@ -982,7 +997,7 @@ function Dashboard() {
       )}
 
       <PanelGroup direction="horizontal" className="flex-1 min-h-0">
-        <Panel id="left-panel" order={1} defaultSize={12} minSize={12} maxSize={28} className="h-full">
+        <Panel ref={leftPanelRef} id="left-panel" order={1} defaultSize={12} minSize={8} maxSize={28} className="h-full min-w-[44px] transition-[flex] duration-200 ease-in-out" data-testid="left-panel" data-collapsed={sidebarCollapsed ? "true" : "false"}>
           <Sidebar
             activeTab={activeSidebarTab}
             setActiveTab={handleSidebarTabChange}
@@ -993,6 +1008,8 @@ function Dashboard() {
             onLogout={handleLogout}
             onSettings={() => setSettingsOpen(true)}
             onGuidanceClick={handleProfileGuidanceClick}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={toggleSidebar}
           />
         </Panel>
 

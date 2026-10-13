@@ -8,14 +8,14 @@ import { saveOnboardingState } from "../../lib/onboardingStorage";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 jest.mock("axios");
 jest.mock("react-router-dom", () => ({ useNavigate: () => jest.fn(), useSearchParams: () => [new URLSearchParams(), jest.fn()] }), { virtual: true });
-jest.mock("../../components/Sidebar", () => ({ setActiveTab }) => <div>{["jobs", "tracked", "profile", "documents", "opportunities", "billing"].map((id) => <button key={id} data-testid={`nav-tab-${id}`} onClick={() => setActiveTab(id)}>{id}</button>)}</div>);
+jest.mock("../../components/Sidebar", () => ({ setActiveTab, collapsed, onToggleCollapsed }) => <div data-testid="sidebar" data-collapsed={collapsed ? "true" : "false"}><button data-testid="sidebar-collapse-btn" onClick={onToggleCollapsed}>toggle</button>{["jobs", "tracked", "profile", "documents", "opportunities", "billing"].map((id) => <button key={id} data-testid={`nav-tab-${id}`} onClick={() => setActiveTab(id)}>{id}</button>)}</div>);
 jest.mock("../../components/ChatHub", () => (props) => <div data-testid="chat-hub"><button data-testid="chat-mic-btn" onClick={props.onMicClick}>mic</button></div>);
 jest.mock("../../components/LivingProfile", () => ({ __esModule: true, default: ({ activeTab }) => <div data-testid={`living-profile-${activeTab}`} />, JobsTab: () => <div data-testid="jobs-deck" /> }));
 jest.mock("../../components/BillingPage", () => () => <div data-testid="billing-page" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
 jest.mock("react-resizable-panels", () => ({
   PanelGroup: ({ children }) => <div>{children}</div>,
-  Panel: ({ children, id, className, "data-testid": testId, "data-single-content-panel": singleContentPanel }) => <div id={id} className={className} data-testid={testId} data-single-content-panel={singleContentPanel}>{children}</div>,
+  Panel: ({ children, id, className, "data-testid": testId, "data-single-content-panel": singleContentPanel, "data-collapsed": collapsed }) => <div id={id} className={className} data-testid={testId} data-single-content-panel={singleContentPanel} data-collapsed={collapsed}>{children}</div>,
   PanelResizeHandle: ({ "data-testid": testId }) => <div data-testid={testId} />,
 }));
 jest.mock("sonner", () => ({ Toaster: () => null, toast: { error: jest.fn(), success: jest.fn() } }));
@@ -48,6 +48,18 @@ describe("Dashboard three-panel context", () => {
     expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("false");
     expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
+  });
+
+  it("keeps the content and right panels mounted while the sidebar is collapsed", async () => {
+    setupAxios(); const view = renderDashboard(); await flush();
+    expect(view.container.querySelector("[data-testid=left-panel]").dataset.collapsed).toBe("false");
+    click(view.container, "sidebar-collapse-btn"); await flush();
+    expect(view.container.querySelector("[data-testid=left-panel]").dataset.collapsed).toBe("true");
+    expect(view.container.querySelector("[data-testid=dashboard-content-panel]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
+    click(view.container, "sidebar-collapse-btn"); await flush();
+    expect(view.container.querySelector("[data-testid=left-panel]").dataset.collapsed).toBe("false");
+    view.unmount();
   });
 
   it("has a non-crashing resume fallback when no resume exists", async () => {

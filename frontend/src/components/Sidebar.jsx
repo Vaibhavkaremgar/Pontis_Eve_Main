@@ -24,6 +24,8 @@ export default function Sidebar({
   onLogout,
   onSettings,
   onGuidanceClick,
+  collapsed = false,
+  onToggleCollapsed,
 }) {
   const displayName = (footerIdentity ?? userProfile).name;
   const displayEmail = (footerIdentity ?? userProfile).email;
@@ -45,6 +47,10 @@ export default function Sidebar({
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
+
+  React.useEffect(() => {
+    if (collapsed) setMenuOpen(false);
+  }, [collapsed]);
   const tabs = [
     { id: "jobs", label: "New jobs", icon: Briefcase, badge: jobsCount },
     { id: "tracked", label: "Tracked jobs", icon: BookmarkCheck },
@@ -57,25 +63,29 @@ export default function Sidebar({
   return (
     <aside
       data-testid="left-sidebar"
-      className="h-full w-full flex flex-col justify-between bg-[#FBFBF9] text-[#1F1F1F]"
+      data-collapsed={collapsed ? "true" : "false"}
+      className="h-full w-full min-w-0 flex flex-col justify-between bg-[#FBFBF9] text-[#1F1F1F]"
     >
       <div className="flex-1 overflow-y-auto eve-scroll">
         {/* Brand */}
-        <div className="flex items-center justify-between px-4 pt-5 pb-4">
-          <span className="text-[15px] font-medium tracking-tight text-[#1F1F1F]">
+        <div className={`flex items-center pt-5 pb-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
+          <span className={`text-[15px] font-medium tracking-tight text-[#1F1F1F] ${collapsed ? "hidden" : ""}`}>
             Eve
           </span>
           <button
+            type="button"
             data-testid="sidebar-collapse-btn"
-            className="text-[#9A9A98] hover:text-[#1F1F1F] transition-colors"
-            aria-label="Collapse sidebar"
+            onClick={onToggleCollapsed}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[#9A9A98] hover:bg-black/[0.03] hover:text-[#1F1F1F] transition-colors"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
           >
             <PanelLeft className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
         {/* Navigation */}
-        <nav className="px-2 space-y-0.5" data-testid="sidebar-nav">
+        <nav className={`space-y-0.5 ${collapsed ? "px-1" : "px-2"}`} data-testid="sidebar-nav">
           {tabs.map((t) => {
             const Icon = t.icon;
             const active = activeTab === t.id;
@@ -84,22 +94,24 @@ export default function Sidebar({
                 key={t.id}
                 data-testid={`nav-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
-                className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-[13px] transition-colors ${
+                aria-label={collapsed ? t.label : undefined}
+                title={collapsed ? t.label : undefined}
+                className={`w-full flex items-center rounded-lg text-[13px] transition-colors ${collapsed ? "justify-center px-1 py-2" : "justify-between gap-2 px-3 py-2"} ${
                   active
                     ? "bg-black/[0.05] text-[#1F1F1F] font-medium"
                     : "text-[#4A4A48] hover:bg-black/[0.03] font-normal"
                 }`}
               >
-                <span className="flex items-center gap-2.5">
+                <span className={`flex items-center ${collapsed ? "justify-center" : "gap-2.5"}`}>
                   <Icon
                     className={`w-[15px] h-[15px] ${
                       active ? "text-[#1F1F1F]" : "text-[#7A7A78]"
                     }`}
                     strokeWidth={1.5}
                   />
-                  <span>{t.label}</span>
+                  {!collapsed && <span>{t.label}</span>}
                 </span>
-                {t.badge ? (
+                {!collapsed && t.badge ? (
                   <span
                     data-testid={`nav-badge-${t.id}`}
                     className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-[#1F1F1F] text-white text-[10px] font-medium flex items-center justify-center"
@@ -125,7 +137,7 @@ export default function Sidebar({
           */}
         </nav>
 
-        {guidanceItems.length > 0 && (
+        {!collapsed && guidanceItems.length > 0 && (
           <section
             data-testid="profile-90-guidance"
             className="mx-2 mt-3 min-w-0 rounded-2xl border border-[#DDD8EF] bg-[#F7F5FC] p-4"
@@ -192,7 +204,7 @@ export default function Sidebar({
       </div>
        
       {/* User footer */}
-      <div className="px-3 py-3 border-t border-black/[0.06]" ref={menuRef}>
+      <div className={`${collapsed ? "px-1" : "px-3"} py-3 border-t border-black/[0.06]`} ref={menuRef}>
         {menuOpen && (
           <div className="mb-1 rounded-lg border border-black/[0.07] bg-white shadow-sm overflow-hidden">
             <button
@@ -220,7 +232,9 @@ export default function Sidebar({
         <button
           data-testid="user-profile-card"
           onClick={() => setMenuOpen((v) => !v)}
-          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-black/[0.03] transition-colors"
+          aria-label={collapsed ? "Open account menu" : undefined}
+          title={collapsed ? "Account" : undefined}
+          className={`w-full flex items-center rounded-lg hover:bg-black/[0.03] transition-colors ${collapsed ? "justify-center px-1 py-1.5" : "gap-2.5 px-2 py-1.5"}`}
         >
           <div
             data-testid="user-profile-icon"
@@ -229,18 +243,18 @@ export default function Sidebar({
           >
             <User className="w-[15px] h-[15px] text-[#7B6FB8]" strokeWidth={1.8} />
           </div>
-          <div className="flex-1 min-w-0 text-left">
+          {!collapsed && <div className="flex-1 min-w-0 text-left">
             <p data-testid="sidebar-footer-name" className="text-[12px] font-medium text-[#1F1F1F] truncate">
               {displayName}
             </p>
             <p data-testid="sidebar-footer-email" className="text-[10.5px] text-[#9A9A98] truncate">
               {displayEmail}
             </p>
-          </div>
-          <ChevronsUpDown
+          </div>}
+          {!collapsed && <ChevronsUpDown
             className="w-3.5 h-3.5 text-[#9A9A98] shrink-0"
             strokeWidth={1.5}
-          />
+          />}
         </button>
       </div>
     </aside>

@@ -200,6 +200,7 @@ function groupExperienceByEmployment(experience) {
 }
 
 function formatEducationDates(education) {
+  if (education?.dates) return education.dates;
   const year = (value) => String(value ?? "").match(/(?:18|19|20|21)\d{2}/)?.[0];
   const startYear = year(education?.start_date ?? education?.startDate);
   const endYear = year(education?.end_date ?? education?.endDate);
@@ -238,8 +239,35 @@ function ResumeExperienceEntry({ exp }) {
   );
 }
 
+function formatEducationScore(education) {
+  if (!education || typeof education !== "object") return "";
+
+  const firstValue = (fields) => fields
+    .map((field) => education[field])
+    .find((value) => value !== null && value !== undefined && String(value).trim() !== "");
+  const formatted = (label, value) => `${label}: ${String(value).trim()}`;
+
+  const cgpa = firstValue(["cgpa", "CGPA"]);
+  if (cgpa !== undefined) return formatted("CGPA", cgpa);
+
+  const gpa = firstValue(["gpa", "GPA"]);
+  if (gpa !== undefined) return formatted("GPA", gpa);
+
+  const percentage = firstValue(["percentage", "percent"]);
+  if (percentage !== undefined) return formatted("Percentage", percentage);
+
+  const grade = firstValue(["grade", "score", "marks"]);
+  if (grade === undefined) return "";
+  const value = String(grade).trim();
+  if (/\bcgpa\b/i.test(value)) return formatted("CGPA", value.replace(/\bcgpa\b/i, "").trim());
+  if (/\bgpa\b/i.test(value)) return formatted("GPA", value.replace(/\bgpa\b/i, "").trim());
+  if (/%|\bpercentage\b/i.test(value)) return formatted("Percentage", value.replace(/\bpercentage\b/i, "").trim());
+  return formatted("Grade", value);
+}
+
 function ResumeEducationEntry({ edu }) {
   const dates = formatEducationDates(edu);
+  const score = formatEducationScore(edu);
 
   return (
     <div data-testid={`education-row-${edu.id}`} className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0">
@@ -248,6 +276,7 @@ function ResumeEducationEntry({ edu }) {
         {dates && <p className="shrink-0 text-[11.5px] text-[#777774]">{dates}</p>}
       </div>
       {edu.institution && <p className="mt-0.5 text-[12px] text-[#4A4A48]">{edu.institution}</p>}
+      {score && <p className="mt-1 text-[12px] text-[#4A4A48]">{score}</p>}
     </div>
   );
 }

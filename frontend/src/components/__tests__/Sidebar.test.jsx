@@ -175,3 +175,50 @@ describe("Sidebar profile guidance", () => {
     }));
   });
 });
+
+describe("Sidebar collapse control", () => {
+  let renderResult;
+
+  afterEach(() => {
+    renderResult?.unmount?.();
+    renderResult = null;
+  });
+
+  it("is expanded by default and exposes icon navigation when collapsed", () => {
+    const onToggleCollapsed = jest.fn();
+    renderResult = renderSidebar({ onToggleCollapsed });
+
+    const sidebar = renderResult.container.querySelector('[data-testid="left-sidebar"]');
+    const toggle = renderResult.container.querySelector('[data-testid="sidebar-collapse-btn"]');
+    expect(sidebar.dataset.collapsed).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toBe("Collapse sidebar");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(renderResult.container.querySelector('[data-testid="nav-tab-jobs"]').textContent).toContain("New jobs");
+
+    act(() => {
+      renderResult.root.render(
+        <Sidebar
+          activeTab="profile"
+          setActiveTab={jest.fn()}
+          userProfile={{ name: "Jane Doe", email: "jane@example.com" }}
+          jobsCount={0}
+          opportunitiesCount={0}
+          onLogout={jest.fn()}
+          collapsed
+          onToggleCollapsed={onToggleCollapsed}
+        />
+      );
+    });
+
+    expect(sidebar.dataset.collapsed).toBe("true");
+    expect(toggle.getAttribute("aria-label")).toBe("Expand sidebar");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const jobs = renderResult.container.querySelector('[data-testid="nav-tab-jobs"]');
+    expect(jobs.textContent).not.toContain("New jobs");
+    expect(jobs.getAttribute("aria-label")).toBe("New jobs");
+    expect(jobs.getAttribute("title")).toBe("New jobs");
+
+    act(() => toggle.click());
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+  });
+});
