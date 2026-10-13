@@ -12286,39 +12286,159 @@ LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhos
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 OAUTH_STATE_TTL_SECONDS = 10 * 60
 OAUTH_EXCHANGE_TTL_SECONDS = 60
-_oauth_exchange_store: dict[str, tuple[float, dict[str, Any]]] = {}
-_oauth_state_store: dict[str, dict[str, float]] = {"google": {}, "linkedin": {}}
-_oauth_pkce_store: dict[str, str] = {}
 
 
-def _create_oauth_exchange(payload: dict[str, Any]) -> str:
-    now = datetime.now(timezone.utc).timestamp()
-    for key, (expires_at, _) in list(_oauth_exchange_store.items()):
-        if expires_at <= now:
-            _oauth_exchange_store.pop(key, None)
+def _oauth_lookup_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _oauth_storage_error(operation: str, exc: Exception) -> HTTPException:
+    logger.error(
+        "OAuth transaction storage failure operation=%s exception_type=%s",
+        operation,
+        type(exc).__name__,
+    )
+    return HTTPException(status_code=503, detail="OAuth transaction storage is unavailable.")
+
+
+async def _create_oauth_transaction(provider: str, state: str, pkce_verifier: str) -> str:
+    transaction_id = str(uuid.uuid4())
+    try:
+        async with SessionLocal() as db:
+            await db.execute(text("""
+                INSERT INTO oauth_transactions
+                    (id, provider, state_hash, pkce_verifier, state_expires_at)
+                VALUES
+                    (:id, :provider, :state_hash, :pkce_verifier,
+                     now() + (:ttl_seconds * interval '1 second'))
+            """), {
+                "id": transaction_id,
+                "provider": provider,
+                "state_hash": _oauth_lookup_hash(state),
+                "pkce_verifier": pkce_verifier,
+                "ttl_seconds": OAUTH_STATE_TTL_SECONDS,
+            })
+            await db.commit()
+    except Exception as exc:
+        raise _oauth_storage_error("create_state", exc) from exc
+    _schedule_oauth_cleanup()
+    return transaction_id
+
+
+async def _consume_oauth_transaction(
+    provider: str, returned_state: Optional[str], stored_state: Optional[str]
+) -> tuple[str, str]:
+    if not returned_state:
+        logger.warning("OAuth state rejected provider=%s category=missing_query_state", provider)
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    if not stored_state:
+        logger.warning("OAuth state rejected provider=%s category=missing_state_cookie", provider)
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    if not hmac.compare_digest(returned_state, stored_state):
+        logger.warning("OAuth state rejected provider=%s category=state_cookie_mismatch", provider)
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(text("""
+                UPDATE oauth_transactions
+                SET state_consumed_at = now(), updated_at = now()
+                WHERE provider = :provider
+                  AND state_hash = :state_hash
+                  AND state_consumed_at IS NULL
+                  AND state_expires_at > now()
+                RETURNING id, pkce_verifier
+            """), {
+                "provider": provider,
+                "state_hash": _oauth_lookup_hash(returned_state),
+            })
+            row = result.mappings().fetchone()
+            await db.commit()
+    except Exception as exc:
+        raise _oauth_storage_error("consume_state", exc) from exc
+    if not row:
+        logger.warning("OAuth state rejected provider=%s category=state_missing_expired_or_replayed", provider)
+        raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
+    verifier = row.get("pkce_verifier")
+    if not isinstance(verifier, str) or not verifier:
+        logger.warning("OAuth state rejected provider=%s category=missing_pkce_verifier", provider)
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
+    return str(row["id"]), verifier
+
+
+async def _create_oauth_exchange(transaction_id: str, payload: dict[str, Any]) -> str:
     code = secrets.token_urlsafe(32)
-    _oauth_exchange_store[code] = (now + OAUTH_EXCHANGE_TTL_SECONDS, payload)
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(text("""
+                UPDATE oauth_transactions
+                SET exchange_code_hash = :code_hash,
+                    exchange_payload = CAST(:payload AS jsonb),
+                    exchange_expires_at = now() + (:ttl_seconds * interval '1 second'),
+                    updated_at = now()
+                WHERE id = :transaction_id
+                  AND state_consumed_at IS NOT NULL
+                  AND exchange_code_hash IS NULL
+                RETURNING id
+            """), {
+                "transaction_id": transaction_id,
+                "code_hash": _oauth_lookup_hash(code),
+                "payload": json.dumps(payload),
+                "ttl_seconds": OAUTH_EXCHANGE_TTL_SECONDS,
+            })
+            row = result.fetchone()
+            await db.commit()
+    except Exception as exc:
+        raise _oauth_storage_error("create_exchange", exc) from exc
+    if not row:
+        logger.error("OAuth exchange creation rejected category=invalid_transaction")
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
+    _schedule_oauth_cleanup()
     return code
 
 
-def _remember_oauth_state(provider: str, state: str) -> None:
-    now = datetime.now(timezone.utc).timestamp()
-    states = _oauth_state_store[provider]
-    for key, expires_at in list(states.items()):
-        if expires_at <= now:
-            states.pop(key, None)
-    states[state] = now + OAUTH_STATE_TTL_SECONDS
+async def _consume_oauth_exchange(exchange_code: str) -> dict[str, Any]:
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(text("""
+                UPDATE oauth_transactions
+                SET exchange_consumed_at = now(), updated_at = now()
+                WHERE exchange_code_hash = :code_hash
+                  AND exchange_consumed_at IS NULL
+                  AND exchange_expires_at > now()
+                RETURNING exchange_payload
+            """), {"code_hash": _oauth_lookup_hash(exchange_code)})
+            row = result.mappings().fetchone()
+            await db.commit()
+    except Exception as exc:
+        raise _oauth_storage_error("consume_exchange", exc) from exc
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired sign-in exchange.")
+    payload = row.get("exchange_payload")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid or expired sign-in exchange.")
+    return payload
 
 
-def _create_oauth_pkce(state: str) -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    _oauth_pkce_store[state] = verifier
-    return verifier, challenge
+async def _cleanup_expired_oauth_transactions() -> None:
+    try:
+        async with SessionLocal() as db:
+            await db.execute(text("""
+                DELETE FROM oauth_transactions
+                WHERE state_expires_at < now() - interval '1 hour'
+                  AND (exchange_expires_at IS NULL OR exchange_expires_at < now() - interval '1 hour')
+            """))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("OAuth transaction cleanup failed exception_type=%s", type(exc).__name__)
 
 
-def _consume_oauth_pkce(state: str) -> str:
-    return _oauth_pkce_store.pop(state, "")
+def _schedule_oauth_cleanup() -> None:
+    try:
+        asyncio.get_running_loop().create_task(_cleanup_expired_oauth_transactions())
+    except RuntimeError:
+        pass
 
 
 def _oauth_state_cookie_name(provider: str) -> str:
@@ -12348,25 +12468,6 @@ def _oauth_state_response(provider: str, state: str, payload: dict) -> JSONRespo
     return response
 
 
-def _validate_oauth_state(provider: str, returned_state: Optional[str], stored_state: Optional[str]) -> None:
-    if not returned_state:
-        logger.warning("OAuth state rejected provider=%s category=missing_query_state", provider)
-        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
-    if not stored_state:
-        logger.warning("OAuth state rejected provider=%s category=missing_state_cookie", provider)
-        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
-    if not hmac.compare_digest(returned_state, stored_state):
-        logger.warning("OAuth state rejected provider=%s category=state_cookie_mismatch", provider)
-        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
-    expires_at = _oauth_state_store.get(provider, {}).pop(returned_state, None)
-    if not expires_at:
-        logger.warning("OAuth state rejected provider=%s category=state_not_in_process_store", provider)
-        raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
-    if expires_at <= datetime.now(timezone.utc).timestamp():
-        logger.warning("OAuth state rejected provider=%s category=state_expired", provider)
-        raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
-
-
 def _consume_oauth_state(response: RedirectResponse, provider: str) -> None:
     response.delete_cookie(
         key=_oauth_state_cookie_name(provider),
@@ -12379,10 +12480,7 @@ def _consume_oauth_state(response: RedirectResponse, provider: str) -> None:
 
 @api_router.post("/auth/session/exchange")
 async def exchange_oauth_session(exchange_code: str = Form(...)):
-    record = _oauth_exchange_store.pop(exchange_code, None)
-    if not record or record[0] <= datetime.now(timezone.utc).timestamp():
-        raise HTTPException(status_code=400, detail="Invalid or expired sign-in exchange.")
-    return record[1]
+    return await _consume_oauth_exchange(exchange_code)
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -12470,8 +12568,11 @@ async def linkedin_init(redirect: bool = True):
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     state = secrets.token_urlsafe(32)
-    _remember_oauth_state("linkedin", state)
-    _, code_challenge = _create_oauth_pkce(state)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    await _create_oauth_transaction("linkedin", state, code_verifier)
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": LINKEDIN_CLIENT_ID,
@@ -12502,10 +12603,9 @@ async def linkedin_callback(
 ):
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
-    _validate_oauth_state("linkedin", state, linkedin_oauth_state)
-    code_verifier = _consume_oauth_pkce(state or "")
-    if not code_verifier:
-        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
+    transaction_id, code_verifier = await _consume_oauth_transaction(
+        "linkedin", state, linkedin_oauth_state
+    )
 
     access_token = await _exchange_linkedin_authorization_code(code, code_verifier)
 
@@ -12549,7 +12649,7 @@ async def linkedin_callback(
         needs_onboarding = True
 
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
-    exchange_code = _create_oauth_exchange({
+    exchange_code = await _create_oauth_exchange(transaction_id, {
         "candidate_id": candidate_id,
         "candidate_token": candidate_token,
         "linkedin_profile": {"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id},
@@ -12574,8 +12674,11 @@ async def google_init(redirect: bool = True):
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
     state = secrets.token_urlsafe(32)
-    _remember_oauth_state("google", state)
-    _, code_challenge = _create_oauth_pkce(state)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    await _create_oauth_transaction("google", state, code_verifier)
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": GOOGLE_CLIENT_ID,
@@ -12607,10 +12710,9 @@ async def google_callback(
 ):
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
-    _validate_oauth_state("google", state, google_oauth_state)
-    code_verifier = _consume_oauth_pkce(state or "")
-    if not code_verifier:
-        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
+    transaction_id, code_verifier = await _consume_oauth_transaction(
+        "google", state, google_oauth_state
+    )
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -12666,7 +12768,7 @@ async def google_callback(
         needs_onboarding = True
 
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
-    exchange_code = _create_oauth_exchange({
+    exchange_code = await _create_oauth_exchange(transaction_id, {
         "candidate_id": candidate_id,
         "candidate_token": candidate_token,
         "linkedin_profile": {"name": name, "email": email, "picture": picture, "google_id": google_id},

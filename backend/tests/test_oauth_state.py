@@ -11,29 +11,15 @@ import server  # noqa: E402
 
 
 @pytest.mark.parametrize("provider", ["google", "linkedin"])
-def test_oauth_state_rejects_missing_and_mismatched_values(provider):
+@pytest.mark.asyncio
+async def test_oauth_state_rejects_missing_and_mismatched_values(provider):
     with pytest.raises(HTTPException) as missing:
-        server._validate_oauth_state(provider, None, "stored")
+        await server._consume_oauth_transaction(provider, None, "stored")
     assert missing.value.status_code == 400
 
     with pytest.raises(HTTPException) as mismatch:
-        server._validate_oauth_state(provider, "returned", "stored")
+        await server._consume_oauth_transaction(provider, "returned", "stored")
     assert mismatch.value.status_code == 400
-
-
-@pytest.mark.parametrize("provider", ["google", "linkedin"])
-def test_oauth_state_accepts_only_matching_values(provider):
-    server._remember_oauth_state(provider, "same-state")
-    assert server._validate_oauth_state(provider, "same-state", "same-state") is None
-
-
-@pytest.mark.parametrize("provider", ["google", "linkedin"])
-def test_oauth_state_is_single_use(provider):
-    server._remember_oauth_state(provider, "one-time-state")
-    server._validate_oauth_state(provider, "one-time-state", "one-time-state")
-    with pytest.raises(HTTPException) as replay:
-        server._validate_oauth_state(provider, "one-time-state", "one-time-state")
-    assert replay.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -41,6 +27,9 @@ async def test_google_and_linkedin_init_bind_state_to_http_only_cookie(monkeypat
     monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "configured-google-client")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "configured-linkedin-client")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "configured-linkedin-secret")
+    async def create_transaction(provider, state, verifier):
+        return "transaction-id"
+    monkeypatch.setattr(server, "_create_oauth_transaction", create_transaction)
 
     google_response = await server.google_init(redirect=False)
     linkedin_response = await server.linkedin_init(redirect=False)
@@ -58,6 +47,9 @@ async def test_linkedin_top_level_init_redirect_sets_state_cookie(monkeypatch):
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "configured-linkedin-client")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "configured-linkedin-secret")
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
+    async def create_transaction(provider, state, verifier):
+        return "transaction-id"
+    monkeypatch.setattr(server, "_create_oauth_transaction", create_transaction)
 
     response = await server.linkedin_init()
 
@@ -186,8 +178,9 @@ async def test_linkedin_callback_missing_pkce_cannot_create_exchange(monkeypatch
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
-    server._oauth_exchange_store.clear()
-    server._remember_oauth_state("linkedin", "state-without-pkce")
+    async def missing_pkce(provider, returned_state, stored_state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
+    monkeypatch.setattr(server, "_consume_oauth_transaction", missing_pkce)
 
     with pytest.raises(HTTPException) as exc:
         await server.linkedin_callback(
@@ -197,7 +190,6 @@ async def test_linkedin_callback_missing_pkce_cannot_create_exchange(monkeypatch
         )
 
     assert exc.value.status_code == 400
-    assert not server._oauth_exchange_store
 
 
 @pytest.mark.asyncio
@@ -210,16 +202,22 @@ async def test_failed_linkedin_exchange_cannot_create_candidate_session_exchange
         raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
 
     monkeypatch.setattr(server, "_exchange_linkedin_authorization_code", rejected_exchange)
-    server._oauth_exchange_store.clear()
-    server._remember_oauth_state("linkedin", "failed-state")
-    server._oauth_pkce_store["failed-state"] = "verifier"
+    async def consume_transaction(provider, returned_state, stored_state):
+        return "transaction-id", "verifier"
+    exchange_created = False
+    async def create_exchange(transaction_id, payload):
+        nonlocal exchange_created
+        exchange_created = True
+        return "exchange-code"
+    monkeypatch.setattr(server, "_consume_oauth_transaction", consume_transaction)
+    monkeypatch.setattr(server, "_create_oauth_exchange", create_exchange)
 
     with pytest.raises(HTTPException):
         await server.linkedin_callback(
             code="authorization-code", state="failed-state", linkedin_oauth_state="failed-state"
         )
 
-    assert not server._oauth_exchange_store
+    assert exchange_created is False
 
 
 @pytest.mark.asyncio
@@ -243,20 +241,25 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
     monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
     monkeypatch.setattr(server, "SessionLocal", lambda: EmptySession())
     _MockLinkedInClient.get_response = _response(200, {"sub": "member-id", "name": "", "email": "", "picture": ""})
-    server._oauth_exchange_store.clear()
-    server._remember_oauth_state("linkedin", "successful-state")
-    server._oauth_pkce_store["successful-state"] = "verifier"
+    async def consume_transaction(provider, returned_state, stored_state):
+        return "transaction-id", "verifier"
+    captured = {}
+    async def create_exchange(transaction_id, payload):
+        captured["transaction_id"] = transaction_id
+        captured["payload"] = payload
+        return "exchange-code"
+    monkeypatch.setattr(server, "_consume_oauth_transaction", consume_transaction)
+    monkeypatch.setattr(server, "_create_oauth_exchange", create_exchange)
 
     response = await server.linkedin_callback(
         code="authorization-code", state="successful-state", linkedin_oauth_state="successful-state"
     )
 
     assert response.status_code == 302
-    exchange_code = response.headers["location"].split("exchange_code=", 1)[1]
-    expires_at, payload = server._oauth_exchange_store[exchange_code]
-    assert 0 < expires_at - server.datetime.now(server.timezone.utc).timestamp() <= server.OAUTH_EXCHANGE_TTL_SECONDS
-    assert payload["candidate_id"] is None
-    assert payload["candidate_token"] == ""
+    assert response.headers["location"].endswith("exchange_code=exchange-code")
+    assert captured["transaction_id"] == "transaction-id"
+    assert captured["payload"]["candidate_id"] is None
+    assert captured["payload"]["candidate_token"] == ""
 
 
 @pytest.mark.asyncio
