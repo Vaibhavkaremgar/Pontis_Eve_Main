@@ -12389,9 +12389,85 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/google/callback")
 
 
+_LINKEDIN_TOKEN_ERROR_CATEGORIES = {
+    "invalid_client",
+    "invalid_client_id",
+    "invalid_grant",
+    "invalid_redirect_uri",
+    "invalid_request",
+    "unauthorized_client",
+}
+
+
+def _linkedin_token_error_category(response: httpx.Response) -> str:
+    """Return a safe OAuth error category without logging LinkedIn's body."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return "unexpected_response"
+    category = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(category, str) and category in _LINKEDIN_TOKEN_ERROR_CATEGORIES:
+        return category
+    return "unexpected_response"
+
+
+async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -> str:
+    """Exchange one LinkedIn code while keeping credentials and error bodies private."""
+    request_id = str(uuid.uuid4())
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://www.linkedin.com/oauth/v2/accessToken",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": LINKEDIN_REDIRECT_URI,
+                    "client_id": LINKEDIN_CLIENT_ID,
+                    "client_secret": LINKEDIN_CLIENT_SECRET,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "LinkedIn OAuth token exchange transport failure request_id=%s exception_type=%s",
+            request_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.") from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        logger.warning(
+            "LinkedIn OAuth token exchange rejected request_id=%s upstream_status=%s category=%s",
+            request_id,
+            response.status_code,
+            _linkedin_token_error_category(response),
+        )
+        raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
+
+    try:
+        payload = response.json()
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "LinkedIn OAuth token exchange invalid response request_id=%s upstream_status=%s category=unexpected_response",
+            request_id,
+            response.status_code,
+        )
+        raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.") from exc
+    access_token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(access_token, str) or not access_token:
+        logger.warning(
+            "LinkedIn OAuth token exchange invalid response request_id=%s upstream_status=%s category=missing_access_token",
+            request_id,
+            response.status_code,
+        )
+        raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.")
+    return access_token
+
+
 @api_router.get("/auth/linkedin/init")
 async def linkedin_init(redirect: bool = True):
-    if not LINKEDIN_CLIENT_ID:
+    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     state = secrets.token_urlsafe(32)
     _remember_oauth_state("linkedin", state)
@@ -12424,31 +12500,16 @@ async def linkedin_callback(
     state: Optional[str] = None,
     linkedin_oauth_state: Optional[str] = Cookie(default=None),
 ):
-    if not LINKEDIN_CLIENT_ID:
+    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     _validate_oauth_state("linkedin", state, linkedin_oauth_state)
     code_verifier = _consume_oauth_pkce(state or "")
     if not code_verifier:
         raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
 
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://www.linkedin.com/oauth/v2/accessToken",
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": LINKEDIN_REDIRECT_URI,
-                "client_id": LINKEDIN_CLIENT_ID,
-                "client_secret": LINKEDIN_CLIENT_SECRET,
-                "code_verifier": code_verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        if token_resp.status_code != 200:
-            logger.warning("LinkedIn OAuth token exchange failed with status %s", token_resp.status_code)
-            raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
-        access_token = token_resp.json().get("access_token")
+    access_token = await _exchange_linkedin_authorization_code(code, code_verifier)
 
+    async with httpx.AsyncClient() as client:
         userinfo_resp = await client.get(
             "https://api.linkedin.com/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
