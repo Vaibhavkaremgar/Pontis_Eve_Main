@@ -13,7 +13,11 @@ jest.mock("../../components/ChatHub", () => (props) => <div data-testid="chat-hu
 jest.mock("../../components/LivingProfile", () => ({ __esModule: true, default: ({ activeTab }) => <div data-testid={`living-profile-${activeTab}`} />, JobsTab: () => <div data-testid="jobs-deck" /> }));
 jest.mock("../../components/BillingPage", () => () => <div data-testid="billing-page" />);
 jest.mock("../../components/onboarding/VoiceIntake", () => () => <div data-testid="voice-intake" />);
-jest.mock("react-resizable-panels", () => ({ PanelGroup: ({ children }) => <div>{children}</div>, Panel: ({ children }) => <div>{children}</div>, PanelResizeHandle: () => <div /> }));
+jest.mock("react-resizable-panels", () => ({
+  PanelGroup: ({ children }) => <div>{children}</div>,
+  Panel: ({ children, id, className, "data-testid": testId, "data-single-content-panel": singleContentPanel }) => <div id={id} className={className} data-testid={testId} data-single-content-panel={singleContentPanel}>{children}</div>,
+  PanelResizeHandle: ({ "data-testid": testId }) => <div data-testid={testId} />,
+}));
 jest.mock("sonner", () => ({ Toaster: () => null, toast: { error: jest.fn(), success: jest.fn() } }));
 
 const profile = (overrides = {}) => ({ name: "Test User", email: "test@example.com", headline: "Engineer", keySkills: ["React"], experience: [], education: [], certifications: [], profile_strength_percent: 90, profile_strength_label: "Strong", voice_intake_resume: { status: "completed", has_open_question: false }, ...overrides });
@@ -41,6 +45,8 @@ describe("Dashboard three-panel context", () => {
     setupAxios(); const view = renderDashboard(); await flush();
     expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=resume-inline-preview]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("false");
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
   });
 
@@ -67,24 +73,29 @@ describe("Dashboard three-panel context", () => {
   it("shows chat with the profile context", async () => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "chat-tab"); await flush();
     expect(view.container.querySelector("[data-testid=chat-hub]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=living-profile-profile]")).toBeTruthy(); view.unmount();
   });
 
   it("shows Profile as chat plus profile context", async () => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "nav-tab-profile"); await flush();
     expect(view.container.querySelector("[data-testid=chat-hub]")).toBeTruthy();
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=living-profile-profile]")).toBeTruthy(); view.unmount();
   });
 
-  it.each(["tracked", "documents", "opportunities"])("renders %s in the middle and right contextual panels", async (tab) => {
+  it.each(["tracked", "documents", "opportunities"])("renders %s in one full-width content panel", async (tab) => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, `nav-tab-${tab}`); await flush();
     expect(view.container.querySelectorAll(`[data-testid=living-profile-${tab}]`)).toHaveLength(1);
-    expect(view.container.querySelector(`[data-testid=right-${tab}-context]`)).toBeTruthy(); view.unmount();
+    expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("true");
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeNull();
+    expect(view.container.querySelector("[data-testid=resize-handle-right]")).toBeNull(); view.unmount();
   });
 
-  it("renders billing only in the middle with a complementary summary on the right", async () => {
+  it("renders billing in one full-width content panel", async () => {
     setupAxios(); const view = renderDashboard(); await flush(); click(view.container, "nav-tab-billing"); await flush();
     expect(view.container.querySelectorAll("[data-testid=billing-page]")).toHaveLength(1);
-    expect(view.container.querySelector("[data-testid=billing-context]")).toBeTruthy(); view.unmount();
+    expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("true");
+    expect(view.container.querySelector("[data-testid=right-panel]")).toBeNull(); view.unmount();
   });
 });

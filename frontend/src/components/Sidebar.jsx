@@ -21,7 +21,6 @@ export default function Sidebar({
   footerIdentity,
   jobsCount,
   opportunitiesCount,
-  recentActivity,
   onLogout,
   onSettings,
   onGuidanceClick,

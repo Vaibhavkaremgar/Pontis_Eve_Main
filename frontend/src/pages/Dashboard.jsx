@@ -8,7 +8,6 @@ import Sidebar from "../components/Sidebar";
 import ChatHub from "../components/ChatHub";
 import LivingProfile, { JobsTab } from "../components/LivingProfile";
 import CandidateSettingsModal from "../components/CandidateSettingsModal";
-import { MOCK_RECENT_ACTIVITY } from "../mock";
 import {
   isVoiceIntakeCompleteStatus,
   loadOnboardingState,
@@ -295,6 +294,9 @@ function Dashboard() {
   const displayedRightPanelTab = activeSidebarTab === "jobs"
     ? (centerView === "swipe" ? "resume" : "profile")
     : activeSidebarTab;
+  // These section interfaces already contain their complete workflows. Hide
+  // their supplementary context panel so the content can use all remaining width.
+  const usesSingleContentPanel = ["tracked", "documents", "opportunities", "billing"].includes(activeSidebarTab);
 
   const refreshResumeFixCredits = React.useCallback(() => {
     if (!candidateId) {
@@ -988,7 +990,6 @@ function Dashboard() {
             footerIdentity={footerIdentity.name || footerIdentity.email ? footerIdentity : undefined}
             jobsCount={matchingJobsTotal}
             opportunitiesCount={opportunitiesCount}
-            recentActivity={MOCK_RECENT_ACTIVITY}
             onLogout={handleLogout}
             onSettings={() => setSettingsOpen(true)}
             onGuidanceClick={handleProfileGuidanceClick}
@@ -997,7 +998,15 @@ function Dashboard() {
 
         <ResizeHandle testId="resize-handle-left" />
 
-        <Panel id="center-panel" order={2} defaultSize={58} minSize={22} className="h-full">
+        <Panel
+          id="center-panel"
+          order={2}
+          defaultSize={usesSingleContentPanel ? 88 : 58}
+          minSize={22}
+          className="h-full"
+          data-testid="dashboard-content-panel"
+          data-single-content-panel={usesSingleContentPanel ? "true" : "false"}
+        >
           {activeSidebarTab === "profile" ? (
             <div className="h-full flex flex-col bg-[#FBFBF9] min-h-0">
               <ChatHub
@@ -1194,9 +1203,10 @@ function Dashboard() {
           </div>}
         </Panel>
 
+        {!usesSingleContentPanel && <>
         <ResizeHandle testId="resize-handle-right" subtle />
 
-        <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full">
+        <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full" data-testid="right-panel">
           {displayedRightPanelTab === "resume" ? (
             <ResumeContextPanel candidateId={candidateId} candidateToken={candidateToken} documents={documents} docsLoading={docsLoading} />
           ) : displayedRightPanelTab === "billing" ? <BillingContextPanel candidateId={candidateId} />
@@ -1231,6 +1241,7 @@ function Dashboard() {
           />
           }
         </Panel>
+        </>}
       </PanelGroup>
       <CandidateSettingsModal
         open={settingsOpen}

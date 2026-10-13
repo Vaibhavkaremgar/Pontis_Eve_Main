@@ -14,7 +14,6 @@ import {
   ArrowLeft,
 } from "lucide-react";
 
-import { MOCK_USER_PROFILE } from "../mock";
 import PhoneInput, { useCountryPhone } from "../components/onboarding/PhoneInput";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 import {
@@ -911,7 +910,7 @@ export default function Onboarding() {
     persisted.certsMeta,
   ]);
 
-  const firstName = (parsedProfile?.name || MOCK_USER_PROFILE.name || "there")
+  const firstName = (parsedProfile?.name || "there")
     .split(" ")[0];
 
   const kickOffParsing = React.useCallback(async () => {
