@@ -431,8 +431,9 @@ def test_improve_job_match_returns_refreshed_canonical_profile_without_duplicate
         "refresh_calls": [],
     }
 
-    async def get_guidance(candidate_id, rec_id):
+    async def get_guidance(candidate_id, rec_id, authorization=None):
         assert (candidate_id, rec_id) == ("candidate-1", "rec-1")
+        assert authorization
         return {"match_score": 90.0, "missing_skills": ["Rust"]}
 
     async def get_job_context(candidate_id, rec_id):

@@ -44,11 +44,12 @@ try:  # pragma: no cover - optional dependency
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.platypus import KeepTogether, ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.pdfgen import canvas as reportlab_canvas
     REPORTLAB_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback path is exercised when reportlab is absent
     colors = None
     letter = (612.0, 792.0)
-    ParagraphStyle = getSampleStyleSheet = inch = KeepTogether = ListFlowable = ListItem = Paragraph = SimpleDocTemplate = Spacer = Table = TableStyle = None
+    ParagraphStyle = getSampleStyleSheet = inch = KeepTogether = ListFlowable = ListItem = Paragraph = SimpleDocTemplate = Spacer = Table = TableStyle = reportlab_canvas = None
     REPORTLAB_AVAILABLE = False
 
 try:
@@ -1041,8 +1042,31 @@ _NOISY_SKILL_PATTERNS = re.compile(
 
 
 def _candidate_profile_pdf_skills(profile: dict) -> list[str]:
-    """Return deduplicated, cleaned skills for the ATS resume PDF."""
-    raw_skills = profile.get("keySkills") or profile.get("skills") or []
+    """Return all explicit, deduplicated skill values used by the resume PDF.
+
+    Resume imports have used several shapes over time (a flat ``skills`` list,
+    category-specific lists, and the raw parser payload).  The download must
+    not silently omit a skill merely because it was stored in one of those
+    older shapes.  This intentionally reads only explicit skill fields; it
+    never mines prose, job titles, certificates, or education.
+    """
+    raw_skills: list[Any] = []
+    category_keys = (
+        "keySkills", "key_skills", "skills", "technical_skills",
+        "programming_languages", "languages", "frameworks", "libraries",
+        "databases", "tools", "platforms", "tools_and_platforms",
+        "apis", "backend_skills", "testing", "testing_skills",
+        "other_technical_skills",
+    )
+    for source in (profile, _parse_raw_data(profile.get("raw_data")), _parse_raw_data(profile.get("parsed_resume_json"))):
+        if not isinstance(source, dict):
+            continue
+        for key in category_keys:
+            value = source.get(key)
+            if isinstance(value, (list, tuple, set)):
+                raw_skills.extend(value)
+            elif isinstance(value, str):
+                raw_skills.extend(part.strip() for part in re.split(r"[,;|\\n]", value) if part.strip())
     seen: set[str] = set()
     result: list[str] = []
     for skill in raw_skills:
@@ -1056,6 +1080,60 @@ def _candidate_profile_pdf_skills(profile: dict) -> list[str]:
             continue
         seen.add(key)
         result.append(text)
+    return result
+
+
+def _candidate_profile_pdf_skill_groups(profile: dict) -> list[tuple[str, list[str]]]:
+    """Organize explicit skills into compact, ATS-readable Core Skills rows."""
+    groups: dict[str, list[str]] = {}
+    labels = {
+        "programming_languages": "Programming Languages",
+        "languages": "Programming Languages",
+        "frameworks": "Frameworks & Libraries",
+        "libraries": "Frameworks & Libraries",
+        "databases": "Databases",
+        "tools": "Tools & Platforms",
+        "platforms": "Tools & Platforms",
+        "tools_and_platforms": "Tools & Platforms",
+        "apis": "APIs & Backend",
+        "backend_skills": "APIs & Backend",
+        "testing": "Testing",
+        "testing_skills": "Testing",
+        "technical_skills": "Other Technical Skills",
+        "other_technical_skills": "Other Technical Skills",
+    }
+    sources = (profile, _parse_raw_data(profile.get("raw_data")), _parse_raw_data(profile.get("parsed_resume_json")))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key, label in labels.items():
+            values = source.get(key)
+            if isinstance(values, str):
+                values = re.split(r"[,;|\\n]", values)
+            if not isinstance(values, (list, tuple, set)):
+                continue
+            groups.setdefault(label, []).extend(values)
+
+    categorized = {canonical_skill_key(skill) for values in groups.values() for skill in values if _pdf_safe_text(skill)}
+    fallback = [skill for skill in _candidate_profile_pdf_skills(profile) if canonical_skill_key(skill) not in categorized]
+    if fallback:
+        groups.setdefault("Other Technical Skills", []).extend(fallback)
+
+    result: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
+    order = ("Programming Languages", "Frameworks & Libraries", "Databases", "Tools & Platforms", "APIs & Backend", "Testing", "Other Technical Skills")
+    for label in order:
+        values = groups.get(label, [])
+        cleaned: list[str] = []
+        for value in values:
+            skill = _pdf_safe_text(value).strip()
+            key = canonical_skill_key(skill)
+            if not skill or _NOISY_SKILL_PATTERNS.match(skill) or not key or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(skill)
+        if cleaned:
+            result.append((label, cleaned))
     return result
 
 
@@ -1136,7 +1214,7 @@ def _candidate_profile_header(profile: dict) -> list[Paragraph]:
         fontName="Helvetica-Bold",
         fontSize=22,
         leading=26,
-        textColor=colors.HexColor("#1F1F1F"),
+        textColor=colors.HexColor("#17365D"),
         spaceAfter=6,
     )
     subtitle_style = ParagraphStyle(
@@ -1156,6 +1234,12 @@ def _candidate_profile_header(profile: dict) -> list[Paragraph]:
         return Paragraph(html.escape(clean).replace("\n", "<br/>"), style)
 
     story: list[Paragraph] = [p(profile.get("name") or "Candidate Profile", title_style)]
+    role = _pdf_safe_text(profile.get("headline") or profile.get("current_role"))
+    if role:
+        story.append(p(role, ParagraphStyle(
+            "CandidateProfileRole", parent=subtitle_style, fontName="Helvetica-Bold",
+            textColor=colors.HexColor("#333333"), spaceAfter=4,
+        )))
 
     contact_bits = [profile.get("location"), profile.get("email"), profile.get("phone")]
     contact_line = " | ".join(_pdf_safe_text(bit) for bit in contact_bits if _pdf_safe_text(bit))
@@ -1178,6 +1262,10 @@ def _candidate_profile_header(profile: dict) -> list[Paragraph]:
     elif story:
         story[-1].style.spaceAfter = 10
 
+    story.append(Table([[""]], colWidths=[6.55 * inch], rowHeights=[0.8], style=TableStyle([
+        ("LINEABOVE", (0, 0), (-1, -1), 1, colors.HexColor("#2F75B5")),
+    ])))
+
     return story
 
 
@@ -1191,7 +1279,7 @@ def _pdf_story_from_profile(profile: dict) -> list:
         fontName="Helvetica-Bold",
         fontSize=11,
         leading=14,
-        textColor=colors.HexColor("#000000"),
+        textColor=colors.HexColor("#2F75B5"),
         spaceBefore=14,
         spaceAfter=4,
         borderPadding=(0, 0, 2, 0),
@@ -1228,6 +1316,11 @@ def _pdf_story_from_profile(profile: dict) -> list:
         firstLineIndent=0,
         spaceAfter=2,
     )
+    skill_label_style = ParagraphStyle(
+        "ATSSkillLabel", parent=body_style, fontName="Helvetica-Bold", fontSize=9,
+        leading=12, textColor=colors.HexColor("#17365D"),
+    )
+    skill_value_style = ParagraphStyle("ATSSkillValue", parent=body_style, fontSize=9, leading=12)
 
     def p(text: Any, style=body_style) -> Paragraph:
         clean = _pdf_safe_text(text)
@@ -1265,11 +1358,19 @@ def _pdf_story_from_profile(profile: dict) -> list:
     if summary:
         add_section("Professional Summary", [p(summary)])
 
-    # --- Technical Skills (comma-separated, deduplicated) ---
-    skills = _candidate_profile_pdf_skills(profile)
-    if skills:
-        skills_line = ", ".join(skills)
-        add_section("Technical Skills", [p(skills_line)])
+    # --- Core Skills ---
+    skill_groups = _candidate_profile_pdf_skill_groups(profile)
+    if skill_groups:
+        rows = [[p(label, skill_label_style), p(", ".join(skills), skill_value_style)] for label, skills in skill_groups]
+        skills_table = Table(rows, colWidths=[1.45 * inch, 5.1 * inch], hAlign="LEFT")
+        skills_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        add_section("Core Skills", [skills_table])
 
     # --- Professional Experience ---
     experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
@@ -1317,6 +1418,25 @@ def _pdf_story_from_profile(profile: dict) -> list:
             edu_blocks.append(Spacer(1, 0.04 * inch))
         add_section("Education", edu_blocks)
 
+    # --- Projects ---
+    projects = _normalize_projects(profile.get("projects") or _parse_raw_data(profile.get("raw_data")).get("projects"))
+    if projects:
+        project_blocks: list = []
+        for item in projects:
+            title = _pdf_safe_text(item.get("title"))
+            if not title:
+                continue
+            block = [p(title, job_title_style)]
+            detail = _pdf_safe_text(item.get("description"))
+            if detail:
+                block.extend(bullet_list(_ats_clean_description(detail)))
+            technologies = [skill for skill in item.get("technologies") or [] if _pdf_safe_text(skill)]
+            if technologies:
+                block.append(p("Technologies: " + ", ".join(_pdf_safe_text(skill) for skill in technologies), meta_style))
+            project_blocks.append(KeepTogether(block))
+            project_blocks.append(Spacer(1, 0.04 * inch))
+        add_section("Projects", project_blocks)
+
     # --- Certifications ---
     certifications = profile.get("certifications") or []
     if certifications:
@@ -1341,14 +1461,28 @@ def _build_candidate_profile_pdf(profile: dict) -> bytes:
         author="Eve",
     )
 
-    def add_page_number(canvas, doc):
-        canvas.saveState()
-        canvas.setFillColor(colors.HexColor("#9A9A98"))
-        canvas.setFont("Helvetica", 8)
-        canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 0.42 * inch, f"Page {canvas.getPageNumber()}")
-        canvas.restoreState()
+    class ResumeCanvas(reportlab_canvas.Canvas):
+        """Add footer page numbers only when the resume naturally spans pages."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states = []
 
-    doc.build(_pdf_story_from_profile(profile), onFirstPage=add_page_number, onLaterPages=add_page_number)
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            page_count = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                if page_count > 1:
+                    self.setFillColor(colors.HexColor("#9A9A98"))
+                    self.setFont("Helvetica", 8)
+                    self.drawRightString(doc.pagesize[0] - doc.rightMargin, 0.42 * inch, f"Page {self._pageNumber}")
+                super().showPage()
+            super().save()
+
+    doc.build(_pdf_story_from_profile(profile), canvasmaker=ResumeCanvas)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -1364,6 +1498,10 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
 
     add(profile.get("name") or "Resume", size=20, bold=True, after=4)
 
+    role = _pdf_safe_text(profile.get("headline") or profile.get("current_role"))
+    if role:
+        add(role, size=10, bold=True, after=2)
+
     contact_bits = [profile.get("location"), profile.get("email"), profile.get("phone")]
     contact_line = " | ".join(_pdf_safe_text(bit) for bit in contact_bits if _pdf_safe_text(bit))
     if contact_line:
@@ -1378,10 +1516,12 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
         add("PROFESSIONAL SUMMARY", size=11, bold=True, after=2)
         add(summary, size=10, after=4)
 
-    skills = _candidate_profile_pdf_skills(profile)
-    if skills:
-        add("TECHNICAL SKILLS", size=11, bold=True, after=2)
-        add(", ".join(skills), size=10, after=4)
+    skill_groups = _candidate_profile_pdf_skill_groups(profile)
+    if skill_groups:
+        add("CORE SKILLS", size=11, bold=True, after=2)
+        for label, skills in skill_groups:
+            add(f"{label}: {', '.join(skills)}", size=10, after=1)
+        blocks.append({"blank": True, "after": 3})
 
     experience = _sort_experience_for_display(profile.get("experience") or profile.get("work_experience") or [])
     if experience:

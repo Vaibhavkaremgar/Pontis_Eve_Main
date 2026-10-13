@@ -357,6 +357,47 @@ def test_candidate_profile_pdf_skills_removes_noisy():
     assert "resume processing" not in lower
 
 
+def test_ats_pdf_consolidates_categorized_and_new_skills_into_core_skills():
+    profile = _make_profile({
+        "keySkills": ["Python", "FastAPI", "Python"],
+        "raw_data": {
+            "programming_languages": ["Python", "TypeScript"],
+            "frameworks": ["FastAPI", "React"],
+            "databases": ["PostgreSQL"],
+            "tools": ["Docker"],
+            "testing": ["Pytest"],
+        },
+    })
+    pdf = asyncio.run(_build_pdf(profile))
+    text = _extract_pdf_text(pdf)
+    assert "CORE SKILLS" in text.upper()
+    assert "Programming Languages" in text
+    assert "Frameworks & Libraries" in text
+    assert "Databases" in text
+    assert "Tools & Platforms" in text
+    assert "Testing" in text
+    for skill in ("Python", "TypeScript", "FastAPI", "React", "PostgreSQL", "Docker", "Pytest"):
+        assert skill in text
+    assert text.lower().count("python") == 1
+
+
+def test_ats_pdf_omits_empty_skill_categories_and_uses_actual_project_data():
+    profile = _make_profile({
+        "keySkills": ["Python"],
+        "raw_data": {"databases": []},
+        "projects": [{
+            "title": "Candidate Portal",
+            "description": "Built an accessible candidate portal.",
+            "technologies": ["Python", "FastAPI"],
+        }],
+    })
+    text = _extract_pdf_text(asyncio.run(_build_pdf(profile)))
+    assert "Databases" not in text
+    assert "PROJECTS" in text.upper()
+    assert "Candidate Portal" in text
+    assert "Built an accessible candidate portal" in text
+
+
 # ---------------------------------------------------------------------------
 # 19. No green ATS badge / banner in PDF
 # ---------------------------------------------------------------------------
