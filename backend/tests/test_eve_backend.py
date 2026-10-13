@@ -16,7 +16,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://candidate-hub-97.preview.emergentagent.com",
+    "http://127.0.0.1:8001",
 ).rstrip("/")
 
 # Adam → Eve uses EVE_INTERNAL_TOKEN

@@ -100,7 +100,8 @@ def _reset_linkedin_client():
 
 
 @pytest.mark.asyncio
-async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(monkeypatch):
+async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=server.logger.name)
     monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
@@ -121,6 +122,10 @@ async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(mo
         "client_secret": "client-secret",
         "code_verifier": "pkce-verifier",
     }
+    assert "client_secret_length=13" in caplog.text
+    assert "client-secret" not in caplog.text
+    assert "authorization-code" not in caplog.text
+    assert "pkce-verifier" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -143,7 +148,9 @@ async def test_linkedin_token_exchange_rejects_sanitized_oauth_errors(monkeypatc
     assert exc.value.status_code == 400
     assert exc.value.detail == "LinkedIn token exchange failed."
     assert f"category={category}" in caplog.text
-    assert "sensitive upstream detail" not in caplog.text
+    assert f"error={category}" in caplog.text
+    assert "description=sensitive upstream detail" in caplog.text
+    assert "client-secret" not in caplog.text
 
 
 @pytest.mark.asyncio

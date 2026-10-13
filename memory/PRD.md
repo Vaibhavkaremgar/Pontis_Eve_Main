@@ -21,7 +21,7 @@ Iterated with user toward a warm cream/off-white iPhone-like aesthetic (referenc
 ## Implemented (Feb 2026)
 - Frontend refactored into `/components/Sidebar.jsx`, `ChatHub.jsx`, `LivingProfile.jsx`.
 - `App.js` uses `react-resizable-panels` for draggable columns.
-- Backend `/api/chat` endpoint using `emergentintegrations.LlmChat` with `gpt-5-nano` (cheapest OpenAI).
+- Backend `/api/chat` endpoint using the application's server-side LLM client.
 - Real chat with Jack wired via axios, with typing indicator and sonner toasts.
 - Mock data lives in `/frontend/src/mock.js` — jobs, profile, docs, recent activity, quick actions.
 
@@ -30,4 +30,4 @@ Iterated with user toward a warm cream/off-white iPhone-like aesthetic (referenc
 - P1: Streaming SSE responses for the chat.
 - P1: Move "Coaching" into a dedicated tab.
 - P2: Voice input via Whisper (deferred per user).
-- P2: Auth (JWT or Emergent Google login) + multi-user profiles.
+- P2: OAuth/JWT authentication + multi-user profiles.

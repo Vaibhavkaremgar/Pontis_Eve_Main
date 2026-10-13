@@ -79,6 +79,16 @@ class _SharedOAuthDatabase:
                             return _Result()
                         row["state_consumed_at"] = now
                         return _Result({"id": row["id"], "pkce_verifier": row["pkce_verifier"]})
+                    if query.startswith("SELECT state_expires_at <= now() AS expired"):
+                        row = next((row for row in database.rows.values()
+                            if row["provider"] == params["provider"]
+                            and row["state_hash"] == params["state_hash"]), None)
+                        if not row:
+                            return _Result()
+                        return _Result({
+                            "expired": row["state_expires_at"] <= now,
+                            "already_used": row["state_consumed_at"] is not None,
+                        })
                     if "SET exchange_code_hash" in query:
                         row = database.rows.get(params["transaction_id"])
                         if not row or row["state_consumed_at"] is None or row["exchange_code_hash"] is not None:

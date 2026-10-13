@@ -8621,6 +8621,7 @@ async def _ensure_schema():
 @app.on_event("startup")
 async def on_startup():
     _validated_candidate_session_secret()
+    _log_linkedin_oauth_startup_config()
     await _ensure_schema()
     asyncio.ensure_future(_retry_worker())
     from app.job_ingestion.scheduler import start_scheduler
@@ -12280,9 +12281,34 @@ import secrets
 import urllib.parse
 import httpx
 
-LINKEDIN_CLIENT_ID = os.environ.get("LINKEDIN_CLIENT_ID", "")
-LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
-LINKEDIN_REDIRECT_URI = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
+_LINKEDIN_CLIENT_ID_RAW = os.environ.get("LINKEDIN_CLIENT_ID", "")
+_LINKEDIN_CLIENT_SECRET_RAW = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
+_LINKEDIN_REDIRECT_URI_RAW = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
+
+
+def _has_wrapping_quotes(value: str) -> bool:
+    return len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}
+
+
+LINKEDIN_CLIENT_ID = _LINKEDIN_CLIENT_ID_RAW.strip()
+LINKEDIN_CLIENT_SECRET = _LINKEDIN_CLIENT_SECRET_RAW.strip()
+LINKEDIN_REDIRECT_URI = _LINKEDIN_REDIRECT_URI_RAW.strip()
+if _has_wrapping_quotes(LINKEDIN_CLIENT_ID) or _has_wrapping_quotes(LINKEDIN_CLIENT_SECRET):
+    raise RuntimeError("LinkedIn OAuth credentials must not include wrapping quotes.")
+
+
+def _log_linkedin_oauth_startup_config() -> None:
+    logger.info(
+        "LinkedIn OAuth startup config client_id=%s client_secret_length=%d "
+        "redirect_uri=%s client_id_had_whitespace=%s "
+        "client_secret_had_whitespace=%s redirect_uri_had_whitespace=%s",
+        LINKEDIN_CLIENT_ID,
+        len(LINKEDIN_CLIENT_SECRET),
+        LINKEDIN_REDIRECT_URI,
+        _LINKEDIN_CLIENT_ID_RAW != LINKEDIN_CLIENT_ID,
+        _LINKEDIN_CLIENT_SECRET_RAW != LINKEDIN_CLIENT_SECRET,
+        _LINKEDIN_REDIRECT_URI_RAW != LINKEDIN_REDIRECT_URI,
+    )
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 OAUTH_STATE_TTL_SECONDS = 10 * 60
 OAUTH_EXCHANGE_TTL_SECONDS = 60
@@ -12326,16 +12352,27 @@ async def _create_oauth_transaction(provider: str, state: str, pkce_verifier: st
 
 
 async def _consume_oauth_transaction(
-    provider: str, returned_state: Optional[str], stored_state: Optional[str]
+    provider: str, returned_state: Optional[str], stored_state: Optional[str],
+    request_id: Optional[str] = None,
 ) -> tuple[str, str]:
+    request_id = request_id or str(uuid.uuid4())
     if not returned_state:
-        logger.warning("OAuth state rejected provider=%s category=missing_query_state", provider)
+        logger.warning(
+            "OAuth state rejected provider=%s request_id=%s category=missing_query_state",
+            provider, request_id,
+        )
         raise HTTPException(status_code=400, detail="Invalid OAuth state.")
     if not stored_state:
-        logger.warning("OAuth state rejected provider=%s category=missing_state_cookie", provider)
+        logger.warning(
+            "OAuth state rejected provider=%s request_id=%s category=missing_state_cookie",
+            provider, request_id,
+        )
         raise HTTPException(status_code=400, detail="Invalid OAuth state.")
     if not hmac.compare_digest(returned_state, stored_state):
-        logger.warning("OAuth state rejected provider=%s category=state_cookie_mismatch", provider)
+        logger.warning(
+            "OAuth state rejected provider=%s request_id=%s category=state_cookie_mismatch",
+            provider, request_id,
+        )
         raise HTTPException(status_code=400, detail="Invalid OAuth state.")
     try:
         async with SessionLocal() as db:
@@ -12352,15 +12389,43 @@ async def _consume_oauth_transaction(
                 "state_hash": _oauth_lookup_hash(returned_state),
             })
             row = result.mappings().fetchone()
+            failure_reason = None
+            if not row:
+                diagnostic = await db.execute(text("""
+                    SELECT
+                        state_expires_at <= now() AS expired,
+                        state_consumed_at IS NOT NULL AS already_used
+                    FROM oauth_transactions
+                    WHERE provider = :provider AND state_hash = :state_hash
+                    LIMIT 1
+                """), {
+                    "provider": provider,
+                    "state_hash": _oauth_lookup_hash(returned_state),
+                })
+                diagnostic_row = diagnostic.mappings().fetchone()
+                if not diagnostic_row:
+                    failure_reason = "state_missing"
+                elif diagnostic_row.get("already_used"):
+                    failure_reason = "state_already_used"
+                elif diagnostic_row.get("expired"):
+                    failure_reason = "state_expired"
+                else:
+                    failure_reason = "state_rejected"
             await db.commit()
     except Exception as exc:
         raise _oauth_storage_error("consume_state", exc) from exc
     if not row:
-        logger.warning("OAuth state rejected provider=%s category=state_missing_expired_or_replayed", provider)
+        logger.warning(
+            "OAuth state rejected provider=%s request_id=%s category=%s",
+            provider, request_id, failure_reason,
+        )
         raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
     verifier = row.get("pkce_verifier")
     if not isinstance(verifier, str) or not verifier:
-        logger.warning("OAuth state rejected provider=%s category=missing_pkce_verifier", provider)
+        logger.warning(
+            "OAuth state rejected provider=%s request_id=%s category=missing_pkce_verifier",
+            provider, request_id,
+        )
         raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
     return str(row["id"]), verifier
 
@@ -12512,6 +12577,12 @@ def _linkedin_token_error_category(response: httpx.Response) -> str:
 async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -> str:
     """Exchange one LinkedIn code while keeping credentials and error bodies private."""
     request_id = str(uuid.uuid4())
+    logger.info(
+        "LinkedIn token exchange config request_id=%s client_id=%s "
+        "client_secret_length=%d redirect_uri=%s",
+        request_id, LINKEDIN_CLIENT_ID, len(LINKEDIN_CLIENT_SECRET),
+        LINKEDIN_REDIRECT_URI,
+    )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
@@ -12535,6 +12606,25 @@ async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -
         raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.") from exc
 
     if response.status_code < 200 or response.status_code >= 300:
+        content_type = response.headers.get("content-type", "").lower()
+        if content_type.startswith("application/json"):
+            try:
+                error_payload = response.json()
+            except (ValueError, TypeError):
+                error_payload = {}
+        else:
+            error_payload = {}
+        if not isinstance(error_payload, dict):
+            error_payload = {}
+        error = str(error_payload.get("error") or "unexpected_response")
+        description = " ".join(
+            str(error_payload.get("error_description") or "").split()
+        )[:300]
+        logger.warning(
+            "LinkedIn token exchange rejected request_id=%s "
+            "upstream_status=%s error=%s description=%s",
+            request_id, response.status_code, error, description,
+        )
         logger.warning(
             "LinkedIn OAuth token exchange rejected request_id=%s upstream_status=%s category=%s",
             request_id,
