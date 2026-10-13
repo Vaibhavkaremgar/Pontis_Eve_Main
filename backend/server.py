@@ -937,6 +937,31 @@ def _normalize_for_frontend(c: dict) -> dict:
     return profile
 
 
+def _repair_known_pdf_mojibake(text: str) -> str:
+    """Repair only unmistakable UTF-8-as-Latin-1 artifacts at the PDF edge."""
+    # Stored candidate content is otherwise left untouched. These markers are
+    # produced when punctuation has been decoded with the wrong encoding.
+    if not any(marker in text for marker in ("Ã", "Â", "â€", "â€¢")):
+        return text
+    repaired = text
+    # Older saved values can contain two successive bad decodes in addition to
+    # the original UTF-8 punctuation, so allow the bounded third repair pass.
+    for _ in range(3):
+        candidate = None
+        for legacy_encoding in ("latin-1", "cp1252"):
+            try:
+                candidate = repaired.encode(legacy_encoding).decode("utf-8")
+                break
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+        if candidate is None:
+            break
+        if candidate == repaired:
+            break
+        repaired = candidate
+    return repaired
+
+
 def _pdf_safe_text(value: Any) -> str:
     dash_translation = str.maketrans({
         "\u2010": "-",  # hyphen
@@ -954,7 +979,7 @@ def _pdf_safe_text(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        return value.strip().translate(dash_translation)
+        return _repair_known_pdf_mojibake(value).strip().translate(dash_translation)
     if isinstance(value, list):
         return ", ".join(_pdf_safe_text(item) for item in value if _pdf_safe_text(item))
     if isinstance(value, dict):
@@ -1137,19 +1162,30 @@ def _candidate_profile_pdf_skill_groups(profile: dict) -> list[tuple[str, list[s
     return result
 
 
-def _ats_clean_description(description: str) -> list[str]:
-    """Split a description into deduplicated bullet sentences for ATS resume output."""
-    if not description:
-        return []
-    # Split on sentence boundaries
-    raw_sentences = re.split(r"(?<=[.!?])\s+", description.strip())
+def _ats_clean_description(description: Any) -> list[str]:
+    """Return plain, display-deduplicated responsibility text for one bullet list."""
+    values = description if isinstance(description, (list, tuple)) else [description]
+    raw_sentences: list[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            raw_sentences.extend(_ats_clean_description(value))
+            continue
+        text = _pdf_safe_text(value)
+        if not text:
+            continue
+        # Source bullet markers are deliberately removed: ListFlowable owns
+        # the one and only visual marker and its hanging indent.
+        for line in re.split(r"\r?\n+", text):
+            line = re.sub(r"^\s*(?:[•*\-]+|\d+[.)])\s*", "", line).strip()
+            if line:
+                raw_sentences.extend(re.split(r"(?<=[.!?])\s+(?=[A-Z])", line))
     seen: set[str] = set()
     bullets: list[str] = []
     for sentence in raw_sentences:
-        cleaned = sentence.strip().strip(".")
+        cleaned = re.sub(r"\s+", " ", sentence).strip().strip("•*- \t").rstrip(".")
         if not cleaned:
             continue
-        key = re.sub(r"\s+", " ", cleaned.lower())
+        key = cleaned.casefold()
         if key in seen:
             continue
         seen.add(key)
@@ -1390,8 +1426,9 @@ def _pdf_story_from_profile(profile: dict) -> list:
             block: list = [p(job_title, job_title_style)]
             if meta_parts:
                 block.append(p(" | ".join(meta_parts), meta_style))
-            description = _pdf_safe_text(item.get("description") or item.get("summary"))
-            bullets = _ats_clean_description(description)
+            bullets = _ats_clean_description([
+                item.get("description") or item.get("summary"), item.get("responsibilities"),
+            ])
             if bullets:
                 block.extend(bullet_list(bullets))
             exp_blocks.append(KeepTogether(block))
@@ -1427,9 +1464,11 @@ def _pdf_story_from_profile(profile: dict) -> list:
             if not title:
                 continue
             block = [p(title, job_title_style)]
-            detail = _pdf_safe_text(item.get("description"))
-            if detail:
-                block.extend(bullet_list(_ats_clean_description(detail)))
+            project_bullets = _ats_clean_description([
+                item.get("description") or item.get("summary"), item.get("responsibilities"), item.get("outcomes"),
+            ])
+            if project_bullets:
+                block.extend(bullet_list(project_bullets))
             technologies = [skill for skill in item.get("technologies") or [] if _pdf_safe_text(skill)]
             if technologies:
                 block.append(p("Technologies: " + ", ".join(_pdf_safe_text(skill) for skill in technologies), meta_style))
@@ -1539,8 +1578,9 @@ def _candidate_profile_pdf_blocks(profile: dict) -> list[dict]:
             meta_parts = [part for part in [company, location, dates] if part]
             if meta_parts:
                 add(" | ".join(meta_parts), size=9, after=1)
-            description = _pdf_safe_text(item.get("description") or item.get("summary"))
-            for bullet in _ats_clean_description(description):
+            for bullet in _ats_clean_description([
+                item.get("description") or item.get("summary"), item.get("responsibilities"),
+            ]):
                 add(f"- {bullet}", size=10, indent=12, after=1)
             blocks.append({"blank": True, "after": 3})
         blocks.append({"blank": True, "after": 2})
@@ -9359,7 +9399,8 @@ def _synthesized_experience_dates(entry: dict) -> str:
     if not start_label:
         return ""
     end_label = _normalize_profile_text(entry.get("end_date") or entry.get("endDate"))
-    return " Ã¢â‚¬â€ ".join(filter(None, [start_label, end_label or "Present"]))
+    # Keep this ASCII because the standard ReportLab Helvetica font is used.
+    return " - ".join(filter(None, [start_label, end_label or "Present"]))
 
 
 def _dedupe_experience_description(value: Any) -> str:

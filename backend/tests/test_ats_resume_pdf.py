@@ -505,3 +505,33 @@ def test_format_pdf_date_range_prefers_human_dates_field():
     item = {"start_date": "2023-11-01", "end_date": "2024-10-09", "dates": "Nov 2023 - Oct 2024"}
     result = server._format_pdf_date_range(item)
     assert result == "Nov 2023 - Oct 2024"
+
+
+def test_ats_clean_description_strips_source_bullets_and_preserves_distinct_items():
+    bullets = server._ats_clean_description("• Built APIs.\n- Improved reliability.")
+    assert bullets == ["Built APIs", "Improved reliability"]
+
+
+def test_ats_pdf_source_bullets_render_once_and_duplicate_project_text_is_removed():
+    profile = _make_profile({
+        "experience": [
+            {"title": "Engineer", "company": "Acme", "dates": "2024 - Present",
+             "description": "• Built APIs.", "responsibilities": ["Built APIs.", "Improved reliability."]},
+            {"title": "Backend Developer", "company": "", "dates": "2020", "description": "Maintained services."},
+        ],
+        "projects": [{
+            "title": "Jobs Platform", "description": "• Collected jobs from public APIs.",
+            "responsibilities": ["Collected jobs from public APIs.", "Added monitoring."],
+        }],
+    })
+    text = _extract_pdf_text(asyncio.run(_build_pdf(profile)))
+    assert text.count("Built APIs") == 1
+    assert text.count("Collected jobs from public APIs") == 1
+    assert "Improved reliability" in text
+    # An incomplete record is presented, not silently merged with another job.
+    assert "Backend Developer" in text
+
+
+def test_pdf_date_formatting_repairs_known_mojibake_and_keeps_year_only_values():
+    assert server._format_pdf_date_range({"dates": "Jan 2024 Ã¢â‚¬â€œ Present"}) == "Jan 2024 - Present"
+    assert server._format_pdf_date_range({"dates": "2020"}) == "2020"
