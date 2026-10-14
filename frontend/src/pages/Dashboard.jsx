@@ -294,6 +294,22 @@ function Dashboard() {
     }
   }, [setActiveTabPersisted]);
 
+  const handleProfileCompletionGuidanceClick = React.useCallback(() => {
+    // strengthPercent is hydrated from the latest candidate profile response.
+    // Treat an unavailable value as incomplete so it cannot route a candidate
+    // away from the place where they can update their profile.
+    const profileCompletion = Number(userProfile?.strengthPercent);
+    if (!Number.isFinite(profileCompletion) || profileCompletion < 75) {
+      handleSidebarTabChange("profile");
+      return;
+    }
+
+    userChoseCenterViewRef.current = true;
+    setActiveTabPersisted("jobs");
+    setRightPanelTab("profile");
+    setCenterView("chat");
+  }, [handleSidebarTabChange, setActiveTabPersisted, userProfile?.strengthPercent]);
+
   const displayedRightPanelTab = activeSidebarTab === "jobs"
     ? (centerView === "swipe" ? "resume" : "profile")
     : activeSidebarTab;
@@ -934,9 +950,15 @@ function Dashboard() {
       <div className="shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 sm:px-5 border-b border-black/[0.05]">
         <div aria-hidden="true" />
         {userProfile.strengthPercent < 90 && (
-          <span data-testid="profile-90-navbar-guidance" className="col-start-2 min-w-0 text-center text-xs leading-5 text-[#514875] font-semibold sm:whitespace-nowrap">
+          <button
+            type="button"
+            data-testid="profile-90-navbar-guidance"
+            onClick={handleProfileCompletionGuidanceClick}
+            aria-label="Complete your profile to get personalized job matches"
+            className="col-start-2 min-w-0 rounded-sm text-center text-xs font-semibold leading-5 text-[#514875] transition-colors hover:text-[#3E365D] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F] sm:whitespace-nowrap"
+          >
             Complete your profile to 90% to get personalized job matches.
-          </span>
+          </button>
         )}
         <div className="col-start-3 flex items-center justify-self-end gap-2 sm:gap-3">
           {resumeFixCreditBalance != null && (
