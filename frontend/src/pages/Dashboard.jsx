@@ -1055,8 +1055,8 @@ function Dashboard() {
         <Panel
           id="center-panel"
           order={2}
-          defaultSize={usesSingleContentPanel ? 88 : 58}
-          minSize={22}
+          defaultSize={usesSingleContentPanel ? 88 : 38}
+          minSize={30}
           className="h-full"
           data-testid="dashboard-content-panel"
           data-single-content-panel={usesSingleContentPanel ? "true" : "false"}
@@ -1272,7 +1272,7 @@ function Dashboard() {
         {!usesSingleContentPanel && <>
         <ResizeHandle testId="resize-handle-right" subtle />
 
-        <Panel id="right-panel" order={3} defaultSize={30} minSize={30} className="h-full" data-testid="right-panel">
+        <Panel id="right-panel" order={3} defaultSize={50} minSize={40} className="h-full" data-testid="right-panel">
           {displayedRightPanelTab === "resume" ? (
             <ResumeContextPanel candidateId={candidateId} candidateToken={candidateToken} documents={documents} docsLoading={docsLoading} />
           ) : displayedRightPanelTab === "billing" ? <BillingContextPanel candidateId={candidateId} />
