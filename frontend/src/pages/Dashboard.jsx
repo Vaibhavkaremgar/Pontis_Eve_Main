@@ -626,6 +626,11 @@ function Dashboard() {
     : userProfile?.opportunity_type === "intern"
       ? "internships"
       : "chat";
+  // Active styling is driven only by the visible center view. Candidate
+  // preference remains a separate, persistent font emphasis for inactive tabs.
+  const isJobsTabActive = opportunityType === "jobs" && centerView === "swipe";
+  const isInternshipsTabActive = opportunityType === "intern" && centerView === "swipe";
+  const isChatTabActive = centerView === "chat" || centerView === "voice";
 
   React.useEffect(() => {
     const onProfileUpdated = (event) => {
@@ -1097,13 +1102,13 @@ function Dashboard() {
                     setRightPanelTab("resume");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                    centerView === "swipe"
-                      ? "bg-black/[0.06] text-[#1F1F1F]"
+                    isJobsTabActive
+                      ? "bg-black/[0.06] text-[#1F1F1F] font-semibold"
                       : "text-[#9A9A98] hover:text-[#4A4A48]"
                   } ${
-                    primaryCenterTab === "jobs"
+                    !isJobsTabActive && primaryCenterTab === "jobs"
                       ? "font-semibold"
-                      : centerView === "swipe" ? "font-medium" : "font-normal"
+                      : !isJobsTabActive ? "font-normal" : ""
                   }`}
                 >
                   New Jobs
@@ -1118,15 +1123,15 @@ function Dashboard() {
                     setRightPanelTab("resume");
                   }}
                   className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                    opportunityType === "intern" && centerView === "swipe"
-                      ? "bg-black/[0.06] text-[#1F1F1F]"
+                    isInternshipsTabActive
+                      ? "bg-black/[0.06] text-[#1F1F1F] font-semibold"
                       : opportunityType !== "intern"
                         ? "text-[#B8B8B4] cursor-not-allowed"
                         : "text-[#9A9A98] hover:text-[#4A4A48]"
                   } ${
-                    primaryCenterTab === "internships"
+                    !isInternshipsTabActive && primaryCenterTab === "internships"
                       ? "font-semibold"
-                      : opportunityType === "intern" && centerView === "swipe" ? "font-medium" : "font-normal"
+                      : !isInternshipsTabActive ? "font-normal" : ""
                   }`}
                 >
                   Internships
@@ -1139,13 +1144,13 @@ function Dashboard() {
                     setRightPanelTab("profile");
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[12.5px] transition-colors ${
-                  centerView === "chat" || centerView === "voice"
-                    ? "bg-black/[0.06] text-[#1F1F1F]"
+                  isChatTabActive
+                    ? "bg-black/[0.06] text-[#1F1F1F] font-semibold"
                     : "text-[#9A9A98] hover:text-[#4A4A48]"
                 } ${
-                  primaryCenterTab === "chat"
+                  !isChatTabActive && primaryCenterTab === "chat"
                     ? "font-semibold"
-                    : centerView === "chat" || centerView === "voice" ? "font-medium" : "font-normal"
+                    : !isChatTabActive ? "font-normal" : ""
                 }`}
               >
                 Chat with Eve

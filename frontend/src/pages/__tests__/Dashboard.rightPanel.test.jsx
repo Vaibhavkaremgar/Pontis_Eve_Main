@@ -49,11 +49,15 @@ describe("Dashboard three-panel context", () => {
     const internshipsTab = view.container.querySelector("[data-testid=internships-tab]");
     const chatTab = view.container.querySelector("[data-testid=chat-tab]");
     expect(chatTab.className).toContain("font-semibold");
-    expect(jobsTab.className).toContain("font-medium");
+    expect(jobsTab.className).toContain("font-semibold");
+    expect(jobsTab.className).toContain("bg-black/[0.06]");
+    expect(chatTab.className).toContain("text-[#9A9A98]");
     expect(internshipsTab.className).toContain("font-normal");
     click(view.container, "chat-tab");
     expect(chatTab.className).toContain("font-semibold");
+    expect(chatTab.className).toContain("bg-black/[0.06]");
     expect(jobsTab.className).toContain("font-normal");
+    expect(jobsTab.className).toContain("text-[#9A9A98]");
     view.unmount();
   });
 
@@ -64,8 +68,13 @@ describe("Dashboard three-panel context", () => {
     setupAxios({ profiles: [profile({ opportunity_type: opportunityType })] });
     const view = renderDashboard();
     await flush();
-    expect(view.container.querySelector(`[data-testid=${primaryTabId}]`).className).toContain("font-semibold");
+    const activeTab = view.container.querySelector(`[data-testid=${primaryTabId}]`);
+    expect(activeTab.className).toContain("font-semibold");
+    expect(activeTab.className).toContain("bg-black/[0.06]");
+    expect(activeTab.className).toContain("text-[#1F1F1F]");
     expect(view.container.querySelector("[data-testid=chat-tab]").className).toContain("font-normal");
+    expect([...view.container.querySelectorAll("[data-testid$=-tab]")]
+      .filter((tab) => tab.className.includes("bg-black/[0.06]"))).toHaveLength(1);
     view.unmount();
   });
 
