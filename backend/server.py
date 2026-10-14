@@ -9676,7 +9676,11 @@ def _merge_education(existing: Any, new_items: Any) -> list:
 
     def _merge_education_entry(target: dict, source: dict) -> dict:
         merged_entry = dict(target)
-        for field in ("degree", "institution", "dates", "duration", "start_date", "end_date", "field_of_study", "location", "description"):
+        for field in (
+            "degree", "institution", "dates", "duration", "start_date", "startDate",
+            "end_date", "endDate", "field_of_study", "location", "description",
+            "cgpa", "CGPA", "gpa", "GPA", "percentage", "percent", "grade", "score",
+        ):
             existing_value = _normalize_profile_text(merged_entry.get(field))
             new_value = _normalize_profile_text(source.get(field))
             if not existing_value and new_value:

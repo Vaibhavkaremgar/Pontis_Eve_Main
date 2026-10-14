@@ -225,6 +225,11 @@ function formatExperienceDateRange(exp) {
 
 // Education does not inherit the work-history rule that assumes a missing end
 // date means an active role. "Present" is shown only when explicitly supplied.
+function isValidEducationCalendarDate(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function formatEducationDateLabel(value) {
   const text = normalizeText(value);
   if (!text) return "";
@@ -236,31 +241,35 @@ function formatEducationDateLabel(value) {
   const yearMonth = text.match(/^(\d{4})[-/.](\d{1,2})$/);
   if (yearMonth) {
     const month = Number(yearMonth[2]);
-    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${yearMonth[1]}` : "";
+    return month >= 1 && month <= 12 ? `${String(month).padStart(2, "0")}-${yearMonth[1].slice(-2)}` : "";
   }
 
   const monthYear = text.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
   if (monthYear) {
     const month = EXPERIENCE_MONTHS.get(monthYear[1].toLowerCase());
-    return month != null ? `${MONTH_LABELS[month]} ${monthYear[2]}` : "";
+    return month != null ? `${String(month + 1).padStart(2, "0")}-${monthYear[2].slice(-2)}` : "";
   }
 
   const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (iso) {
+    const year = Number(iso[1]);
     const month = Number(iso[2]);
-    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${iso[1]}` : "";
+    const day = Number(iso[3]);
+    return isValidEducationCalendarDate(year, month, day) ? `${String(month).padStart(2, "0")}-${iso[1].slice(-2)}` : "";
   }
 
   const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
   if (dayFirst) {
+    const day = Number(dayFirst[1]);
     const month = Number(dayFirst[2]);
-    return month >= 1 && month <= 12 ? `${MONTH_LABELS[month - 1]} ${dayFirst[3]}` : "";
+    const year = Number(dayFirst[3]);
+    return isValidEducationCalendarDate(year, month, day) ? `${String(month).padStart(2, "0")}-${dayFirst[3].slice(-2)}` : "";
   }
 
   return "";
 }
 
-function formatEducationDateRange(education) {
+export function formatEducationDateRange(education) {
   if (!education || typeof education !== "object") return "";
 
   let start = education.start_date ?? education.startDate ?? null;
@@ -282,6 +291,29 @@ function formatEducationDateRange(education) {
   const endLabel = formatEducationDateLabel(end);
   if (startLabel && endLabel) return `${startLabel} — ${endLabel}`;
   return endLabel || startLabel;
+}
+
+export function formatEducationScore(education) {
+  if (!education || typeof education !== "object") return "";
+
+  const firstValue = (fields) => fields
+    .map((field) => education[field])
+    .find((value) => value !== null && value !== undefined && String(value).trim() !== "");
+  const formatted = (label, value) => `${label}: ${String(value).trim()}`;
+
+  const cgpa = firstValue(["cgpa", "CGPA"]);
+  if (cgpa !== undefined) return formatted("CGPA", cgpa);
+  const gpa = firstValue(["gpa", "GPA"]);
+  if (gpa !== undefined) return formatted("GPA", gpa);
+  const percentage = firstValue(["percentage", "percent"]);
+  if (percentage !== undefined) return formatted("Percentage", percentage);
+  const grade = firstValue(["grade", "score"]);
+  if (grade === undefined) return "";
+  const value = String(grade).trim();
+  if (/\bcgpa\b/i.test(value)) return formatted("CGPA", value.replace(/\bcgpa\b/i, "").trim());
+  if (/\bgpa\b/i.test(value)) return formatted("GPA", value.replace(/\bgpa\b/i, "").trim());
+  if (/%|\bpercentage\b/i.test(value)) return formatted("Percentage", value.replace(/\bpercentage\b/i, "").trim());
+  return formatted("Grade", value);
 }
 
 function extractExperienceSortValues(exp) {

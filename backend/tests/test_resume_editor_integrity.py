@@ -66,6 +66,16 @@ def test_education_merge_adds_valid_incoming_entry_when_existing_is_none():
     assert server._merge_education(None, incoming) == incoming
 
 
+def test_education_merge_enriches_existing_dates_and_scores_without_overwriting():
+    existing = [{"degree": "B.Tech", "institution": "University", "start_date": "2018-08"}]
+    incoming = [{"degree": "B.Tech", "institution": "University", "end_date": "2022-06", "cgpa": "8.25"}]
+
+    assert server._merge_education(existing, incoming) == [{
+        "degree": "B.Tech", "institution": "University", "start_date": "2018-08",
+        "end_date": "2022-06", "cgpa": "8.25",
+    }]
+
+
 def test_resume_collection_merges_ignore_none_and_invalid_values():
     assert server._merge_education(None, None) == []
     assert server._merge_education({"degree": "invalid"}, None) == []

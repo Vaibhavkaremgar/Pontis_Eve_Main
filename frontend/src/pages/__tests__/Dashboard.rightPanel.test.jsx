@@ -41,6 +41,34 @@ function click(container, id) { act(() => container.querySelector(`[data-testid=
 describe("Dashboard three-panel context", () => {
   beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); global.URL.createObjectURL = jest.fn(() => "blob:resume"); global.URL.revokeObjectURL = jest.fn(); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
 
+  it("emphasizes the candidate's primary tab while preserving selected-tab styling", async () => {
+    setupAxios({ profiles: [profile()] });
+    const view = renderDashboard();
+    await flush();
+    const jobsTab = view.container.querySelector("[data-testid=jobs-tab]");
+    const internshipsTab = view.container.querySelector("[data-testid=internships-tab]");
+    const chatTab = view.container.querySelector("[data-testid=chat-tab]");
+    expect(chatTab.className).toContain("font-semibold");
+    expect(jobsTab.className).toContain("font-medium");
+    expect(internshipsTab.className).toContain("font-normal");
+    click(view.container, "chat-tab");
+    expect(chatTab.className).toContain("font-semibold");
+    expect(jobsTab.className).toContain("font-normal");
+    view.unmount();
+  });
+
+  it.each([
+    ["jobs", "jobs-tab"],
+    ["intern", "internships-tab"],
+  ])("emphasizes %s preferences", async (opportunityType, primaryTabId) => {
+    setupAxios({ profiles: [profile({ opportunity_type: opportunityType })] });
+    const view = renderDashboard();
+    await flush();
+    expect(view.container.querySelector(`[data-testid=${primaryTabId}]`).className).toContain("font-semibold");
+    expect(view.container.querySelector("[data-testid=chat-tab]").className).toContain("font-normal");
+    view.unmount();
+  });
+
   it("shows job cards in the middle and the uploaded resume on the right", async () => {
     setupAxios(); const view = renderDashboard(); await flush();
     expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();

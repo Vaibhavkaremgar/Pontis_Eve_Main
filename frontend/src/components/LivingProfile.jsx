@@ -1,11 +1,10 @@
 import React from "react";
 import axios from "axios";
-import { candidateAuthHeaders } from "../lib/candidateApiAuth";
 import DOMPurify from "dompurify";
 import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole, BriefcaseBusiness, CircleDollarSign, Clock3, Monitor, Sparkles, UsersRound, Pencil, Plus, X } from "lucide-react";
 import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 import { useApplicationFollowUp } from "./ApplicationFollowUp";
-import { formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
+import { formatEducationDateRange, formatEducationScore, formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
 import { normalizeJobDescription } from "../lib/jobDescription";
 
@@ -200,7 +199,6 @@ function groupExperienceByEmployment(experience) {
 }
 
 function formatEducationDates(education) {
-  if (education?.dates) return education.dates;
   const year = (value) => String(value ?? "").match(/(?:18|19|20|21)\d{2}/)?.[0];
   const startYear = year(education?.start_date ?? education?.startDate);
   const endYear = year(education?.end_date ?? education?.endDate);
@@ -239,44 +237,19 @@ function ResumeExperienceEntry({ exp }) {
   );
 }
 
-function formatEducationScore(education) {
-  if (!education || typeof education !== "object") return "";
-
-  const firstValue = (fields) => fields
-    .map((field) => education[field])
-    .find((value) => value !== null && value !== undefined && String(value).trim() !== "");
-  const formatted = (label, value) => `${label}: ${String(value).trim()}`;
-
-  const cgpa = firstValue(["cgpa", "CGPA"]);
-  if (cgpa !== undefined) return formatted("CGPA", cgpa);
-
-  const gpa = firstValue(["gpa", "GPA"]);
-  if (gpa !== undefined) return formatted("GPA", gpa);
-
-  const percentage = firstValue(["percentage", "percent"]);
-  if (percentage !== undefined) return formatted("Percentage", percentage);
-
-  const grade = firstValue(["grade", "score", "marks"]);
-  if (grade === undefined) return "";
-  const value = String(grade).trim();
-  if (/\bcgpa\b/i.test(value)) return formatted("CGPA", value.replace(/\bcgpa\b/i, "").trim());
-  if (/\bgpa\b/i.test(value)) return formatted("GPA", value.replace(/\bgpa\b/i, "").trim());
-  if (/%|\bpercentage\b/i.test(value)) return formatted("Percentage", value.replace(/\bpercentage\b/i, "").trim());
-  return formatted("Grade", value);
-}
-
 function ResumeEducationEntry({ edu }) {
-  const dates = formatEducationDates(edu);
+  const dates = formatEducationDateRange(edu);
   const score = formatEducationScore(edu);
 
   return (
     <div data-testid={`education-row-${edu.id}`} className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
         <h4 className="text-[13px] font-semibold text-[#1F1F1F]">{edu.degree || "Education not provided"}</h4>
-        {dates && <p className="shrink-0 text-[11.5px] text-[#777774]">{dates}</p>}
       </div>
       {edu.institution && <p className="mt-0.5 text-[12px] text-[#4A4A48]">{edu.institution}</p>}
-      {score && <p className="mt-1 text-[12px] text-[#4A4A48]">{score}</p>}
+      {(dates || score) && (
+        <p className="mt-1 text-[11.5px] text-[#777774]">{[dates, score].filter(Boolean).join(" | ")}</p>
+      )}
     </div>
   );
 }
@@ -301,51 +274,15 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const inputRef = React.useRef(null);
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
-  const [displayPhotoSrc, setDisplayPhotoSrc] = React.useState(null);
   const [deleting, setDeleting] = React.useState(false);
-  const photoObjectUrlRef = React.useRef(null);
   const resolvedPhotoSrc = React.useMemo(() => resolvePhotoSrc(photoUrl), [photoUrl]);
   const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
 
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
 
   React.useEffect(() => {
-    let cancelled = false;
-    if (photoObjectUrlRef.current) {
-      URL.revokeObjectURL(photoObjectUrlRef.current);
-      photoObjectUrlRef.current = null;
-    }
-    setDisplayPhotoSrc(null);
-
-    if (!resolvedPhotoSrc) {
-      return () => { cancelled = true; };
-    }
-
-    const isPrivatePhoto = /\/api\/candidate\/[^/]+\/photo\/view(?:[?#]|$)/i.test(resolvedPhotoSrc);
-    if (!isPrivatePhoto) {
-      setDisplayPhotoSrc(resolvedPhotoSrc);
-      return () => { cancelled = true; };
-    }
-
-    axios.get(resolvedPhotoSrc, {
-      responseType: "blob",
-      headers: candidateAuthHeaders(),
-    }).then((response) => {
-      if (cancelled) return;
-      const objectUrl = URL.createObjectURL(response.data);
-      photoObjectUrlRef.current = objectUrl;
-      setDisplayPhotoSrc(objectUrl);
-    }).catch(() => {
-      if (!cancelled) setDisplayPhotoSrc(null);
-    });
-
-    return () => {
-      cancelled = true;
-      if (photoObjectUrlRef.current) {
-        URL.revokeObjectURL(photoObjectUrlRef.current);
-        photoObjectUrlRef.current = null;
-      }
-    };
+    if (!resolvedPhotoSrc) return;
+    console.debug("[ProfilePhotoUpload] resolved image src:", resolvedPhotoSrc);
   }, [resolvedPhotoSrc]);
 
   const clearInput = () => {
@@ -397,9 +334,9 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 
   return (
     <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
-      {displayPhotoSrc ? (
+      {photoUrl ? (
         <img
-          src={displayPhotoSrc}
+          src={resolvedPhotoSrc}
           alt={user.name || "Candidate profile photo"}
           className="w-14 h-14 rounded-full object-cover"
         />
@@ -448,26 +385,13 @@ const editorInput = "w-full rounded-lg border border-black/10 bg-white px-3 py-2
 function csv(values) { return (values || []).join(", "); }
 function parseCsv(value) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
 
-const editorRemoveButton = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[#62578F] transition-colors hover:bg-[#F1EFF8] hover:text-[#4D427B] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]";
-
-function EditorRecordCard({ children, onRemove, removeLabel, className = "" }) {
-  return (
-    <div className="relative mb-3 rounded-xl border p-3">
-      <button type="button" onClick={onRemove} className={`absolute right-2 top-2 ${editorRemoveButton}`} aria-label={removeLabel}>
-        <X className="h-4 w-4" />
-      </button>
-      <div className={`pt-8 ${className}`}>{children}</div>
-    </div>
-  );
-}
-
-export function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
+function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
   const [draft, setDraft] = React.useState(() => ({
     name: profile.name || "", headline: profile.headline || profile.current_role || "", location: profile.location || "",
     experience_years: profile.experience_years ?? "", availability: profile.availability || "", salary_expectation: profile.salary_expectation || "", bio: profile.bio || generateBio(profile),
     work_experience: (profile.experience || []).map((item) => ({ title: item.title || "", company: item.company || "", dates: item.dates || "", description: item.description || item.summary || "" })),
     education: (profile.education || []).map((item) => ({ degree: item.degree || "", institution: item.institution || "", dates: item.dates || "" })),
-    skills: csv(profile.keySkills), certifications: (profile.certifications || []).map((name) => ({ name: String(name || "") })), preferred_roles: csv(profile.preferred_roles),
+    skills: csv(profile.keySkills), certifications: csv(profile.certifications), preferred_roles: csv(profile.preferred_roles),
     additional_information: profile.additional_information || "", hobbies: csv(profile.hobbies || profile.interests || profile.raw_data?.hobbies),
   }));
   const [saving, setSaving] = React.useState(false);
@@ -480,7 +404,7 @@ export function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
     try {
       await axios.put(`${API}/candidate/${candidateId}/profile`, {
         ...draft, experience_years: draft.experience_years === "" ? 0 : Number(draft.experience_years),
-        skills: parseCsv(draft.skills), certifications: draft.certifications.map((item) => item.name.trim()).filter(Boolean), preferred_roles: parseCsv(draft.preferred_roles), hobbies: parseCsv(draft.hobbies),
+        skills: parseCsv(draft.skills), certifications: parseCsv(draft.certifications), preferred_roles: parseCsv(draft.preferred_roles), hobbies: parseCsv(draft.hobbies),
       });
       await onSaved?.(); onClose();
     } catch (err) { setError(err?.response?.data?.detail || "Could not save the profile. Please try again."); }
@@ -494,10 +418,9 @@ export function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
           {[['name','Full name'],['headline','Professional headline'],['location','Location'],['experience_years','Years of experience'],['availability','Availability'],['salary_expectation','Salary expectation']].map(([key,label]) => <label key={key} className="text-xs font-medium text-[#4A4A48]">{label}<input type={key === 'experience_years' ? 'number' : 'text'} min="0" step="0.1" value={draft[key]} onChange={(e) => field(key,e.target.value)} className={`${editorInput} mt-1`} /></label>)}
         </div>
         <label className="block text-xs font-medium text-[#4A4A48]">Summary<textarea rows="4" value={draft.bio} onChange={(e) => field('bio',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
-        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Work experience</h3><button type="button" onClick={() => field('work_experience',[...draft.work_experience,{title:'',company:'',dates:'',description:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add experience</button></div>{draft.work_experience.map((item,index) => <EditorRecordCard key={index} onRemove={() => removeRecord('work_experience',index)} removeLabel="Remove experience" className="grid gap-2 sm:grid-cols-2">{[['title','Job title'],['company','Company'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('work_experience',index,key,e.target.value)} className={editorInput}/>)}<textarea aria-label="Description" placeholder="Description" value={item.description} onChange={(e) => recordField('work_experience',index,'description',e.target.value)} className={`${editorInput} sm:col-span-2`} rows="3"/></EditorRecordCard>)}</div>
-        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Education</h3><button type="button" onClick={() => field('education',[...draft.education,{degree:'',institution:'',dates:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add education</button></div>{draft.education.map((item,index) => <EditorRecordCard key={index} onRemove={() => removeRecord('education',index)} removeLabel="Remove education" className="grid gap-2 sm:grid-cols-3">{[['degree','Degree'],['institution','Institution'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('education',index,key,e.target.value)} className={editorInput}/>)}</EditorRecordCard>)}</div>
-        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Certifications</h3><button type="button" onClick={() => field('certifications',[...draft.certifications,{name:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add certificate</button></div>{draft.certifications.map((item,index) => <EditorRecordCard key={index} onRemove={() => removeRecord('certifications',index)} removeLabel="Remove certificate"><input aria-label="Certificate name" placeholder="Certificate name" value={item.name} onChange={(e) => recordField('certifications',index,'name',e.target.value)} className={editorInput}/></EditorRecordCard>)}</div>
-        {[['skills','Skills'],['preferred_roles','Preferred roles'],['hobbies','Hobbies & interests']].map(([key,label]) => <label key={key} className="block text-xs font-medium text-[#4A4A48]">{label}<input value={draft[key]} onChange={(e) => field(key,e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>)}
+        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Work experience</h3><button type="button" onClick={() => field('work_experience',[...draft.work_experience,{title:'',company:'',dates:'',description:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add experience</button></div>{draft.work_experience.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-2"><button onClick={() => removeRecord('work_experience',index)} className="absolute right-2 top-2" aria-label="Remove experience"><X className="h-4 w-4"/></button>{[['title','Job title'],['company','Company'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('work_experience',index,key,e.target.value)} className={editorInput}/>)}<textarea aria-label="Description" placeholder="Description" value={item.description} onChange={(e) => recordField('work_experience',index,'description',e.target.value)} className={`${editorInput} sm:col-span-2`} rows="3"/></div>)}</div>
+        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Education</h3><button type="button" onClick={() => field('education',[...draft.education,{degree:'',institution:'',dates:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add education</button></div>{draft.education.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-3"><button onClick={() => removeRecord('education',index)} className="absolute right-2 top-2" aria-label="Remove education"><X className="h-4 w-4"/></button>{[['degree','Degree'],['institution','Institution'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('education',index,key,e.target.value)} className={editorInput}/>)}</div>)}</div>
+        {[['skills','Skills'],['certifications','Certifications'],['preferred_roles','Preferred roles'],['hobbies','Hobbies & interests']].map(([key,label]) => <label key={key} className="block text-xs font-medium text-[#4A4A48]">{label}<input value={draft[key]} onChange={(e) => field(key,e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>)}
         <label className="block text-xs font-medium text-[#4A4A48]">Additional information<textarea rows="3" value={draft.additional_information} onChange={(e) => field('additional_information',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
         {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
       </div>
@@ -1764,6 +1687,7 @@ function OpportunitiesTab({ candidateId, onInterested }) {
 
 const TAB_TITLES = {
   jobs: "New jobs",
+  resume: "Latest resume",
   tracked: "Tracked jobs",
   profile: "Profile",
   documents: "Documents",
@@ -1896,6 +1820,7 @@ export default function LivingProfile({
       {/* Scrollable content */}
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
         <div className="max-w-2xl mx-auto">
+
           {activeTab === "profile" && <ProfileTab user={userProfile} candidateId={candidateId} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} onProfileUpdated={onProfileUpdated} />}
           {activeTab === "jobs" && (
             <JobsTab
@@ -1934,5 +1859,28 @@ export default function LivingProfile({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ResumeContextTab({ resume, docsLoading }) {
+  if (docsLoading) {
+    return <p className="text-[13px] text-[#9A9A98]" data-testid="resume-context-loading">Loading resume…</p>;
+  }
+
+  if (!resume) {
+    return (
+      <div className="py-10 text-center" data-testid="resume-context-empty">
+        <p className="text-[13px] text-[#9A9A98]">No resume uploaded yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-2" data-testid="resume-context">
+      <p className="text-[13px] font-medium text-[#1F1F1F]">{resume.filename || "Saved resume"}</p>
+      <p className="text-[12px] text-[#9A9A98] leading-relaxed">
+        This is the latest resume saved to your profile.
+      </p>
+    </section>
   );
 }

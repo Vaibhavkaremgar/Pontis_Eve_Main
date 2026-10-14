@@ -235,7 +235,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
     ]);
   });
 
-  it("formats ISO education dates as month-year", () => {
+  it("formats ISO education dates as MM-YY", () => {
     const normalized = normalizeProfileForDisplay({
       education: [
         {
@@ -248,7 +248,7 @@ describe("normalizeProfileForDisplay experience ordering", () => {
       experience: [],
     });
 
-    expect(normalized.education[0].dates).toBe("Sep 2014 — Jun 2018");
+    expect(normalized.education[0].dates).toBe("09-14 — 06-18");
   });
   it("formats education dates at month precision without fabricating missing months", () => {
     const normalized = normalizeProfileForDisplay({
@@ -256,15 +256,17 @@ describe("normalizeProfileForDisplay experience ordering", () => {
         { degree: "B.Sc", institution: "MIT", start_date: "2020-01-15", end_date: "2024-05" },
         { degree: "Intermediate", institution: "Central College", start_date: "2018", end_date: "2020" },
         { degree: "SSC", institution: "High School", start_date: "invalid", end_date: "2017" },
+        { degree: "Invalid date", institution: "High School", end_date: "2024-02-30" },
         { degree: "Current course", institution: "University", startDate: "Aug 2025", endDate: "ongoing" },
       ],
     });
 
     expect(normalized.education.map((entry) => entry.dates)).toEqual([
-      expect.stringMatching(/Jan 2020.*May 2024/),
+      expect.stringMatching(/01-20.*05-24/),
       expect.stringMatching(/2018.*2020/),
       "2017",
-      expect.stringMatching(/Aug 2025.*Present/),
+      "",
+      expect.stringMatching(/08-25.*Present/),
     ]);
   });
 });

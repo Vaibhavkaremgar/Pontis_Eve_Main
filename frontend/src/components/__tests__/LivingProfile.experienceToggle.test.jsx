@@ -301,7 +301,7 @@ describe("LivingProfile experience toggle", () => {
     });
 
     const row = view.container.querySelector('[data-testid="education-row-education-masters"]');
-    expect(row.textContent).toContain("Aug 2020 — May 2022");
+    expect(row.textContent).toContain("08-20 — 05-22");
   });
 
   it("renders month-year dates and available education scores", () => {
@@ -316,7 +316,7 @@ describe("LivingProfile experience toggle", () => {
       },
     });
 
-    expect(view.container.querySelector('[data-testid="education-row-bachelors"]').textContent).toContain("Jan 2020");
+    expect(view.container.querySelector('[data-testid="education-row-bachelors"]').textContent).toContain("01-20 — 05-24");
     expect(view.container.querySelector('[data-testid="education-row-bachelors"]').textContent).toContain("CGPA: 8.5");
     expect(view.container.querySelector('[data-testid="education-row-intermediate"]').textContent).toContain("Percentage: 92%");
     expect(view.container.querySelector('[data-testid="education-row-ssc"]').textContent).toContain("Grade: A+");
