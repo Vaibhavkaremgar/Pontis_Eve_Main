@@ -2951,6 +2951,13 @@ answered. After background/current work, skills/technologies normally comes
 next unless the application explicitly supplies another unanswered question.
 
 Rules:
+- Process the newest candidate answer first. Treat it as the source of truth
+  for the question the candidate just answered, even if an older persisted
+  current_question points to a different topic. Save/merge that answer before
+  choosing the next question.
+- Never discard a meaningful answer merely because it does not match a stale
+  current_question. Classify it against all intake topics, acknowledge it, and
+  only then continue with the oldest genuinely missing topic.
 - Do NOT ask about information already present in the candidate profile
 - Do NOT create duplicate questions for the same topic
 - A topic is covered if the candidate provided meaningful information about it anywhere in the conversation or profile
@@ -2989,9 +2996,20 @@ async def _llm_analyze_intake(
         "current_company": candidate_profile.get("current_company"),
         "experience_years": candidate_profile.get("experience_years"),
         "skills": candidate_profile.get("skills") or [],
+        # Include the complete timeline evidence.  Sending only title/company
+        # made the analyzer believe resume dates were missing and caused it to
+        # repeat the employment-date question.
         "work_experience": [
-            {"title": w.get("title"), "company": w.get("company")}
-            for w in (candidate_profile.get("work_experience") or [])[:3]
+            {
+                "title": w.get("title"),
+                "company": w.get("company"),
+                "start_date": w.get("start_date") or w.get("start") or "",
+                "end_date": w.get("end_date") or w.get("end") or "",
+                "dates": w.get("dates") or "",
+                "is_current": w.get("is_current") is True,
+            }
+            for w in (candidate_profile.get("work_experience") or [])[:10]
+            if isinstance(w, dict)
         ],
         "education": [
             {"degree": e.get("degree"), "institution": e.get("institution")}
@@ -2999,12 +3017,21 @@ async def _llm_analyze_intake(
         ],
         "summary": candidate_profile.get("summary") or "",
         "preferred_roles": candidate_profile.get("preferred_roles") or [],
+        "preferred_locations": (
+            candidate_profile.get("preferred_locations")
+            or raw_data.get("preferred_locations")
+            or raw_data.get("location_preferences")
+            or []
+        ),
         "availability": candidate_profile.get("availability") or "",
         "salary_expectation": candidate_profile.get("salary_expectation") or raw_data.get("salary_expectation") or "",
     }
 
     context = {
         "candidate_profile": profile_summary,
+        # The final turn is the candidate's newest answer. Keep it last and
+        # make that ordering explicit so a stale persisted question cannot
+        # take precedence over the candidate's latest supplied detail.
         "conversation": completed_turns,
         "pending_question": pending_question,
         "partial_answer": partial_answer,
@@ -7073,6 +7100,38 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     guidance_answer = _profile_guidance_answer(text_value, history)
     if guidance_answer:
         return guidance_answer
+    # Resolve the explicit duplicate-degree confirmation before the generic
+    # extractor can treat the answer as a brand-new education record.
+    prior_assistant = next((m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"), "")
+    if re.search(r"\bshould i update that record\b", prior_assistant, re.I) and re.search(r"\b(update|yes|same|existing)\b", lower):
+        prior_user = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+        inferred = _infer_profile_updates_from_message(prior_user)
+        incoming = (inferred.get("education") or [None])[0]
+        if isinstance(incoming, dict):
+            for index, row in enumerate(candidate.get("education") or []):
+                if isinstance(row, dict) and _same_education_level(row, incoming):
+                    updated = dict(row)
+                    for field in ("institution", "start_date", "end_date", "degree"):
+                        if incoming.get(field):
+                            updated[field] = incoming[field]
+                    return {"reply": "I updated your existing degree record.", "updates": {
+                        "education": [updated],
+                        "profile_record_replacements": [{"section": "Education", "old": row.get("degree") or "degree", "new": updated.get("degree") or row.get("degree"), "record_indexes": [index]}],
+                    }}
+    if re.search(r"\bshould i update/replace that\b", prior_assistant, re.I) and re.search(r"\b(update|replace|yes|same|existing)\b", lower):
+        prior_user = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+        inferred = _infer_profile_updates_from_message(prior_user)
+        for field in ("work_experience", "projects"):
+            incoming = (inferred.get(field) or [None])[0]
+            duplicate = _duplicate_profile_record(candidate, field, incoming) if isinstance(incoming, dict) else None
+            if duplicate:
+                index, existing = duplicate
+                merged = dict(existing)
+                merged.update({key: value for key, value in incoming.items() if value not in (None, "", [])})
+                return {"reply": f"I updated the existing {('work experience' if field == 'work_experience' else 'project')} record.", "updates": {
+                    field: [merged],
+                    "profile_record_replacements": [{"section": ("Work Experience" if field == "work_experience" else "Projects"), "old": str(existing.get("company") or existing.get("title") or "record"), "new": str(merged.get("company") or merged.get("title") or "record"), "record_indexes": [index]}],
+                }}
     pending_selection = _pending_replacement_selection(text_value, candidate, history)
     if pending_selection:
         return pending_selection
@@ -7082,6 +7141,21 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     pending_work_experience = _pending_chat_work_experience_completion(text_value, candidate, history)
     if pending_work_experience:
         return pending_work_experience
+    # Do not silently append a record that appears to describe an existing
+    # profile item.  The candidate must choose update/replace versus add.
+    inferred_now = _infer_profile_updates_from_message(text_value)
+    for field, label in (("work_experience", "work experience"), ("projects", "project")):
+        incoming = (inferred_now.get(field) or [None])[0]
+        if isinstance(incoming, dict):
+            duplicate = _duplicate_profile_record(candidate, field, incoming)
+            if duplicate:
+                _, existing = duplicate
+                identity = existing.get("company") or existing.get("title") or label
+                return {"reply": (
+                    f"I can see {identity} already in your profile. "
+                    f"Should I update/replace that {label}, or add this as a separate record? "
+                    "Please say update or add."
+                ), "updates": None}
     project_experience = _project_at_company_experience(text_value)
     if project_experience:
         missing = ["your job title or role"]
@@ -7145,7 +7219,22 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
 
     new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
     if new_education and not re.search(r"\b(?:change|update)\b.*\bfrom\b.*\bto\b", text_value, re.I) and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
-        return {"reply": f"What was the time period for your {new_education.group(1).strip()}? Please provide it like YYYY - YYYY.", "updates": None}
+        degree = _normalize_profile_text(new_education.group(1))
+        institution = _normalize_profile_text(new_education.group(2))
+        completion_year = re.search(r"\b(19|20)\d{2}\b\s*[.!?]*$", text_value)
+        if completion_year:
+            incoming = {"degree": degree, "institution": institution, "end_date": completion_year.group(0)[:4]}
+            matches = [row for row in (candidate.get("education") or [])
+                       if isinstance(row, dict) and _same_education_level(row, incoming)]
+            if matches:
+                existing = matches[0]
+                return {"reply": (
+                    f"I can see a {existing.get('degree') or 'bachelor'} degree already in your profile. "
+                    f"Should I update that record with {institution} and the {completion_year.group(0)[:4]} completion year, "
+                    "or add this as a separate degree? Please say update or add."
+                ), "updates": None}
+            return {"reply": f"What was the start year for your {degree} at {institution}?", "updates": None}
+        return {"reply": f"What was the time period for your {degree}? Please provide it like YYYY - YYYY.", "updates": None}
     new_work = _extract_employment_statement(text_value)
     if new_work and not re.search(rf"{period_pattern}\s*(?:-|–|—|to)\s*(?:{period_pattern}|present|current|now)", text_value, re.I):
         if new_work["current"] == "true":
@@ -7652,7 +7741,19 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             )]
             if not value:
                 continue
-            merged = _merge_education(existing.get("education") or [], value)
+            current_education = [dict(row) for row in (existing.get("education") or []) if isinstance(row, dict)]
+            # A confirmed update to an existing degree enriches that record;
+            # it must not become a second Bachelor's/Master's row merely
+            # because the institution or date was newly supplied.
+            for incoming in value:
+                matching_index = next((idx for idx, row in enumerate(current_education)
+                                       if _same_education_level(row, incoming)), None)
+                if matching_index is not None and incoming.get("institution"):
+                    current_education[matching_index] = _merge_education(
+                        [current_education[matching_index]], [incoming]
+                    )[0]
+                    value = [item for item in value if item is not incoming]
+            merged = _merge_education(current_education, value)
             if merged != (existing.get("education") or []):
                 set_clauses.append("education = CAST(:education AS json)")
                 params["education"] = json.dumps(merged)
@@ -9704,6 +9805,43 @@ def _merge_education(existing: Any, new_items: Any) -> list:
         index_by_key[key] = len(merged) - 1
 
     return merged
+
+
+def _education_level(value: Any) -> str:
+    """Return the broad degree level used to prevent duplicate degrees."""
+    text = _normalize_profile_key(value)
+    if re.search(r"\b(?:bachelor|btech|b tech|b e|bsc|b sc|ba|bca)\b", text):
+        return "bachelor"
+    if re.search(r"\b(?:master|mtech|m tech|m e|msc|m sc|ma|mba|mca)\b", text):
+        return "master"
+    if re.search(r"\b(?:phd|ph d|doctorate)\b", text):
+        return "doctorate"
+    return text
+
+
+def _same_education_level(existing: dict, incoming: dict) -> bool:
+    return bool(
+        _education_level(existing.get("degree"))
+        and _education_level(existing.get("degree")) == _education_level(incoming.get("degree"))
+    )
+
+
+def _duplicate_profile_record(candidate: dict, field: str, incoming: dict) -> tuple[int, dict] | None:
+    """Find an existing record that the candidate may be updating."""
+    records = candidate.get(field) or []
+    for index, row in enumerate(records):
+        if not isinstance(row, dict):
+            continue
+        if field == "education" and _same_education_level(row, incoming):
+            return index, row
+        if field == "work_experience":
+            same_company = _normalize_profile_key(row.get("company")) == _normalize_profile_key(incoming.get("company"))
+            same_title = _normalize_profile_key(row.get("title")) == _normalize_profile_key(incoming.get("title"))
+            if same_company and (same_title or not incoming.get("title")):
+                return index, row
+        if field == "projects" and _normalize_profile_key(row.get("title")) == _normalize_profile_key(incoming.get("title")):
+            return index, row
+    return None
 
 
 def _is_more_specific_role(existing_role: str, voice_role: str) -> bool:
