@@ -202,9 +202,8 @@ def _get_session_local():
 async def sync_jobs() -> None:
     """Fetch and upsert jobs for every active company in company_registry."""
     from app.job_ingestion.collect_jobs import JobCollector
-    from app.job_ingestion.job_ingestion_service import upsert_ats_job
-    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
-    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+    from app.job_ingestion.job_ingestion_service import find_existing_ats_job, upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata
 
     SessionLocal = _get_session_local()
     collector = JobCollector()
@@ -261,8 +260,12 @@ async def sync_jobs() -> None:
             for job in jobs:
                 job_ats_id = str(job.get("ats_job_id") or "")
                 try:
-                    job = await extract_missing_job_skills(job)
-                    await upsert_ats_job(db, job)
+                    existing = await find_existing_ats_job(db, str(job.get("ats_type") or ""), job_ats_id)
+                    if _existing_ats_job_needs_extraction(job, existing, has_sufficient_deterministic_metadata):
+                        job = await extract_missing_job_skills(job)
+                    else:
+                        skipped += 1
+                    await upsert_ats_job(db, job, existing_job=existing)
                     inserted += 1
                     if inserted % PROGRESS_INTERVAL == 0:
                         logger.info("[job-scheduler] inserted %d new jobs for %s so far", inserted, company_name)
@@ -327,6 +330,34 @@ async def sync_jobs() -> None:
         )
 
     logger.info("[job-scheduler] Job sync completed")
+
+
+def _existing_ats_job_needs_extraction(job: dict, existing: dict | None, sufficient_metadata) -> bool:
+    """Keep semantic extraction for new, changed, incomplete, or queued jobs."""
+    if existing is None:
+        return True
+    structured = existing.get("structured_data")
+    status = structured.get("metadata_extraction_status") if isinstance(structured, dict) else None
+    if status in {"pending", "pending_retry"}:
+        return True
+    incoming_description = str(job.get("description") or "").strip()
+    existing_description = str(existing.get("description") or "").strip()
+    if incoming_description != existing_description:
+        return True
+    existing_for_check = {
+        "ats_type": job.get("ats_type"),
+        "skills": existing.get("skills"),
+        "skills_required": existing.get("skills_required"),
+        "experience_required": existing.get("experience_required"),
+        "salary_range": existing.get("salary_range"),
+        "employment_type": existing.get("employment_type"),
+        # Preserve persisted non-disclosure evidence so this check uses the
+        # same validation path as the normal deterministic extraction gate.
+        "structured_data": structured,
+    }
+    # A completed semantic pass is also sufficient for an unchanged record,
+    # including postings that legitimately disclose no salary or experience.
+    return not (status == "complete" or sufficient_metadata(existing_for_check))
 
 
 async def _sync_jobs_guarded() -> None:

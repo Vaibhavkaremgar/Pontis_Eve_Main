@@ -99,6 +99,37 @@ def _normalize_skill_values(values: Any) -> list[str]:
             seen.add(key); result.append(clean)
     return result
 
+
+_THEIRSTACK_TECHNOLOGY_SLUG_NAMES = {
+    "amazon-web-services": "AWS", "aws": "AWS", "azure": "Azure",
+    "c-plus-plus": "C++", "c-sharp": "C#", "ci-cd": "CI/CD",
+    "dotnet": ".NET", "gcp": "GCP", "go": "Go", "golang": "Golang",
+    "google-cloud-platform": "Google Cloud Platform", "graphql": "GraphQL",
+    "kubernetes": "Kubernetes", "mongodb": "MongoDB", "mysql": "MySQL",
+    "next-js": "Next.js", "node-js": "Node.js", "nodejs": "Node.js",
+    "postgres": "PostgreSQL", "postgresql": "PostgreSQL", "react-js": "React",
+    "reactjs": "React", "rest-api": "REST API", "ruby-on-rails": "Ruby on Rails",
+    "sql-server": "SQL Server", "typescript": "TypeScript", "vue-js": "Vue.js",
+}
+_THEIRSTACK_SLUG_ACRONYMS = {"api", "aws", "css", "gcp", "html", "http", "sql", "ui", "ux"}
+
+
+def _theirstack_technology_skills(values: Any) -> list[str]:
+    """Turn trusted TheirStack technology slugs into display-safe skill names."""
+    readable: list[str] = []
+    for value in _skill_list(values):
+        slug = value.strip().casefold().replace("_", "-")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9+.#-]*", slug):
+            continue
+        name = _THEIRSTACK_TECHNOLOGY_SLUG_NAMES.get(slug)
+        if not name:
+            name = " ".join(
+                part.upper() if part in _THEIRSTACK_SLUG_ACRONYMS else part.capitalize()
+                for part in slug.split("-")
+            )
+        readable.append(name)
+    return _normalize_skill_values(readable)
+
 def _extract_jd_skills(description: Any) -> list[str]:
     """Extract known technical skills from labelled sections and JD prose."""
     text = _html_text(description)
@@ -244,6 +275,45 @@ def _jd_evidence(description: Any) -> dict[str, Any]:
             found[key] = [v.strip() for v in re.split(r"[,;/|]", value) if v.strip()] if key == "skills_required" else value
     return found
 
+
+_UNDISCLOSED_SALARY_VALUES = {
+    "not disclosed", "not provided", "not specified", "none", "n/a", "na",
+}
+_UNDISCLOSED_EXPERIENCE_VALUES = {
+    "not disclosed", "not provided", "not specified", "none", "n/a", "na",
+    "no experience required", "experience not required",
+}
+
+
+def _is_explicitly_undisclosed(value: Any, field: str) -> bool:
+    """Recognize only an explicit provider value or labelled-JD statement.
+
+    A missing source value is intentionally not evidence of non-disclosure: it
+    can mean the provider omitted it or the deterministic parser missed it.
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = " ".join(value.casefold().split()).strip(" .;:")
+    allowed = _UNDISCLOSED_SALARY_VALUES if field == "salary_range" else _UNDISCLOSED_EXPERIENCE_VALUES
+    return normalized in allowed
+
+
+def _explicitly_undisclosed_metadata(job: dict[str, Any], evidence: dict[str, Any], source: str) -> dict[str, bool]:
+    """Return source-proven non-disclosure flags for the deterministic ATSs."""
+    flags: dict[str, bool] = {}
+    for field, provider_keys in {
+        "salary_range": ("salary_range", "salaryRange", "salary"),
+        "experience_required": ("experience_required", "experienceRequired"),
+    }.items():
+        values = [evidence.get(field), *(job.get(key) for key in provider_keys)]
+        if source == "ashby" and field == "salary_range":
+            compensation = job.get("compensation")
+            if isinstance(compensation, dict):
+                values.append(compensation.get("summary"))
+        if any(_is_explicitly_undisclosed(value, field) for value in values):
+            flags[field] = True
+    return flags
+
 def _experience_from_text(description: Any) -> str | None:
     """Return the strongest candidate-experience requirement in a JD.
 
@@ -322,6 +392,23 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     # Preserve an explicit years requirement even when a provider omits its
     # dedicated field. This applies uniformly to all normalized sources.
     result["experience_required"] = _first(_experience_from_text(description), result["experience_required"])
+    undisclosed = (
+        _explicitly_undisclosed_metadata(job, evidence, source)
+        if source in {"greenhouse", "lever", "ashby"}
+        else {}
+    )
+    # Keep the canonical fields reserved for actual requirements.  The marker
+    # records the explicit source statement without turning "Not disclosed"
+    # into a candidate-facing salary or experience value.
+    for field in undisclosed:
+        if _is_explicitly_undisclosed(result.get(field), field):
+            result[field] = None
+    # A concrete requirement in the same posting wins over an otherwise
+    # explicit non-disclosure string from a secondary source field.
+    undisclosed = {
+        field: value for field, value in undisclosed.items()
+        if not _text(result.get(field))
+    }
     # ``skills_required`` is a required JSON column.  Preserve explicitly
     # supplied ATS skills first, then the conservative labelled-JD extraction,
     # and represent a genuinely unknown skill set as an empty JSON list rather
@@ -350,6 +437,8 @@ def _metadata(job: dict[str, Any], source: str, *, description: Any, **explicit:
     }.items() if v not in (None, "", [], {})}
     result["structured_data"] = {"source": source, "raw_source": {"provider": source, "schema_version": 1, "payload": _json_safe(job)},
                                   "experience_requirements": _experience_evidence(description), **source_data}
+    if undisclosed:
+        result["structured_data"]["explicitly_undisclosed"] = undisclosed
     result["requirements"], result["responsibilities"] = _section_fields(description)
     return result
 
@@ -364,6 +453,13 @@ def _lever_description(job: dict[str, Any]) -> str | None:
     parts = [_text(job.get(key)) for key in ("descriptionPlain", "description", "descriptionHtml")]
     for section in job.get("lists") or []:
         if isinstance(section, dict): parts.extend(filter(None, [_text(section.get("text")), _text(_html_text(section.get("content")))]))
+    unique = list(dict.fromkeys(part for part in parts if part))
+    return "\n".join(unique) or None
+
+
+def _ashby_description(job: dict[str, Any]) -> str | None:
+    """Retain Ashby's plain-text description alongside HTML variants."""
+    parts = [_text(job.get(key)) for key in ("descriptionPlain", "description", "descriptionHtml")]
     unique = list(dict.fromkeys(part for part in parts if part))
     return "\n".join(unique) or None
 
@@ -387,18 +483,28 @@ def normalize_lever(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("text"), "description": description, **loc, "remote": _first(job.get("isRemote"), str(meta.get("remote_policy", "")).casefold() == "remote"), "department": categories.get("team"), "salary_range": meta.get("salary_range"), "job_url": extract_lever_job_url(job), "ats_type": "lever", **meta}
 
 def normalize_ashby(job: dict[str, Any], company_name: str) -> dict[str, Any]:
-    description = _first(job.get("descriptionHtml"), job.get("description")); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
-    salary = _first(job.get("salaryRange"), job.get("salary_range"), compensation.get("summary"))
-    if not salary and compensation.get("minValue") is not None and compensation.get("maxValue") is not None: salary = f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
+    description = _ashby_description(job); compensation = job.get("compensation") if isinstance(job.get("compensation"), dict) else {}
+    salary_candidates = [job.get("salaryRange"), job.get("salary_range"), compensation.get("summary")]
+    if compensation.get("minValue") is not None and compensation.get("maxValue") is not None:
+        salary_candidates.append(
+            f"{compensation.get('currency') or ''} {compensation['minValue']} - {compensation['maxValue']} {compensation.get('interval') or ''}".strip()
+        )
+    # A concrete value from any trusted Ashby salary source wins over a
+    # conflicting explicit non-disclosure value from another source.
+    salary = next(
+        (value for value in salary_candidates if _text(value) and not _is_explicitly_undisclosed(value, "salary_range")),
+        _first(*salary_candidates),
+    )
     # ``publishedAt`` is Ashby's public posting timestamp.  Do not substitute
     # other lifecycle timestamps when it is absent or malformed.
     meta = _metadata(job, "ashby", description=description, employment_type=_first(job.get("employmentType"), job.get("employment_type")), experience_level=_first(job.get("experienceLevel"), job.get("experience_level"), job.get("seniority")), experience_required=job.get("experienceRequired"), remote_policy=_first(job.get("workplaceType"), "Remote" if job.get("isRemote") is True else None), salary_range=salary, created_at=parse_ats_datetime(job.get("publishedAt")), skills_required=_first(job.get("skills"), job.get("skillsRequired")))
     department = job.get("department") if isinstance(job.get("department"), dict) else {}
+    team = job.get("team") if isinstance(job.get("team"), dict) else {}
     raw_locations = job.get("locations") or job.get("location")
     loc_values = raw_locations if isinstance(raw_locations, list) else [raw_locations]
     loc = _location_parts(loc_values[0] if loc_values else None); meta["locations"] = [_location_parts(v) for v in loc_values if v not in (None, "", {})]
     meta["salary"] = compensation
-    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, **loc, "remote": job.get("isRemote") if isinstance(job.get("isRemote"), bool) else None, "department": department.get("name"), "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
+    return {"ats_job_id": _ats_id(job.get("id")), "company_name": company_name, "title": job.get("title"), "description": description, **loc, "remote": job.get("isRemote") if isinstance(job.get("isRemote"), bool) else None, "department": _first(department.get("name"), _text(job.get("department")), team.get("name"), _text(job.get("team"))), "salary_range": meta.get("salary_range"), "job_url": extract_ashby_job_url(job), "ats_type": "ashby", **meta}
 
 def normalize_workable(job: dict[str, Any], company_name: str) -> dict[str, Any]:
     description = job.get("description"); location = job.get("location")
@@ -466,7 +572,14 @@ def normalize_theirstack(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(location, list): location = location[0] if location else None
     description = _first(job.get("description"), job.get("description_text"), job.get("job_description"))
     salary = _first(job.get("salary_range"), job.get("salary"), job.get("compensation"))
-    meta = _metadata(job, "theirstack", description=description, employment_type=_first(job.get("employment_status"), job.get("employment_type")), experience_level=_first(job.get("job_seniority"), job.get("experience_level")), experience_required=_first(job.get("experience_required"), _experience_from_text(description)), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), salary_range=salary, skills_required=_first(job.get("skills"), job.get("technologies")), created_at=parse_ats_datetime(_first(job.get("posted_at"), job.get("discovered_at"))))
+    skills = _normalize_skill_values([
+        *_skill_list(job.get("skills")),
+        *_skill_list(job.get("technologies")),
+        *_theirstack_technology_skills(job.get("technology_slugs")),
+    ])
+    # TheirStack keyword slugs can be broad job-search terms; retain them in
+    # the raw payload below, but do not treat them as required skills.
+    meta = _metadata(job, "theirstack", description=description, employment_type=_first(job.get("employment_status"), job.get("employment_type")), experience_level=_first(job.get("job_seniority"), job.get("experience_level")), experience_required=_first(job.get("experience_required"), _experience_from_text(description)), remote_policy=_first(job.get("remote_policy"), job.get("workplace_type")), salary_range=salary, skills_required=skills, created_at=parse_ats_datetime(_first(job.get("posted_at"), job.get("discovered_at"))))
     meta["structured_data"]["theirstack"] = _json_safe(job)
     meta["structured_data"]["source"] = _first(job.get("source"), job.get("source_domain"), job.get("job_board"))
     meta["structured_data"]["source_domain"] = _first(job.get("source_domain"), job.get("domain"))

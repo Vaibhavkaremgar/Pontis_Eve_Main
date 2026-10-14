@@ -1,10 +1,14 @@
 import asyncio
+import json
+import sys
+import types
 from datetime import datetime, timezone
 
 import httpx
 import pytest
 
 from app.job_ingestion.connectors.fantastic import FantasticAPIError, FantasticClient, FantasticConfig
+from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
 from app.job_ingestion.normalize import normalize_fantastic
 from app.job_ingestion.job_ingestion_service import _metadata_params, upsert_ats_job
 from app.job_ingestion.scheduler import _log_fantastic_upsert_error
@@ -29,6 +33,42 @@ def test_normalization_preserves_fields_and_binds_datetime():
     assert isinstance(_metadata_params(job)["created_at"], datetime)  # asyncpg regression guard
     assert job["created_at"].year == 2020
     assert job["structured_data"]["source"] == "greenhouse"
+
+
+def test_fantastic_valid_native_skills_skip_llm_and_preserve_both_arrays(monkeypatch):
+    monkeypatch.setitem(sys.modules, "groq_client", types.SimpleNamespace(
+        GroqClientPool=lambda: (_ for _ in ()).throw(AssertionError("LLM should not be called"))
+    ))
+    job = normalize_fantastic(_record(ai_key_skills=["Python", "FastAPI"], ai_keywords=["SQL"]))
+
+    result = asyncio.run(extract_missing_job_skills(job))
+
+    assert result is job
+    assert result["skills"] == result["skills_required"] == ["Python", "FastAPI", "SQL"]
+
+
+@pytest.mark.parametrize("required_skills", [None, []])
+def test_fantastic_missing_or_empty_required_skills_uses_extraction(monkeypatch, required_skills):
+    calls = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            message = types.SimpleNamespace(content=json.dumps({"skills": ["Postgres"]}))
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    class Client:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(completions=Completions())
+
+    monkeypatch.setitem(sys.modules, "groq_client", types.SimpleNamespace(GroqClientPool=Client))
+    job = normalize_fantastic(_record())
+    job["skills_required"] = required_skills
+
+    result = asyncio.run(extract_missing_job_skills(job))
+
+    assert len(calls) == 1
+    assert result["skills"] == result["skills_required"] == ["Python", "FastAPI", "PostgreSQL"]
 
 
 def test_normalization_falls_back_locations_and_rejects_bad_url():

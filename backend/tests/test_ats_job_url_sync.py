@@ -366,7 +366,12 @@ async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
                 }
             ]
 
-    async def fake_upsert(db, job):
+    extracted = []
+    async def fake_extract(job):
+        extracted.append(job["ats_job_id"])
+        return job
+
+    async def fake_upsert(db, job, **_kwargs):
         state["upsert_called"] = state.get("upsert_called", 0) + 1
         state.setdefault("seen_ids", set()).add(job["ats_job_id"])
         assert job["ats_job_id"] == "ats-123"
@@ -407,10 +412,16 @@ async def test_scheduler_does_not_pre_skip_existing_ats_jobs(monkeypatch):
     monkeypatch.setattr("app.job_ingestion.collect_jobs.JobCollector", lambda: FakeCollector())
     monkeypatch.setattr(scheduler, "_get_session_local", lambda: SchedulerSessionFactory())
     monkeypatch.setattr("app.job_ingestion.job_ingestion_service.upsert_ats_job", fake_upsert)
+    async def no_existing(*_args):
+        return None
+
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.find_existing_ats_job", no_existing)
+    monkeypatch.setattr("app.job_ingestion.job_skill_extraction.extract_missing_job_skills", fake_extract)
 
     await scheduler.sync_jobs()
 
     assert state.get("upsert_called") == 1
+    assert extracted == ["ats-123"]
     assert state["company_registry_updated"] is True
 
 
@@ -438,7 +449,7 @@ async def test_scheduler_continues_after_a_single_job_failure(monkeypatch):
         async def rollback(self):
             state["rollback_count"] += 1
 
-    async def fake_upsert(_, job):
+    async def fake_upsert(_, job, **_kwargs):
         if job["ats_job_id"] == "bad":
             raise ValueError("invalid timestamp")
         state["good_job_upserted"] = True
@@ -447,6 +458,8 @@ async def test_scheduler_continues_after_a_single_job_failure(monkeypatch):
     monkeypatch.setattr("app.job_ingestion.collect_jobs.JobCollector", lambda: Collector())
     monkeypatch.setattr(scheduler, "_get_session_local", lambda: lambda: Session(state))
     monkeypatch.setattr("app.job_ingestion.job_ingestion_service.upsert_ats_job", fake_upsert)
+    async def no_existing(*_args): return None
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.find_existing_ats_job", no_existing)
 
     await scheduler.sync_jobs()
 
@@ -479,11 +492,13 @@ async def test_provider_404_does_not_stop_other_company_sync(monkeypatch):
             raise AssertionError(sql)
         async def commit(self): pass
 
-    async def upsert(_, job):
+    async def upsert(_, job, **_kwargs):
         state["synced"].append(job["company_name"])
 
     monkeypatch.setattr("app.job_ingestion.collect_jobs.JobCollector", lambda: Collector())
     monkeypatch.setattr(scheduler, "_get_session_local", lambda: lambda: Session())
     monkeypatch.setattr("app.job_ingestion.job_ingestion_service.upsert_ats_job", upsert)
+    async def no_existing(*_args): return None
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.find_existing_ats_job", no_existing)
     await scheduler.sync_jobs()
     assert state["synced"] == ["Healthy board"]

@@ -10,9 +10,88 @@ from app.job_ingestion.normalize import UNKNOWN_EXPERIENCE_LEVEL, _valid_http_ur
 logger = logging.getLogger(__name__)
 
 
+_EXISTING_ATS_JOB_COLUMNS = (
+    "id", "job_url", "description", "requirements", "skills", "skills_required",
+    "experience_required", "salary_range", "employment_type", "structured_data",
+)
+_EXISTING_LOOKUP_UNSET = object()
+
+
+def _existing_ats_job(row: Any) -> dict[str, Any] | None:
+    """Normalize SQLAlchemy row shapes used by the scheduler and unit tests."""
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return {column: row.get(column) for column in _EXISTING_ATS_JOB_COLUMNS}
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return {column: mapping.get(column) for column in _EXISTING_ATS_JOB_COLUMNS}
+    return {
+        column: row[index] if len(row) > index else None
+        for index, column in enumerate(_EXISTING_ATS_JOB_COLUMNS)
+    }
+
+
+async def find_existing_ats_job(db, ats_type: str, ats_job_id: str) -> dict[str, Any] | None:
+    """Read one ATS record by its provider-scoped stable identifier."""
+    result = await db.execute(
+        text("""
+            SELECT id, job_url, description, requirements, skills, skills_required,
+                   experience_required, salary_range, employment_type, structured_data
+            FROM job_descriptions
+            WHERE ats_type = :ats_type
+              AND ats_job_id = :ats_job_id
+            LIMIT 1
+        """),
+        {"ats_type": ats_type, "ats_job_id": ats_job_id},
+    )
+    return _existing_ats_job(result.first())
+
+
+def _merge_existing_undisclosed_markers(job: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Keep source-proven absences when a later provider response omits them.
+
+    A marker is evidence only when it is literally ``True``.  In particular,
+    do not let an old marker describe a field for which either the incoming or
+    persisted canonical record has an actual value.
+    """
+    incoming_structured = job.get("structured_data")
+    existing_structured = existing.get("structured_data")
+    if not isinstance(incoming_structured, dict) or not isinstance(existing_structured, dict):
+        return
+
+    incoming_markers = incoming_structured.get("explicitly_undisclosed")
+    existing_markers = existing_structured.get("explicitly_undisclosed")
+    incoming_markers = incoming_markers if isinstance(incoming_markers, dict) else {}
+    existing_markers = existing_markers if isinstance(existing_markers, dict) else {}
+
+    # Preserve unrelated future metadata keys, while validating the two
+    # canonical absence markers owned by this ingestion flow.
+    merged_markers = {
+        key: value for key, value in incoming_markers.items()
+        if key not in {"salary_range", "experience_required"}
+    }
+    for field in ("salary_range", "experience_required"):
+        incoming_has_value = bool(str(job.get(field) or "").strip())
+        existing_has_value = bool(str(existing.get(field) or "").strip())
+        incoming_marker = incoming_markers.get(field) is True
+        existing_marker = existing_markers.get(field) is True
+        if not incoming_has_value and not existing_has_value and (incoming_marker or existing_marker):
+            merged_markers[field] = True
+
+    structured = dict(incoming_structured)
+    if merged_markers:
+        structured["explicitly_undisclosed"] = merged_markers
+    else:
+        structured.pop("explicitly_undisclosed", None)
+    job["structured_data"] = structured
+
+
 async def upsert_ats_job(
     db,
     job: dict[str, Any],
+    *,
+    existing_job: dict[str, Any] | None | object = _EXISTING_LOOKUP_UNSET,
 ) -> str:
     """
     Insert or update one normalized ATS job.
@@ -31,32 +110,24 @@ async def upsert_ats_job(
     if not ats_job_id:
         raise ValueError("ATS job is missing ats_job_id")
 
-    # Check whether this ATS job already exists.
-    result = await db.execute(
-        text("""
-            SELECT id, job_url, description, requirements, skills, skills_required
-            FROM job_descriptions
-            WHERE ats_type = :ats_type
-              AND ats_job_id = :ats_job_id
-            LIMIT 1
-        """),
-        {
-            "ats_type": ats_type,
-            "ats_job_id": ats_job_id,
-        },
+    # Scheduler callers can provide their just-fetched stable-ID lookup so a
+    # pre-extraction optimization does not add a second database round trip.
+    existing = (
+        await find_existing_ats_job(db, ats_type, ats_job_id)
+        if existing_job is _EXISTING_LOOKUP_UNSET
+        else existing_job
     )
 
-    existing = result.first()
-
     if existing:
-        job_id = existing[0]
+        _merge_existing_undisclosed_markers(job, existing)
+        job_id = existing["id"]
         # Support legacy test/session rows that predate the requirements column.
-        existing_job_url = existing[1] if len(existing) > 1 else None
-        existing_description = existing[2] if len(existing) > 2 else ""
-        existing_requirements = existing[3] if len(existing) > 3 else ""
+        existing_job_url = existing.get("job_url")
+        existing_description = existing.get("description") or ""
+        existing_requirements = existing.get("requirements") or ""
         from skill_normalization import merge_skills
-        existing_skills = existing[4] if len(existing) > 4 else []
-        existing_required = existing[5] if len(existing) > 5 else []
+        existing_skills = existing.get("skills") or []
+        existing_required = existing.get("skills_required") or []
         job["skills"] = merge_skills(existing_skills, job.get("skills"), canonical_display=True)
         job["skills_required"] = merge_skills(existing_required, job.get("skills_required"), canonical_display=True)
         incoming_job_url = _valid_http_url(job.get("job_url"))

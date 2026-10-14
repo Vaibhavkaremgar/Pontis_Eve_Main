@@ -39,6 +39,67 @@ def test_theirstack_company_object_name_is_fallback():
     assert job["company_name"] == "Larsen & Toubro"
 
 
+def test_theirstack_technology_slugs_map_to_canonical_skills_and_preserve_payload():
+    job = normalize_theirstack({
+        "id": "ts-skills", "job_title": "Backend Engineer", "company": "Acme",
+        "technology_slugs": ["python", "spring-boot", "POSTGRESQL", "node-js", "python"],
+        "keyword_slugs": ["backend", "urgent-hiring"],
+    })
+
+    assert job["skills_required"] == ["Python", "Spring Boot", "PostgreSQL", "Node.js"]
+    assert job["skills"] == job["skills_required"]
+    assert job["structured_data"]["theirstack"]["technology_slugs"] == ["python", "spring-boot", "POSTGRESQL", "node-js", "python"]
+    assert job["structured_data"]["theirstack"]["keyword_slugs"] == ["backend", "urgent-hiring"]
+    assert "backend" not in job["skills_required"]
+
+
+@pytest.mark.parametrize("technology_slugs", [None, [], [None, {}, "  ", "not a slug!"], {"name": "python"}])
+def test_theirstack_invalid_technology_slugs_do_not_create_skills(technology_slugs):
+    job = normalize_theirstack({"id": "ts-invalid-skills", "title": "Engineer", "technology_slugs": technology_slugs})
+
+    assert job["skills_required"] == []
+    assert job["skills"] == []
+
+
+def test_explicit_undisclosed_marker_is_preserved_in_persistence_metadata():
+    job = normalize_greenhouse({
+        "id": "g-undisclosed-persist", "title": "Engineer",
+        "content": "Salary Range: Not disclosed",
+    }, "Acme")
+
+    assert json.loads(_metadata_params(job)["structured_data"])["explicitly_undisclosed"] == {"salary_range": True}
+
+
+def test_ashby_concrete_compensation_summary_overrides_undisclosed_salary_range():
+    job = normalize_ashby({
+        "id": "a-salary-conflict", "title": "Engineer", "salaryRange": "Not disclosed",
+        "compensation": {"summary": "$120k-$150k"},
+    }, "Acme")
+
+    assert job["salary_range"] == "$120k-$150k"
+    assert "explicitly_undisclosed" not in job["structured_data"]
+
+
+def test_ashby_concrete_salary_range_overrides_undisclosed_compensation_summary():
+    job = normalize_ashby({
+        "id": "a-reverse-salary-conflict", "title": "Engineer", "salaryRange": "$120k-$150k",
+        "compensation": {"summary": "Not disclosed"},
+    }, "Acme")
+
+    assert job["salary_range"] == "$120k-$150k"
+    assert "explicitly_undisclosed" not in job["structured_data"]
+
+
+def test_ashby_all_explicitly_undisclosed_salary_sources_keep_marker():
+    job = normalize_ashby({
+        "id": "a-undisclosed-salary", "title": "Engineer", "salaryRange": "Not disclosed",
+        "compensation": {"summary": "Not provided"},
+    }, "Acme")
+
+    assert job["salary_range"] is None
+    assert job["structured_data"]["explicitly_undisclosed"] == {"salary_range": True}
+
+
 def test_representative_public_ats_payloads_preserve_explicit_metadata():
     ashby = normalize_ashby({"id": "a", "title": "Engineer", "descriptionHtml": "<p>Experience Level: Senior</p><p>Required Skills: Python, SQL</p>", "department": {"name": "Engineering"}, "location": "Remote", "employmentType": "Full-time", "isRemote": True, "publishedAt": "2026-01-02T12:00:00Z", "compensation": {"currency": "USD", "minValue": 120000, "maxValue": 160000, "interval": "year"}, "jobUrl": "https://jobs.example/a"}, "Acme")
     lever = normalize_lever({"id": "l", "text": "Developer", "descriptionPlain": "Experience Required: 5 years", "categories": {"team": "Platform", "location": "Bengaluru", "commitment": "Full-time", "allLocations": ["Bengaluru", "Remote"]}, "workplaceType": "hybrid", "createdAt": 1760000000000, "hostedUrl": "https://jobs.example/l"}, "Acme")
@@ -173,6 +234,83 @@ def test_existing_sync_writes_normalized_metadata(monkeypatch):
     assert session.params["skills_required"] == '["Python", "SQL"]'
 
 
+class _ExistingUpdateSession:
+    def __init__(self):
+        self.params = None
+
+    async def execute(self, _statement, params=None):
+        self.params = params
+        return _Result()
+
+    async def commit(self):
+        pass
+
+
+def _existing_for_marker_update(**overrides):
+    existing = {
+        "id": "existing-marker-job", "job_url": None, "description": "Existing description",
+        "requirements": "Existing requirements", "skills": ["Python"],
+        "skills_required": ["Python"], "experience_required": None, "salary_range": None,
+        "employment_type": "Full-time", "structured_data": {"source": "existing"},
+    }
+    existing.update(overrides)
+    return existing
+
+
+def _incoming_for_marker_update(**overrides):
+    job = {
+        "ats_type": "greenhouse", "ats_job_id": "marker-job", "company_name": "Acme",
+        "title": "Engineer", "description": "Incoming", "skills": ["Docker"],
+        "skills_required": ["Docker"], "structured_data": {"source": "incoming"},
+    }
+    job.update(overrides)
+    return job
+
+
+@pytest.mark.parametrize(
+    ("field", "existing_marker", "incoming_value", "incoming_marker", "expected"),
+    [
+        ("salary_range", True, None, None, True),
+        ("experience_required", True, None, None, True),
+        ("salary_range", True, "$120k-$150k", None, None),
+        ("experience_required", True, "5 years", None, None),
+        ("salary_range", "true", None, None, None),
+        ("salary_range", None, None, True, True),
+    ],
+)
+def test_existing_undisclosed_markers_merge_only_when_canonical_values_are_absent(
+    field, existing_marker, incoming_value, incoming_marker, expected,
+):
+    existing_markers = {} if existing_marker is None else {field: existing_marker}
+    incoming_markers = {} if incoming_marker is None else {field: incoming_marker}
+    existing = _existing_for_marker_update(
+        structured_data={"source": "existing", "explicitly_undisclosed": existing_markers},
+    )
+    incoming = _incoming_for_marker_update(
+        structured_data={"source": "incoming", "explicitly_undisclosed": incoming_markers},
+        **{field: incoming_value},
+    )
+    session = _ExistingUpdateSession()
+
+    assert asyncio.run(upsert_ats_job(session, incoming, existing_job=existing)) == "existing-marker-job"
+    markers = json.loads(session.params["structured_data"]).get("explicitly_undisclosed", {})
+    assert markers.get(field) is expected
+
+
+def test_existing_marker_merge_keeps_existing_values_skills_and_stable_id():
+    existing = _existing_for_marker_update(
+        salary_range="$90k-$110k",
+        structured_data={"explicitly_undisclosed": {"salary_range": True}},
+    )
+    session = _ExistingUpdateSession()
+
+    assert asyncio.run(upsert_ats_job(session, _incoming_for_marker_update(), existing_job=existing)) == "existing-marker-job"
+    assert session.params["salary_range"] is None  # SQL COALESCE retains the canonical existing value.
+    assert json.loads(session.params["structured_data"]).get("explicitly_undisclosed") is None
+    assert json.loads(session.params["skills"]) == ["Python", "Docker"]
+    assert json.loads(session.params["skills_required"]) == ["Python", "Docker"]
+
+
 def test_persistence_guard_never_binds_null_skills_required_for_legacy_normalized_jobs():
     assert _metadata_params({"skills_required": None})["skills_required"] == "[]"
 
@@ -275,7 +413,7 @@ def test_eligible_normalized_job_insert_binds_non_null_skills_required(monkeypat
 
 
 def test_candidate_jobs_serializes_normalized_metadata_without_changing_matching(monkeypatch):
-    row = {"rec_id": "r", "job_id": "j", "match_score": 0.8, "recommendation_rank": 1, "match_reason": None, "tracked_at": None, "applied_at": None, "hidden_at": None, "viewed_at": None, "application_status": None, "application_agency_id": None, "application_job_role": None, "title": "Engineer", "company_name": "Acme", "location": "Remote", "salary_range": "$100k-$120k", "employment_type": "Full-time", "remote_policy": "Remote", "experience_level": "Senior", "experience_required": None, "created_at": "2026-01-01T00:00:00+00:00", "skills_required": ["Python"], "description": "", "requirements": "", "skills": [], "company_logo_url": None, "job_url": "https://jobs.example/a"}
+    row = {"rec_id": "r", "job_id": "j", "match_score": 0.8, "recommendation_rank": 1, "match_reason": None, "tracked_at": None, "applied_at": None, "hidden_at": None, "viewed_at": None, "application_status": None, "application_agency_id": None, "application_job_role": None, "title": "Engineer", "company_name": "Acme", "location": "Remote", "salary_range": "$100k-$120k", "employment_type": "Full-time", "remote_policy": "Remote", "experience_level": "Senior", "experience_required": None, "created_at": "2026-01-01T00:00:00+00:00", "skills_required": ["Python"], "description": "", "requirements": "", "skills": [], "company_logo_url": None, "job_url": "https://jobs.example/a", "opportunity_type": "jobs"}
     class Row(dict):
         _positional = ("job_id", "title", "description", "requirements", "skills", "skills_required", "experience_required")
         def __getitem__(self, key):
@@ -298,5 +436,7 @@ def test_candidate_jobs_serializes_normalized_metadata_without_changing_matching
     monkeypatch.setattr(server, "_get_candidate_row", candidate); monkeypatch.setattr(server, "_effective_profile_strength_percent", strength); monkeypatch.setattr(server, "SessionLocal", lambda: Session())
     monkeypatch.setattr(server, "_voice_intake_completed_for_matching", lambda _: True)
     monkeypatch.setattr(candidate_job_matching_service, "stored_recommendation_experience_eligibility", lambda *_: {"eligible": True})
-    response = asyncio.run(server.get_candidate_jobs("c"))
+    candidate_id = "c"
+    token = server._issue_candidate_session_token(candidate_id)
+    response = asyncio.run(server.get_candidate_jobs(candidate_id, authorization=f"Bearer {token}"))
     assert response[0]["employment_type"] == "Full-time" and response[0]["skills_required"] == ["Python"] and response[0]["posted_at"] == "2026-01-01T00:00:00+00:00"

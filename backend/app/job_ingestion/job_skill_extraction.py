@@ -34,6 +34,7 @@ _NON_SKILL_PATTERNS = (
     re.compile(r"^(?:financial|healthcare|manufacturing|hospitality|education|infrastructure|energy)\s+(?:domain|sector|industry)$", re.I),
 )
 _DOMAIN_ONLY = {"healthcare", "manufacturing", "hospitality", "infrastructure", "education", "energy", "finance", "financial"}
+_DETERMINISTIC_ATS_PROVIDERS = {"greenhouse", "lever", "ashby"}
 
 
 def _clean_extracted_skills(values: Any, job: dict[str, Any]) -> list[str]:
@@ -80,6 +81,33 @@ def _extraction_input(job: dict[str, Any]) -> dict[str, Any]:
         }
     }
 
+
+def _has_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def has_sufficient_deterministic_metadata(job: dict[str, Any]) -> bool:
+    """Whether an ATS normalizer has already supplied every LLM target.
+
+    These three providers expose enough structured data and job-description
+    content for the normalizer to populate the semantic fields when they are
+    present.  A description alone is not proof that its requirements were
+    successfully parsed, so usable canonical skills and each scalar target
+    are required before avoiding the semantic fallback.
+    """
+    if job.get("ats_type") not in _DETERMINISTIC_ATS_PROVIDERS:
+        return False
+    skills = _clean_extracted_skills(merge_skills(job.get("skills_required"), job.get("skills")), job)
+    structured = job.get("structured_data")
+    undisclosed = structured.get("explicitly_undisclosed") if isinstance(structured, dict) else {}
+    if not isinstance(undisclosed, dict):
+        undisclosed = {}
+
+    def complete(field: str) -> bool:
+        return _has_text(job.get(field)) or undisclosed.get(field) is True
+
+    return bool(skills) and complete("experience_required") and complete("salary_range") and _has_text(job.get("employment_type"))
+
 async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     """Monotonically enrich provider skills with optional semantic extraction."""
     original = _clean_extracted_skills(merge_skills(job.get("skills_required"), job.get("skills")), job)
@@ -90,7 +118,45 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     # pending retry is the sole exception: it represents a prior unavailable
     # attempt and must be allowed to recover.
     status = (job.get("structured_data") or {}).get("metadata_extraction_status") if isinstance(job.get("structured_data"), dict) else None
-    if status == "complete" or (job.get("skills") and not job.get("skills_required")):
+    fantastic_native_skills = _clean_extracted_skills(job.get("skills"), job)
+    fantastic_native_required_skills = _clean_extracted_skills(job.get("skills_required"), job)
+    fantastic_skills_are_sufficient = (
+        job.get("ats_type") == "fantastic"
+        and bool(fantastic_native_skills)
+        and bool(fantastic_native_required_skills)
+    )
+    theirstack_skills_are_sufficient = (
+        job.get("ats_type") == "theirstack"
+        and bool(fantastic_native_skills)
+        and bool(fantastic_native_required_skills)
+    )
+    deterministic_ats_metadata_is_sufficient = has_sufficient_deterministic_metadata(job)
+    if (
+        # A completed record is normally safe to leave alone.  Fantastic and
+        # TheirStack are the exception: their provider arrays are the
+        # completeness signal, so a stale complete status cannot hide empty
+        # or unusable canonical skills.
+        (
+            status == "complete"
+            and job.get("ats_type") not in {"fantastic", "theirstack"}
+        )
+        or (
+            # Historical rows used both values while awaiting a retry.  Neither
+            # may be short-circuited by deterministic provider metadata.
+            status not in {"pending", "pending_retry"}
+            and (
+                fantastic_skills_are_sufficient
+                or theirstack_skills_are_sufficient
+                or deterministic_ats_metadata_is_sufficient
+            )
+        )
+        # Keep the established fallback behavior for every other provider.
+        or (
+            job.get("ats_type") not in {"fantastic", "theirstack", *_DETERMINISTIC_ATS_PROVIDERS}
+            and job.get("skills")
+            and not job.get("skills_required")
+        )
+    ):
         return job
     try:
         from groq_client import GroqClientPool
