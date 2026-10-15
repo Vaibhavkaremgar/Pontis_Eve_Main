@@ -972,7 +972,13 @@ function Dashboard() {
 
       {/* Dashboard top header with Bell */}
       <div className="shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 sm:px-5 border-b border-black/[0.05]">
-        <div aria-hidden="true" />
+        <div className="flex items-center">
+          <img
+            src="/pontis-logo.svg"
+            alt="Pontis"
+            className="h-auto w-9 shrink-0 sm:w-10"
+          />
+        </div>
         {userProfile.strengthPercent < 90 && (
           <button
             type="button"
@@ -985,11 +991,6 @@ function Dashboard() {
           </button>
         )}
         <div className="col-start-3 flex items-center justify-self-end gap-2 sm:gap-3">
-          <img
-            src="/pontis-logo.svg"
-            alt="Pontis"
-            className="h-auto w-8 shrink-0 sm:w-10"
-          />
           {resumeFixCreditBalance != null && (
             <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
               {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits
