@@ -972,11 +972,11 @@ function Dashboard() {
 
       {/* Dashboard top header with Bell */}
       <div className="shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 sm:px-5 border-b border-black/[0.05]">
-        <div className="flex items-center">
+        <div className="flex min-h-8 items-center">
           <img
             src="/pontis-logo.svg"
             alt="Pontis"
-            className="h-auto w-9 shrink-0 object-contain sm:w-10"
+            className="h-auto w-11 shrink-0 object-contain sm:w-12"
           />
         </div>
         {userProfile.strengthPercent < 90 && (
