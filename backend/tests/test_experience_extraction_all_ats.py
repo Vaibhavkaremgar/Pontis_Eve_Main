@@ -18,11 +18,11 @@ FORMATS = [
     ("6+ years", "6+ years"),
     ("6 years", "6 years"),
     ("6-8 years", "6-8 years"),
-    ("6 to 8 years", "6 to 8 years"),
-    ("minimum 6 years", "minimum 6 years"),
-    ("at least 6 years", "at least 6 years"),
-    ("5+ years of experience", "5+ years of experience"),
-    ("2 years of relevant experience", "2 years of relevant experience"),
+    ("6 to 8 years", "6-8 years"),
+    ("minimum 6 years", "6+ years"),
+    ("at least 6 years", "6+ years"),
+    ("5+ years of experience", "5+ years"),
+    ("2 years of relevant experience", "2 years"),
 ]
 
 
@@ -60,15 +60,15 @@ def test_experience_extractor_prefers_candidate_requirement_over_company_history
     text = ("CCS has been providing solutions to our clients for over 45 years. "
             "The ideal candidate has hands-on experience. "
             "1\N{EN DASH}2 years of experience in hardware and software installation or integration.")
-    assert _experience_from_text(text) == "1\N{EN DASH}2 years"
+    assert _experience_from_text(text) == "1-2 years"
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("Minimum 5 years of experience in Java development.", "Minimum 5 years"),
-    ("At least 8 years of relevant experience.", "At least 8 years"),
-    ("5+ years of relevant experience.", "5+ years of relevant experience"),
+    ("Minimum 5 years of experience in Java development.", "5+ years"),
+    ("At least 8 years of relevant experience.", "8+ years"),
+    ("5+ years of relevant experience.", "5+ years"),
     ("2-5 years of experience.", "2-5 years"),
-    ("5 to 8 years of experience.", "5 to 8 years"),
+    ("5 to 8 years of experience.", "5-8 years"),
 ])
 def test_experience_extractor_handles_candidate_requirement_forms(text, expected):
     assert _experience_from_text(text) == expected
@@ -88,7 +88,7 @@ def test_lever_combines_supported_description_fields_without_duplicates():
         "descriptionHtml": "<p>6+ years of relevant experience</p>",
     }, "Acme")
     assert job["description"].count("Build services.") == 1
-    assert job["experience_required"] == "6+ years of relevant experience"
+    assert job["experience_required"] == "6+ years"
 
 
 def test_fantastic_uses_requirements_summary_for_experience_extraction():
@@ -97,14 +97,14 @@ def test_fantastic_uses_requirements_summary_for_experience_extraction():
         "description_text": "Build services.",
         "ai_requirements_summary": "At least 6 years of experience",
     })
-    assert job["experience_required"] == "At least 6 years"
+    assert job["experience_required"] == "6+ years"
 
 
 @pytest.mark.parametrize("summary,expected", [
     ("Applicants should have 0-2 years of experience...", "0-2 years"),
-    ("At least eight years of manufacturing quality assurance experience...", "At least eight years"),
-    ("Candidates must possess ... 2 to 5 years of relevant experience...", "2 to 5 years"),
-    ("At least one year of relevant industry experience", "At least one year"),
+    ("At least eight years of manufacturing quality assurance experience...", "8+ years"),
+    ("Candidates must possess ... 2 to 5 years of relevant experience...", "2-5 years"),
+    ("At least one year of relevant industry experience", "1+ years"),
 ])
 def test_fantastic_extracts_numeric_requirement_from_requirements_summary(summary, expected):
     job = normalize_fantastic({
@@ -132,4 +132,4 @@ def test_persistence_parameters_carry_extracted_experience_value():
         "id": "lever-upsert", "text": "Engineer",
         "descriptionPlain": "6+ years of relevant experience",
     }, "Acme")
-    assert _metadata_params(job)["experience_required"] == "6+ years of relevant experience"
+    assert _metadata_params(job)["experience_required"] == "6+ years"

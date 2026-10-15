@@ -332,7 +332,9 @@ async def sync_jobs() -> None:
     logger.info("[job-scheduler] Job sync completed")
 
 
-def _existing_ats_job_needs_extraction(job: dict, existing: dict | None, sufficient_metadata) -> bool:
+def _existing_ats_job_needs_extraction(
+    job: dict, existing: dict | None, sufficient_metadata, sufficient_global_provider_metadata=None
+) -> bool:
     """Keep semantic extraction for new, changed, incomplete, or queued jobs."""
     if existing is None:
         return True
@@ -343,7 +345,18 @@ def _existing_ats_job_needs_extraction(job: dict, existing: dict | None, suffici
     incoming_description = str(job.get("description") or "").strip()
     existing_description = str(existing.get("description") or "").strip()
     if incoming_description != existing_description:
-        return True
+        # A shorter provider response is intentionally not allowed to replace
+        # a richer canonical JD. Once it has been processed successfully,
+        # however, its fingerprint proves that repeatedly receiving the same
+        # lower-quality response is not a new extraction event.
+        from app.job_ingestion.job_ingestion_service import description_fingerprint
+        processed = (
+            structured.get("description_extraction_fingerprint")
+            if isinstance(structured, dict)
+            else None
+        )
+        if processed != description_fingerprint(incoming_description):
+            return True
     existing_for_check = {
         "ats_type": job.get("ats_type"),
         "skills": existing.get("skills"),
@@ -355,9 +368,30 @@ def _existing_ats_job_needs_extraction(job: dict, existing: dict | None, suffici
         # same validation path as the normal deterministic extraction gate.
         "structured_data": structured,
     }
+    # Global feeds require both persisted provider skill arrays even when the
+    # prior extraction is marked complete.  This prevents stale status from
+    # hiding incomplete skill metadata.
+    if job.get("ats_type") in {"fantastic", "theirstack"}:
+        return not (
+            status == "complete"
+            and sufficient_global_provider_metadata is not None
+            and sufficient_global_provider_metadata(existing_for_check)
+        )
     # A completed semantic pass is also sufficient for an unchanged record,
     # including postings that legitimately disclose no salary or experience.
     return not (status == "complete" or sufficient_metadata(existing_for_check))
+
+
+def _same_ats_identity(job: dict, existing: dict | None) -> bool:
+    """Only a provider-scoped stable ID authorizes reuse of an ATS row."""
+    if existing is None:
+        return False
+    return (
+        str(existing.get("ats_type") or "").strip().casefold()
+        == str(job.get("ats_type") or "").strip().casefold()
+        and str(existing.get("ats_job_id") or "").strip()
+        == str(job.get("ats_job_id") or "").strip()
+    )
 
 
 async def _sync_jobs_guarded() -> None:
@@ -425,8 +459,8 @@ async def retry_pending_metadata_extraction() -> int:
 async def sync_fantastic_jobs() -> dict:
     """Sync both bounded Fantastic active feeds through the shared persistence path."""
     from app.job_ingestion.connectors.fantastic import FantasticClient
-    from app.job_ingestion.job_ingestion_service import upsert_ats_job
-    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
     if os.getenv("FANTASTIC_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
     logger.info("[fantastic] starting sync")
@@ -489,19 +523,22 @@ async def sync_fantastic_jobs() -> dict:
             if not job["ats_job_id"] or not job["title"] or not job["job_url"]:
                 stats["skipped"] += 1; continue
             try:
-                existing = await db.execute(text("""
-                    SELECT id, ats_job_id FROM job_descriptions
-                    WHERE ats_type='fantastic' AND (ats_job_id=:ats_job_id OR job_url=:job_url)
-                    ORDER BY CASE WHEN ats_job_id=:ats_job_id THEN 0 ELSE 1 END LIMIT 1
-                """), {"ats_job_id": job["ats_job_id"], "job_url": job["job_url"]})
-                existing_row = existing.first()
-                if existing_row and str(existing_row[1] or "") != str(job["ats_job_id"]):
+                existing_job = await find_existing_ats_job_by_id_or_url(
+                    db, "fantastic", job["ats_job_id"], job["job_url"]
+                )
+                if existing_job and not _same_ats_identity(job, existing_job):
                     stats["duplicates"] += 1
                     per_feed[feed_name]["duplicates"] += 1
                     continue
-                job = await extract_missing_job_skills(job)
-                await upsert_ats_job(db, job)
-                stats["updated" if existing_row else "inserted"] += 1
+                if _existing_ats_job_needs_extraction(
+                    job, existing_job, has_sufficient_deterministic_metadata,
+                    has_sufficient_global_provider_metadata,
+                ):
+                    job = await extract_missing_job_skills(job)
+                else:
+                    stats["skipped"] += 1
+                await upsert_ats_job(db, job, existing_job=existing_job)
+                stats["updated" if existing_job else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1
                 _log_fantastic_upsert_error(exc, job)
@@ -520,8 +557,8 @@ async def sync_fantastic_jobs() -> dict:
 
 async def sync_theirstack_jobs() -> dict[str, int]:
     from app.job_ingestion.connectors.theirstack import TheirStackClient
-    from app.job_ingestion.job_ingestion_service import upsert_ats_job
-    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills
+    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
+    from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
     from app.job_ingestion.normalize import normalize_theirstack
     if os.getenv("THEIRSTACK_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
@@ -536,12 +573,21 @@ async def sync_theirstack_jobs() -> dict[str, int]:
             if not job["ats_job_id"] or not job["title"] or not job["job_url"] or str(job.get("country") or "").casefold() not in {"india", "in"}:
                 stats["skipped"] += 1; continue
             try:
-                existing = await db.execute(text("SELECT ats_type FROM job_descriptions WHERE (ats_type='theirstack' AND ats_job_id=:id) OR job_url=:url LIMIT 1"), {"id": job["ats_job_id"], "url": job["job_url"]})
-                row = existing.first()
-                if row and row[0] != "theirstack":
+                existing_job = await find_existing_ats_job_by_id_or_url(
+                    db, "theirstack", job["ats_job_id"], job["job_url"]
+                )
+                # A URL is only a collision guard.  It must never select a
+                # row for a different TheirStack stable ID (or provider).
+                if existing_job and not _same_ats_identity(job, existing_job):
                     stats["skipped"] += 1; continue
-                job = await extract_missing_job_skills(job)
-                await upsert_ats_job(db, job); stats["updated" if row else "inserted"] += 1
+                if _existing_ats_job_needs_extraction(
+                    job, existing_job, has_sufficient_deterministic_metadata,
+                    has_sufficient_global_provider_metadata,
+                ):
+                    job = await extract_missing_job_skills(job)
+                else:
+                    stats["skipped"] += 1
+                await upsert_ats_job(db, job, existing_job=existing_job); stats["updated" if existing_job else "inserted"] += 1
             except Exception as exc:
                 stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc); await db.rollback()
     logger.info(

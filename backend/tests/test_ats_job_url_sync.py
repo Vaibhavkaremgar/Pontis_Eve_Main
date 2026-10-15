@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 from types import ModuleType
 
@@ -67,7 +68,12 @@ class FakeSession:
         if "from job_descriptions" in sql_lower and "select id, job_url, description" in sql_lower:
             row = self.state["job_row"]
             if row and row["ats_type"] == params["ats_type"] and row["ats_job_id"] == params["ats_job_id"]:
-                return FakeResult([(row["id"], row["job_url"], row["description"])])
+                return FakeResult([(
+                    row["id"], row["job_url"], row["description"], row.get("requirements"),
+                    row.get("skills", []), row.get("skills_required", []), row.get("experience_required"),
+                    row.get("salary_range"), row.get("employment_type"), row.get("structured_data", {}),
+                    row["ats_type"], row["ats_job_id"],
+                )])
             return FakeResult([])
 
         if "update job_descriptions" in sql_lower:
@@ -258,6 +264,38 @@ async def test_upsert_ats_job_refreshes_a_historically_truncated_jd(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "incoming", "should_refresh"),
+    [
+        ("short", "a longer replacement", True),
+        ("same", "diff", True),
+        ("a better stored description", "short", False),
+    ],
+)
+async def test_description_refresh_preserves_quality_without_losing_equal_length_revisions(
+    monkeypatch, stored, incoming, should_refresh
+):
+    state = {
+        "job_row": _base_existing_row("https://example.com/existing"),
+        "update_statements": [], "company_registry_updated": False, "insert_called": False,
+    }
+    state["job_row"]["description"] = stored
+    monkeypatch.setattr("app.job_ingestion.job_ingestion_service.get_or_create_ats_agency", lambda *args: None)
+
+    async with SessionFactory(state)() as db:
+        await upsert_ats_job(db, {
+            "ats_type": "greenhouse", "ats_job_id": "ats-123", "company_name": "Jumio",
+            "description": incoming, "job_url": "https://example.com/existing",
+        })
+
+    assert state["update_statements"][0][1]["refresh_description"] is should_refresh
+    assert state["job_row"]["description"] == (incoming if should_refresh else stored)
+    metadata = json.loads(state["update_statements"][0][1]["structured_data"])
+    from app.job_ingestion.job_ingestion_service import description_fingerprint
+    assert metadata["description_extraction_fingerprint"] == description_fingerprint(incoming)
+
+
+@pytest.mark.asyncio
 async def test_existing_job_update_types_job_url_and_preserves_experience_required(monkeypatch):
     state = {
         "job_row": _base_existing_row(None),
@@ -296,7 +334,9 @@ async def test_existing_job_update_types_job_url_and_preserves_experience_requir
     assert params["experience_required"] == "5+ years"
     assert params["skills_required"] == '["Python", "SQL"]'
     assert params["skills"] == '["Python"]'
-    assert params["structured_data"] == '{"source": "test"}'
+    structured_data = json.loads(params["structured_data"])
+    assert structured_data["source"] == "test"
+    assert "description_extraction_fingerprint" in structured_data
 
 
 @pytest.mark.asyncio

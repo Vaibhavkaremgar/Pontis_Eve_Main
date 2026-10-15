@@ -108,6 +108,15 @@ def has_sufficient_deterministic_metadata(job: dict[str, Any]) -> bool:
 
     return bool(skills) and complete("experience_required") and complete("salary_range") and _has_text(job.get("employment_type"))
 
+
+def has_sufficient_global_provider_metadata(job: dict[str, Any]) -> bool:
+    """Whether Fantastic or TheirStack retained both usable provider skill arrays."""
+    if job.get("ats_type") not in {"fantastic", "theirstack"}:
+        return False
+    return bool(_clean_extracted_skills(job.get("skills"), job)) and bool(
+        _clean_extracted_skills(job.get("skills_required"), job)
+    )
+
 async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     """Monotonically enrich provider skills with optional semantic extraction."""
     original = _clean_extracted_skills(merge_skills(job.get("skills_required"), job.get("skills")), job)
@@ -118,18 +127,7 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
     # pending retry is the sole exception: it represents a prior unavailable
     # attempt and must be allowed to recover.
     status = (job.get("structured_data") or {}).get("metadata_extraction_status") if isinstance(job.get("structured_data"), dict) else None
-    fantastic_native_skills = _clean_extracted_skills(job.get("skills"), job)
-    fantastic_native_required_skills = _clean_extracted_skills(job.get("skills_required"), job)
-    fantastic_skills_are_sufficient = (
-        job.get("ats_type") == "fantastic"
-        and bool(fantastic_native_skills)
-        and bool(fantastic_native_required_skills)
-    )
-    theirstack_skills_are_sufficient = (
-        job.get("ats_type") == "theirstack"
-        and bool(fantastic_native_skills)
-        and bool(fantastic_native_required_skills)
-    )
+    global_provider_metadata_is_sufficient = has_sufficient_global_provider_metadata(job)
     deterministic_ats_metadata_is_sufficient = has_sufficient_deterministic_metadata(job)
     if (
         # A completed record is normally safe to leave alone.  Fantastic and
@@ -145,8 +143,7 @@ async def extract_missing_job_skills(job: dict[str, Any]) -> dict[str, Any]:
             # may be short-circuited by deterministic provider metadata.
             status not in {"pending", "pending_retry"}
             and (
-                fantastic_skills_are_sufficient
-                or theirstack_skills_are_sufficient
+                global_provider_metadata_is_sufficient
                 or deterministic_ats_metadata_is_sufficient
             )
         )

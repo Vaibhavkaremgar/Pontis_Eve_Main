@@ -219,7 +219,8 @@ class _Result:
 class _Session:
     def __init__(self): self.params = None
     async def execute(self, statement, params=None):
-        if "SELECT id, job_url, description" in str(statement): return _Result([("db-job", None, "old")])
+        if "SELECT id, job_url, description" in str(statement):
+            return _Result([("db-job", None, "old", None, [], [], None, None, None, {}, "ashby", "a")])
         self.params = params; return _Result()
     async def commit(self): pass
 
@@ -249,6 +250,7 @@ class _ExistingUpdateSession:
 def _existing_for_marker_update(**overrides):
     existing = {
         "id": "existing-marker-job", "job_url": None, "description": "Existing description",
+        "ats_type": "greenhouse", "ats_job_id": "marker-job",
         "requirements": "Existing requirements", "skills": ["Python"],
         "skills_required": ["Python"], "experience_required": None, "salary_range": None,
         "employment_type": "Full-time", "structured_data": {"source": "existing"},

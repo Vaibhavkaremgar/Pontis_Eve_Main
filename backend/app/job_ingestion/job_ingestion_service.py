@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from typing import Any
@@ -13,8 +14,41 @@ logger = logging.getLogger(__name__)
 _EXISTING_ATS_JOB_COLUMNS = (
     "id", "job_url", "description", "requirements", "skills", "skills_required",
     "experience_required", "salary_range", "employment_type", "structured_data",
+    "ats_type", "ats_job_id",
 )
 _EXISTING_LOOKUP_UNSET = object()
+
+
+def _ats_identity_state(existing: dict[str, Any], ats_type: str, ats_job_id: str) -> str:
+    """Classify a supplied row without treating legacy projections as collisions."""
+    existing_type = existing.get("ats_type")
+    existing_id = existing.get("ats_job_id")
+    if not str(existing_type or "").strip() or not str(existing_id or "").strip():
+        return "unknown"
+    if (
+        str(existing_type).strip().casefold() == ats_type.casefold()
+        and str(existing_id).strip() == ats_job_id
+    ):
+        return "match"
+    return "mismatch"
+
+
+def description_fingerprint(description: Any) -> str | None:
+    """A stable marker for a processed source description."""
+    value = str(description or "").strip()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else None
+
+
+def _record_description_fingerprint(job: dict[str, Any]) -> None:
+    """Persist processing evidence even when a shorter source JD is not promoted."""
+    structured = job.get("structured_data")
+    structured = dict(structured) if isinstance(structured, dict) else {}
+    fingerprint = description_fingerprint(job.get("description"))
+    if fingerprint:
+        structured["description_extraction_fingerprint"] = fingerprint
+    else:
+        structured.pop("description_extraction_fingerprint", None)
+    job["structured_data"] = structured
 
 
 def _existing_ats_job(row: Any) -> dict[str, Any] | None:
@@ -37,13 +71,39 @@ async def find_existing_ats_job(db, ats_type: str, ats_job_id: str) -> dict[str,
     result = await db.execute(
         text("""
             SELECT id, job_url, description, requirements, skills, skills_required,
-                   experience_required, salary_range, employment_type, structured_data
+                   experience_required, salary_range, employment_type, structured_data,
+                   ats_type, ats_job_id
             FROM job_descriptions
             WHERE ats_type = :ats_type
               AND ats_job_id = :ats_job_id
             LIMIT 1
         """),
         {"ats_type": ats_type, "ats_job_id": ats_job_id},
+    )
+    return _existing_ats_job(result.first())
+
+
+async def find_existing_ats_job_by_id_or_url(
+    db, ats_type: str, ats_job_id: str, job_url: str | None
+) -> dict[str, Any] | None:
+    """Read one provider ID or URL match, retaining collision identity fields.
+
+    Global feeds use URLs as an additional collision guard.  Returning the
+    enrichment fields here lets their schedulers make the extraction decision
+    before the LLM call and pass this same row into ``upsert_ats_job``.
+    """
+    result = await db.execute(
+        text("""
+            SELECT id, job_url, description, requirements, skills, skills_required,
+                   experience_required, salary_range, employment_type, structured_data,
+                   ats_type, ats_job_id
+            FROM job_descriptions
+            WHERE (ats_type = :ats_type AND ats_job_id = :ats_job_id)
+               OR job_url = :job_url
+            ORDER BY CASE WHEN ats_type = :ats_type AND ats_job_id = :ats_job_id THEN 0 ELSE 1 END
+            LIMIT 1
+        """),
+        {"ats_type": ats_type, "ats_job_id": ats_job_id, "job_url": job_url},
     )
     return _existing_ats_job(result.first())
 
@@ -117,7 +177,19 @@ async def upsert_ats_job(
         if existing_job is _EXISTING_LOOKUP_UNSET
         else existing_job
     )
+    # A caller may supply a legacy projection without identity columns. It is
+    # neither trusted as a match nor treated as a collision: verify it with a
+    # stable-ID lookup. A known mismatch (such as a URL collision) is likewise
+    # replaced only by the stable-ID row, never updated in place.
+    if existing and _ats_identity_state(existing, ats_type, ats_job_id) != "match":
+        verified = await find_existing_ats_job(db, ats_type, ats_job_id)
+        existing = (
+            verified
+            if verified and _ats_identity_state(verified, ats_type, ats_job_id) == "match"
+            else None
+        )
 
+    _record_description_fingerprint(job)
     if existing:
         _merge_existing_undisclosed_markers(job, existing)
         job_id = existing["id"]
@@ -132,11 +204,17 @@ async def upsert_ats_job(
         job["skills_required"] = merge_skills(existing_required, job.get("skills_required"), canonical_display=True)
         incoming_job_url = _valid_http_url(job.get("job_url"))
         incoming_description = str(job.get("description") or "").strip()
-        # Refresh only when the newly collected JD contains strictly more
-        # content.  This repairs historical rows that were saved from Lever's
-        # overview-only field without allowing a partial provider response to
-        # erase an already richer JD.
-        refresh_description = len(incoming_description) > len(existing_description.strip())
+        # Refresh longer descriptions, and same-length replacements.  A
+        # same-length change is still a real provider revision; persisting it
+        # prevents the scheduler from requesting semantic extraction forever.
+        # A shorter response remains deliberately non-destructive.
+        refresh_description = bool(incoming_description) and (
+            len(incoming_description) > len(existing_description.strip())
+            or (
+                len(incoming_description) == len(existing_description.strip())
+                and incoming_description != existing_description.strip()
+            )
+        )
 
         # ATS metadata is refreshed on every sync.  COALESCE prevents an
         # incomplete public-board response from erasing prior data, while
@@ -166,7 +244,7 @@ async def upsert_ats_job(
             """),
             {
                 "id": job_id, "title": job.get("title"), "job_url": incoming_job_url, "description": incoming_description,
-                "is_global_provider": ats_type == "fantastic",
+                "is_global_provider": ats_type in {"fantastic", "theirstack"},
                 "refresh_description": refresh_description, **_metadata_params(job),
             },
         )
