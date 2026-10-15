@@ -68,17 +68,10 @@ export default function Sidebar({
     >
       <div className="flex-1 overflow-y-auto eve-scroll">
         {/* Brand */}
-        <div className={`flex items-start pt-5 pb-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
-          <div className={collapsed ? "hidden" : "flex min-w-0 flex-col items-start gap-1.5"}>
-            <img
-              src="/pontis-logo.svg"
-              alt="Pontis"
-              className="h-auto w-20 max-w-full"
-            />
-            <span className="text-[15px] font-medium tracking-tight text-[#1F1F1F]">
-              Eve
-            </span>
-          </div>
+        <div className={`flex items-center pt-5 pb-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
+          <span className={`text-[15px] font-medium tracking-tight text-[#1F1F1F] ${collapsed ? "hidden" : ""}`}>
+            Eve
+          </span>
           <button
             type="button"
             data-testid="sidebar-collapse-btn"

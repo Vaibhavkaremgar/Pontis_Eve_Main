@@ -985,6 +985,11 @@ function Dashboard() {
           </button>
         )}
         <div className="col-start-3 flex items-center justify-self-end gap-2 sm:gap-3">
+          <img
+            src="/pontis-logo.svg"
+            alt="Pontis"
+            className="h-auto w-8 shrink-0 sm:w-10"
+          />
           {resumeFixCreditBalance != null && (
             <span data-testid="resume-fix-credit-nav-balance" className="whitespace-nowrap rounded-lg bg-[#EEEAF8] px-2.5 py-1 text-xs font-semibold text-[#62578F] sm:px-3">
               {resumeFixCreditBalance.remaining} {resumeFixCreditBalance.phase === "starter" ? "Starter" : "Daily"} Credits
