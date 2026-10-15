@@ -358,7 +358,7 @@ export function JobDetailModal({ job, onClose, onApply, onNotInterested, applyin
       onTouchStart={handleBackdropInteract}
     >
       <div
-        className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-black/[0.05] bg-[#FBFBF9] shadow-2xl"
+        className="flex h-full w-full flex-col overflow-hidden bg-[#FBFBF9]"
         data-testid="job-detail-panel"
       >
         {/* Header */}
