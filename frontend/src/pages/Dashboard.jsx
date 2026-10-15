@@ -95,25 +95,6 @@ function ResizeHandle({ testId, subtle = false }) {
   );
 }
 
-// The documents endpoint and authenticated view endpoint both select the
-// newest persisted candidate resume, so the inline viewer never treats a
-// display filename as a file URL.
-function openAuthenticatedResume(candidateId, candidateToken) {
-  if (!candidateId) return;
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = `${API}/candidate/${candidateId}/resume/view`;
-  form.target = "_blank";
-  const token = document.createElement("input");
-  token.type = "hidden";
-  token.name = "candidate_token";
-  token.value = candidateToken || "";
-  form.appendChild(token);
-  document.body.appendChild(form);
-  form.submit();
-  form.remove();
-}
-
 function ResumePagePreview({ previewUrl, onError }) {
   const pagesRef = React.useRef(null);
 
@@ -134,7 +115,7 @@ function ResumePagePreview({ previewUrl, onError }) {
           const canvas = document.createElement("canvas");
           canvas.width = Math.ceil(viewport.width);
           canvas.height = Math.ceil(viewport.height);
-          canvas.className = "block h-auto w-full bg-white shadow-sm";
+          canvas.className = "block h-auto w-full";
           canvas.setAttribute("data-testid", "resume-preview-page");
           canvas.setAttribute("aria-label", `Resume page ${pageNumber}`);
           pagesRef.current?.appendChild(canvas);
@@ -153,7 +134,7 @@ function ResumePagePreview({ previewUrl, onError }) {
     };
   }, [onError, previewUrl]);
 
-  return <div data-testid="resume-inline-preview" className="h-[620px] overflow-y-auto bg-[#F5F4F2] p-3 eve-scroll"><div ref={pagesRef} className="mx-auto flex max-w-[612px] flex-col gap-3" /></div>;
+  return <div data-testid="resume-inline-preview" className="h-full w-full overflow-y-auto eve-scroll"><div ref={pagesRef} className="flex w-full flex-col" /></div>;
 }
 
 function ResumeContextPanel({ candidateId, candidateToken, documents, docsLoading }) {
@@ -190,23 +171,17 @@ function ResumeContextPanel({ candidateId, candidateToken, documents, docsLoadin
   }, [candidateId, candidateToken, resume]);
 
   return (
-    <aside data-testid="right-resume-context" className="h-full overflow-y-auto eve-scroll bg-[#FDFDFC] px-8 py-6">
-      <p className="text-[12px] font-semibold uppercase tracking-[.12em] text-[#7B6FB8]">Resume</p>
-      <h1 className="mt-1 text-[16px] font-medium tracking-tight text-[#1F1F1F]">Latest saved resume</h1>
+    <aside data-testid="right-resume-context" className="h-full overflow-hidden bg-[#FDFDFC]">
       {docsLoading ? (
-        <p data-testid="resume-preview-loading" className="mt-5 text-[13px] text-[#777571]">Loading resume preview…</p>
+        <p data-testid="resume-preview-loading" className="p-6 text-[13px] text-[#777571]">Loading resume preview…</p>
       ) : resume ? (
-        <div className="mt-5 overflow-hidden rounded-xl border border-black/[0.07] bg-white">
-          <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-4 py-3">
-            <p className="min-w-0 truncate text-sm font-medium text-[#1F1F1F]">{resume.filename || "Uploaded resume"}</p>
-            <button type="button" onClick={() => openAuthenticatedResume(candidateId, candidateToken)} className="shrink-0 text-[12.5px] text-[#62578F] underline underline-offset-2">Open</button>
-          </div>
+        <div className="h-full w-full">
           {previewUrl ? <ResumePagePreview previewUrl={previewUrl} onError={handlePreviewError} /> : previewError ? (
-            <div data-testid="resume-preview-fallback" className="p-4 text-[13px] leading-6 text-[#777571]">This resume can’t be previewed here. Use Open to view the saved document.</div>
-          ) : <p data-testid="resume-preview-loading" className="p-4 text-[13px] text-[#777571]">Loading resume preview…</p>}
+            <div data-testid="resume-preview-fallback" className="p-6 text-[13px] leading-6 text-[#777571]">This resume can’t be previewed here.</div>
+          ) : <p data-testid="resume-preview-loading" className="p-6 text-[13px] text-[#777571]">Loading resume preview…</p>}
         </div>
       ) : (
-        <p data-testid="resume-context-empty" className="mt-5 text-[13px] leading-6 text-[#777571]">
+        <p data-testid="resume-context-empty" className="p-6 text-[13px] leading-6 text-[#777571]">
           No resume has been uploaded yet.
         </p>
       )}

@@ -98,7 +98,7 @@ describe("Dashboard three-panel context", () => {
     expect(view.container.querySelector("iframe[title='Resume preview']")).toBeNull();
     expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("false");
     expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
-    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();
+    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).not.toContain("uploaded-resume.pdf"); view.unmount();
   });
 
   it("keeps the content and right panels mounted while the sidebar is collapsed", async () => {
@@ -122,7 +122,7 @@ describe("Dashboard three-panel context", () => {
     setupAxios({ profiles: [profile({ opportunity_type: "intern" })], resume: { filename: "intern-resume.pdf" } }); const view = renderDashboard(); await flush();
     click(view.container, "internships-tab"); await flush();
     expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
-    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("intern-resume.pdf"); view.unmount();
+    expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).not.toContain("intern-resume.pdf"); view.unmount();
   });
 
   it("refreshes the canonical resume document after Fix My Resume saves", async () => {
