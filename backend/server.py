@@ -8380,6 +8380,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
     else:
         combined = incoming
     if request.candidate_id and candidate_row_for_edit:
+        logger.info("[eve-cache-flow] candidate=%s cache_checked=true evaluating_profile_update=true", request.candidate_id)
         preflight = _chat_profile_preflight(last_user.content, candidate_row_for_edit, combined)
         if preflight:
             updates = preflight.get("updates")
@@ -8393,6 +8394,10 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                     logger.exception("Profile preflight update failed")
                     return ChatResponse(reply="I couldn't update your profile right now, so no changes were made.", session_id=request.session_id)
             reply = preflight["reply"]
+            logger.info(
+                "[eve-cache-flow] candidate=%s decision=handled_before_llm updates=%s",
+                request.candidate_id, bool(updates),
+            )
             try:
                 await _save_chat_window(request.candidate_id, request.session_id, combined + [{"role": "assistant", "content": reply}])
             except Exception as e:
@@ -8525,6 +8530,10 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                        "session_id": request.session_id, "request_id": groq_diagnostic_request_id},
     }
     _log_groq_chat_diagnostic(groq_diagnostic_request_id, groq_request_kwargs)
+    logger.info(
+        "[eve-cache-flow] candidate=%s decision=send_to_llm reason=no_deterministic_preflight",
+        request.candidate_id or "anonymous",
+    )
     try:
         resp = await openai_client.chat.completions.create(**groq_request_kwargs)
         raw_reply = resp.choices[0].message.content or ""

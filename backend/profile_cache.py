@@ -30,6 +30,7 @@ async def _client():
     _redis_attempted = True
     url = os.getenv("REDIS_URL", "").strip()
     if not url:
+        logger.info("[profile-cache] disabled: REDIS_URL is not configured")
         return None
     try:
         from redis.asyncio import Redis
@@ -37,6 +38,7 @@ async def _client():
                                        socket_connect_timeout=1,
                                        socket_timeout=1)
         await _redis_client.ping()
+        logger.info("[profile-cache] Redis connection established")
         return _redis_client
     except Exception as exc:
         logger.warning("[profile-cache] Redis unavailable; using PostgreSQL: %s", exc)
@@ -51,9 +53,14 @@ async def get(candidate_id: str) -> Optional[dict[str, Any]]:
             return None
         value = await client.get(_key(candidate_id))
         if not value:
+            logger.info("[profile-cache] MISS candidate=%s", candidate_id)
             return None
         data = json.loads(value)
-        return data if isinstance(data, dict) else None
+        if isinstance(data, dict):
+            logger.info("[profile-cache] HIT candidate=%s", candidate_id)
+            return data
+        logger.warning("[profile-cache] INVALID candidate=%s; treating as miss", candidate_id)
+        return None
     except Exception as exc:
         logger.warning("[profile-cache] read failed for %s: %s", candidate_id, exc)
         return None
@@ -64,6 +71,7 @@ async def set(candidate_id: str, profile: dict[str, Any]) -> None:
         client = await _client()
         if client:
             await client.set(_key(candidate_id), json.dumps(profile, default=str), ex=_CACHE_TTL)
+            logger.info("[profile-cache] SET candidate=%s ttl=%ss", candidate_id, _CACHE_TTL)
     except Exception as exc:
         logger.warning("[profile-cache] write failed for %s: %s", candidate_id, exc)
 
@@ -73,6 +81,7 @@ async def invalidate(candidate_id: str) -> None:
         client = await _client()
         if client:
             await client.delete(_key(candidate_id))
+            logger.info("[profile-cache] INVALIDATE candidate=%s", candidate_id)
     except Exception as exc:
         logger.warning("[profile-cache] invalidation failed for %s: %s", candidate_id, exc)
 
