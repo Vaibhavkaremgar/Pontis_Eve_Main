@@ -979,7 +979,7 @@ function Dashboard() {
             data-testid="profile-90-navbar-guidance"
             onClick={handleProfileCompletionGuidanceClick}
             aria-label="Complete your profile to get personalized job matches"
-            className="col-start-2 min-w-0 rounded-sm text-center text-xs font-semibold leading-5 text-[#514875] transition-colors hover:text-[#3E365D] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F] sm:whitespace-nowrap"
+            className="col-start-2 min-w-0 rounded-sm text-center text-xs font-semibold leading-5 text-[#514875] underline underline-offset-2 transition-colors hover:text-[#3E365D] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F] sm:whitespace-nowrap"
           >
             Complete your profile to 90% to get personalized job matches.
           </button>
