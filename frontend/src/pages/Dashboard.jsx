@@ -976,7 +976,7 @@ function Dashboard() {
           <img
             src="/pontis-logo.svg"
             alt="Pontis"
-            className="h-auto w-9 shrink-0 sm:w-10"
+            className="h-auto w-9 shrink-0 object-contain sm:w-10"
           />
         </div>
         {userProfile.strengthPercent < 90 && (

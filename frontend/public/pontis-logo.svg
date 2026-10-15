@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 110" fill="none" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="110" viewBox="0 0 240 110" fill="none" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title">
   <title id="title">Pontis</title>
   <path fill="#20A79D" fill-rule="evenodd" d="M10 10h30v14.7C50.1 14.9 63.7 10 80 10c33.1 0 60 20.1 60 45s-26.9 45-60 45c-16.3 0-29.9-4.9-40-14.7V100H10V10Zm68.8 25C62.4 35 49 43.9 49 55s13.4 20 29.8 20c16.5 0 29.9-8.9 29.9-20S95.3 35 78.8 35Z" clip-rule="evenodd"/>
   <path fill="#20A79D" d="m154 25 30 30-30 30-12-12 18-18-18-18 12-12Z"/>
