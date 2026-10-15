@@ -5268,6 +5268,12 @@ You help candidates refine their profile, discover matching roles, and prep for 
 STYLE: Warm, concise, action-oriented. 2-3 short sentences per reply unless depth is requested.
 Speak as a trusted career partner. No emojis. No markdown headers.
 
+CONVERSATION CONTINUITY:
+- Treat the latest candidate message as part of the ongoing conversation, not as an isolated request. Read the immediately preceding candidate and Eve messages before answering.
+- Always acknowledge the candidate's latest message or correction naturally in the first sentence (for example, "Got it — you want to add...", "Thanks, I understand...", or "I see what you mean..."). Do not use a generic acknowledgement that ignores the actual content.
+- Then answer the latest message directly. If the latest message confirms, corrects, or answers Eve's previous question, use that context and do not repeat the previous question.
+- When the candidate's intent is unclear, acknowledge what was understood, state the specific ambiguity, and ask one focused clarification question. Never silently choose an interpretation.
+
 CANDIDATE PROFILE (current state):
 {profile_context}
 
@@ -5276,7 +5282,7 @@ MISSING FIELDS (ask about these — do NOT ask for fields already listed above):
 PROFILE COMPLETION GUIDANCE: {profile_completion_guidance}
 
 BEHAVIOR:
-- ALWAYS answer the candidate's current message FIRST and DIRECTLY, using the candidate profile above. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
+- ALWAYS acknowledge the candidate's latest message and answer it FIRST and DIRECTLY, using the candidate profile and the immediately preceding conversation turns. Do not redirect to job search or any other topic unless the candidate's message explicitly asks for it.
 - PROFILE IMPROVEMENT QUESTIONS: When you receive a message starting with [PROFILE_QUESTION], it is an internal instruction — do NOT treat it as a candidate statement. Instead, ask the candidate that exact question naturally and conversationally, then wait for their answer. Do not acknowledge the instruction format.
 - PROFILE COMPLETION: If PROFILE COMPLETION GUIDANCE says the profile is below 90% and lists a next question, and the candidate's current message is NOT a direct question about something else, proactively ask that ONE backend-selected question at the end of your reply. Do NOT ask it if the candidate's message already answers it. Stop asking proactive profile questions once the guidance says the profile is at 90%+.
 - COMPLETENESS WORDING: An empty MISSING FIELDS list means the candidate's core required details are present; it does NOT mean Profile Strength is 100%. When PROFILE COMPLETION GUIDANCE says the profile is below 90%, never say the profile is "complete", "100% complete", or has "no missing details". Instead, say the core details are present and naturally use the supplied strengthening area/question.
@@ -5296,9 +5302,14 @@ BEHAVIOR:
   <<<PROFILE_UPDATES>>>
   {{"profile_updates": {{"field": value}}}}
   <<<END_UPDATES>>>
-- Only include profile_updates when the candidate actually provides new information.
+- Only include profile_updates when the candidate actually provides new information AND the requested value is not already present. If it is already present, acknowledge the request, name the existing value, and ask whether to update/replace it or add a separate value; do not include profile_updates yet.
 - If the candidate explicitly states they want internships, include opportunity_type: "intern". If they explicitly state they want jobs/full-time work or are moving away from internships, include opportunity_type: "jobs". Do not infer it from being a fresher or unrelated mentions.
 - Do not guess a destination for a bare request such as "Add Python". Ask where it belongs before emitting an update.
+- DUPLICATE-PROFILE SAFETY (applies to EVERY section): Before emitting any profile update, compare the candidate's complete current input with the matching section of CANDIDATE PROFILE (Skills, Certifications, Preferred Roles, Preferred Locations, Preferred Industries, Employment Preferences, Work Experience, Education, Projects, and scalar fields such as Location, Current Role, Availability, Salary Expectation, and Bio/Summary). Compare case-insensitively and recognize common equivalents and abbreviations (for example B.Tech = BTech = Bachelor's degree at the same level, JavaScript = JS, Bengaluru = Bangalore).
+- If the requested value or an equivalent already exists, do NOT emit profile_updates and do NOT say it was added. Tell the candidate exactly what is already present and ask: "Should I update/replace that existing item, or keep it and add a separate item?" For scalar fields, ask whether to replace/update the existing value.
+- If the candidate confirms update/replace, modify only the matching existing record/value and preserve its other fields. If the candidate confirms add/separate, append a new record only when that makes sense for the section. Never infer the choice from wording such as "I have", "add", or "done".
+- If the input is confusing, incomplete, or could match more than one profile section/record, do not guess and do not write. Send the ORIGINAL candidate input together with the relevant profile section(s) to your reasoning context, then ask one concise clarification question naming the possible matches.
+- ADD REQUEST WORKFLOW (mandatory for every "add", "include", "set", or equivalent request): (1) acknowledge the request; (2) identify the destination field/section from the wording and previous turn; (3) compare the requested value with that section in the current profile, including equivalent names and abbreviations; (4) if it already exists, state "I already have [value] in your [section]" and ask "Should I update/replace it, or keep it and add a separate item?"; (5) wait for the answer before writing. Never claim an item was added before this check.
 - Before changing or deleting an existing value, use the supplied profile context to identify every matching record. If more than one record/section matches, ask the candidate to choose; never emit an update for an ambiguous target.
 - Preserve every explicitly stated Education or Work Experience fact in its proper record. Ask for missing dates/details, and merge those later; do not discard an otherwise meaningful degree/institution or title/company statement.
 - Do NOT change open_to_opportunities unless the candidate explicitly asks.
@@ -7160,6 +7171,32 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     # Do not silently append a record that appears to describe an existing
     # profile item.  The candidate must choose update/replace versus add.
     inferred_now = _infer_profile_updates_from_message(text_value)
+    # Apply the same duplicate guard to every list-style profile section.
+    # Exact/normalized matches are handled deterministically; semantic or
+    # ambiguous matches are left for the LLM with the section context below.
+    list_sections = {
+        "skills": "skill",
+        "certifications": "certification",
+        "preferred_roles": "preferred role",
+        "preferred_locations": "preferred location",
+        "preferred_industries": "preferred industry",
+        "employment_types": "employment preference",
+    }
+    for field, label in list_sections.items():
+        incoming_items = inferred_now.get(field) or []
+        existing_items = candidate.get(field) or []
+        if field == "preferred_locations":
+            raw = candidate.get("raw_data") or {}
+            if isinstance(raw, dict):
+                existing_items = existing_items or raw.get("preferred_locations") or raw.get("location_preferences") or []
+        if isinstance(incoming_items, list) and isinstance(existing_items, list):
+            existing_keys = {_normalize_profile_key(item) for item in existing_items if _normalize_profile_key(item)}
+            duplicate = next((item for item in incoming_items if _normalize_profile_key(item) in existing_keys), None)
+            if duplicate:
+                return {"reply": (
+                    f"I already have {duplicate} in your {label}s section. "
+                    f"Should I update/replace it, or keep it and add a separate {label}? Please say update or add."
+                ), "updates": None}
     for field, label in (("work_experience", "work experience"), ("projects", "project")):
         incoming = (inferred_now.get(field) or [None])[0]
         if isinstance(incoming, dict):
@@ -7194,6 +7231,14 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
         degree = _normalize_profile_text(education_with_dates.group("degree"))
         degree = re.sub(r"\bmasters\b", "Master's", degree, flags=re.I)
         degree = re.sub(r"\bbachelors\b", "Bachelor's", degree, flags=re.I)
+        incoming = {"degree": degree, "institution": _normalize_profile_text(education_with_dates.group("institution"))}
+        existing = next((row for row in (candidate.get("education") or [])
+                         if isinstance(row, dict) and _same_education_level(row, incoming)), None)
+        if existing:
+            return {"reply": (
+                f"I already have your {existing.get('degree') or degree} in your profile. "
+                "Should I update/replace that education record, or add this as a separate degree? Please say update or add."
+            ), "updates": None}
         return {"reply": f"Added your {degree} at {education_with_dates.group('institution').strip()}.", "updates": {"education": [{
             "degree": degree,
             "institution": _normalize_profile_text(education_with_dates.group("institution")),
@@ -7233,7 +7278,35 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
             company, title = work_statement["company"], work_statement["title"]
             return {"reply": f"Added your current {title} experience at {company} from {single_period.group(1)} to Present.", "updates": {"work_experience": [{"title": title, "company": company, "start_date": single_period.group(1), "end_date": "Present"}]}}
 
-    new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
+    # Handle short education statements even when no institution is supplied.
+    # These must be resolved deterministically: the LLM cannot safely decide
+    # whether a paraphrase such as "bachelors" is the existing B.Tech record,
+    # and it must never turn an add statement into a deletion.
+    bare_education = re.search(
+        r"\b(?:completed|done(?:\s+with)?|finished|earned|have(?:\s+done)?|add|include|my)\s+"
+        r"(?:a\s+|an\s+)?(?P<degree>master'?s?|bachelor'?s?|mba|m\.?tech|m\.?sc|m\.?a|mca|"
+        r"b\.?tech|b\.?e|b\.?sc|b\.?a|bca|ph\.?d)(?:\s+degree)?\b"
+        r"(?:\s+(?:in|during)\s+(?P<year>(?:19|20)\d{2}))?",
+        text_value,
+        re.I,
+    )
+    if bare_education and not re.search(r"\b(?:delete|remove)\b", text_value, re.I):
+        incoming = {
+            "degree": _normalize_profile_text(bare_education.group("degree")),
+            "end_date": bare_education.group("year") or "",
+        }
+        existing_match = next(
+            (row for row in (candidate.get("education") or [])
+             if isinstance(row, dict) and _same_education_level(row, incoming)),
+            None,
+        )
+        if existing_match:
+            return {
+                "reply": f"Your {existing_match.get('degree') or 'degree'} is already in your profile, so I didn't add a duplicate.",
+                "updates": None,
+            }
+
+    new_education = re.search(r"(?:completed|add|my)\s+(?:a\s+)?([^,.]*(?:master'?s|bachelor'?s|mba|ph\.?d|m\.?tech|b\.?tech)[^,.]*)\s+(?:at|from)\s+([^,.]+)", text_value, re.I)
     if new_education and not re.search(r"\b(?:change|update)\b.*\bfrom\b.*\bto\b", text_value, re.I) and not re.search(r"\b\d{4}\s*(?:-|–|—|to)\s*(?:\d{4}|present)\b", text_value, re.I):
         degree = _normalize_profile_text(new_education.group(1))
         institution = _normalize_profile_text(new_education.group(2))

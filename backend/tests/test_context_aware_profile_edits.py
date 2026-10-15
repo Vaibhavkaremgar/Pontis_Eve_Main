@@ -42,6 +42,41 @@ def test_new_education_and_work_request_missing_timeline():
     assert "ABC Technologies" in work["reply"] and "YYYY - YYYY" in work["reply"]
 
 
+def test_bachelors_paraphrase_does_not_duplicate_existing_btech():
+    candidate = _candidate(education=[{"degree": "B.Tech", "institution": "CMR Engineering College", "end_date": "2022"}])
+    result = server._chat_profile_preflight("I have done my bachelors in 2022", candidate, [])
+    assert result["updates"] is None
+    assert "already" in result["reply"].lower()
+
+
+def test_btech_add_does_not_become_delete_or_duplicate():
+    candidate = _candidate(education=[{"degree": "B.Tech", "institution": "CMR Engineering College", "end_date": "2022"}])
+    result = server._chat_profile_preflight("I have done my btech in 2022", candidate, [])
+    assert result["updates"] is None
+    assert "already" in result["reply"].lower()
+    assert "remove" not in result["reply"].lower()
+
+
+def test_duplicate_list_items_ask_before_writing_across_sections():
+    candidate = _candidate()
+    candidate.update({
+        "skills": ["Python"],
+        "certifications": ["AWS Solutions Architect"],
+        "preferred_roles": ["Backend Engineer"],
+        "preferred_locations": ["Bengaluru"],
+    })
+    for message in (
+        "Add Python to my skills",
+        "Add AWS Solutions Architect to my certifications",
+        "Add Backend Engineer to my preferred roles",
+        "Add Bengaluru to my preferred locations",
+    ):
+        result = server._chat_profile_preflight(message, candidate, [])
+        assert result["updates"] is None
+        assert "update" in result["reply"].lower()
+        assert "add" in result["reply"].lower()
+
+
 def test_timeline_follow_up_completes_original_education_operation():
     history = [
         {"role": "user", "content": "Add my Master's from CBIT."},
