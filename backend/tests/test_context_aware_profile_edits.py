@@ -77,6 +77,49 @@ def test_duplicate_list_items_ask_before_writing_across_sections():
         assert "add" in result["reply"].lower()
 
 
+def test_duplicate_preferred_role_uses_authoritative_preferences_row():
+    candidate = _candidate()
+    candidate["_prefs_row"] = {"preferred_roles": ["Python Developer"]}
+    duplicate = server._duplicate_profile_update(candidate, {"preferred_roles": ["python developer"]})
+    assert duplicate == ("preferred roles", "Python Developer")
+
+
+def test_same_company_experience_requires_update_or_add_choice():
+    candidate = _candidate(work=[{
+        "title": "Python Developer", "company": "ABC Technologies",
+        "start_date": "2022", "end_date": "2024",
+    }])
+    duplicate = server._duplicate_profile_update(candidate, {"work_experience": [{
+        "title": "Senior Python Developer", "company": "ABC Technologies",
+        "start_date": "2022", "end_date": "2024",
+    }]})
+    assert duplicate == ("work experience", "ABC Technologies")
+
+
+def test_deterministic_reply_acknowledges_candidate():
+    reply = server._acknowledge_candidate_reply(
+        "Add my experience at ABC Technologies",
+        "I can see ABC Technologies already in your profile.",
+    )
+    assert reply.startswith("Got it")
+    assert "ABC Technologies" in reply
+
+
+def test_add_confirmation_keeps_existing_and_uses_previous_request():
+    candidate = _candidate(work=[{
+        "title": "Python Developer", "company": "ABC Technologies",
+        "start_date": "2020", "end_date": "2022",
+    }])
+    history = [
+        {"role": "user", "content": "I worked at ABC Technologies as a Senior Python Developer from 2022 to 2024"},
+        {"role": "assistant", "content": "I already have ABC Technologies in your profile. Should I update/replace that work experience, or add this as a separate record? Please say update or add."},
+        {"role": "user", "content": "add"},
+    ]
+    result = server._chat_profile_preflight("add", candidate, history)
+    assert result["updates"]["work_experience"][0]["company"] == "ABC Technologies"
+    assert "separate" in result["reply"].lower()
+
+
 def test_timeline_follow_up_completes_original_education_operation():
     history = [
         {"role": "user", "content": "Add my Master's from CBIT."},

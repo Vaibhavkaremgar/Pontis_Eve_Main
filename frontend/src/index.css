@@ -64,7 +64,8 @@ code {
 /* ---------- Minimal auto-hiding scrollbars ---------- */
 /* Default: hidden. Show only on hover of the scrollable container, thin & subtle. */
 .eve-scroll {
-    scrollbar-width: none; /* Firefox: hidden by default */
+    /* Reserve scrollbar space permanently so hover never changes layout width. */
+    scrollbar-width: thin;
     scrollbar-color: transparent transparent;
     transition: scrollbar-color 0.2s ease;
 }
@@ -83,7 +84,6 @@ code {
     transition: background-color 0.2s ease;
 }
 .eve-scroll:hover {
-    scrollbar-width: thin;
     scrollbar-color: rgba(0, 0, 0, 0.14) transparent;
 }
 .eve-scroll:hover::-webkit-scrollbar-thumb {

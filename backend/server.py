@@ -6130,6 +6130,18 @@ def _replace_generic_profile_update_reply(reply: str, updates: Optional[dict]) -
     return f"I've updated your {', '.join(changed) or 'profile'}."
 
 
+def _acknowledge_candidate_reply(message: str, reply: str) -> str:
+    """Make deterministic replies feel like a continuation of the turn."""
+    text_value = (reply or "").strip()
+    if not text_value or re.match(r"^(?:got it|thanks|thank you|understood|i see|absolutely|sure)\b", text_value, re.I):
+        return text_value
+    if re.search(r"\b(?:add|include|save|record)\b", message, re.I):
+        return f"Got it — you want me to add that. {text_value}"
+    if re.search(r"\b(?:remove|delete)\b", message, re.I):
+        return f"Understood — you want that removed. {text_value}"
+    return f"Thanks for sharing that. {text_value}"
+
+
 def _split_update_list(text: str) -> list[str]:
     """Split a natural-language list into normalized items."""
     if not isinstance(text, str):
@@ -7131,7 +7143,7 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     # extractor can treat the answer as a brand-new education record.
     prior_assistant = next((m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"), "")
     if re.search(r"\bshould i update that record\b", prior_assistant, re.I) and re.search(r"\b(update|yes|same|existing)\b", lower):
-        prior_user = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+        prior_user = next((m.get("content", "") for m in reversed(history[:-1]) if m.get("role") == "user"), "")
         inferred = _infer_profile_updates_from_message(prior_user)
         incoming = (inferred.get("education") or [None])[0]
         if isinstance(incoming, dict):
@@ -7146,7 +7158,7 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
                         "profile_record_replacements": [{"section": "Education", "old": row.get("degree") or "degree", "new": updated.get("degree") or row.get("degree"), "record_indexes": [index]}],
                     }}
     if re.search(r"\bshould i update/replace that\b", prior_assistant, re.I) and re.search(r"\b(update|replace|yes|same|existing)\b", lower):
-        prior_user = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+        prior_user = next((m.get("content", "") for m in reversed(history[:-1]) if m.get("role") == "user"), "")
         inferred = _infer_profile_updates_from_message(prior_user)
         for field in ("work_experience", "projects"):
             incoming = (inferred.get(field) or [None])[0]
@@ -7159,6 +7171,20 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
                     field: [merged],
                     "profile_record_replacements": [{"section": ("Work Experience" if field == "work_experience" else "Projects"), "old": str(existing.get("company") or existing.get("title") or "record"), "new": str(merged.get("company") or merged.get("title") or "record"), "record_indexes": [index]}],
                 }}
+    # Respect an explicit choice to keep the existing record and add another.
+    # Reconstruct the proposed update from the prior user turn; a bare "add"
+    # must not lose the context of Eve's duplicate clarification.
+    if (
+        re.search(r"\bshould i\b.*\b(?:update|replace)\b.*\badd\b", prior_assistant, re.I)
+        and re.fullmatch(r"\s*(?:yes,?\s+)?(?:add|add it|add separately|separate|new record)\s*[.!]?\s*", lower)
+    ):
+        prior_user = next((m.get("content", "") for m in reversed(history[:-1]) if m.get("role") == "user"), "")
+        separate_updates = _sanitize_profile_updates(_infer_profile_updates_from_message(prior_user))
+        if separate_updates:
+            return {
+                "reply": "Understood — I'll keep the existing information and add this as a separate entry.",
+                "updates": separate_updates,
+            }
     pending_selection = _pending_replacement_selection(text_value, candidate, history)
     if pending_selection:
         return pending_selection
@@ -7171,6 +7197,26 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     # Do not silently append a record that appears to describe an existing
     # profile item.  The candidate must choose update/replace versus add.
     inferred_now = _infer_profile_updates_from_message(text_value)
+    explicit_list_add = re.match(
+        r"^\s*(?:please\s+)?(?:add|include|save|record)\s+(?P<value>.+?)\s+"
+        r"(?:to|in)\s+(?:my\s+)?(?P<section>skills?|certifications?|preferred\s+roles?|"
+        r"target\s+roles?|preferred\s+locations?|preferred\s+industries?|employment\s+(?:types?|preferences?))\s*[.!]?\s*$",
+        text_value, re.I,
+    )
+    if explicit_list_add:
+        section_key = re.sub(r"\s+", " ", explicit_list_add.group("section").lower()).strip()
+        destination = {
+            "skill": "skills", "skills": "skills",
+            "certification": "certifications", "certifications": "certifications",
+            "preferred role": "preferred_roles", "preferred roles": "preferred_roles",
+            "target role": "preferred_roles", "target roles": "preferred_roles",
+            "preferred location": "preferred_locations", "preferred locations": "preferred_locations",
+            "preferred industry": "preferred_industries", "preferred industries": "preferred_industries",
+            "employment type": "employment_types", "employment types": "employment_types",
+            "employment preference": "employment_types", "employment preferences": "employment_types",
+        }.get(section_key)
+        if destination and destination not in inferred_now:
+            inferred_now[destination] = [explicit_list_add.group("value").strip()]
     # Apply the same duplicate guard to every list-style profile section.
     # Exact/normalized matches are handled deterministically; semantic or
     # ambiguous matches are left for the LLM with the section context below.
@@ -7184,11 +7230,7 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     }
     for field, label in list_sections.items():
         incoming_items = inferred_now.get(field) or []
-        existing_items = candidate.get(field) or []
-        if field == "preferred_locations":
-            raw = candidate.get("raw_data") or {}
-            if isinstance(raw, dict):
-                existing_items = existing_items or raw.get("preferred_locations") or raw.get("location_preferences") or []
+        existing_items = _existing_profile_list(candidate, field)
         if isinstance(incoming_items, list) and isinstance(existing_items, list):
             existing_keys = {_normalize_profile_key(item) for item in existing_items if _normalize_profile_key(item)}
             duplicate = next((item for item in incoming_items if _normalize_profile_key(item) in existing_keys), None)
@@ -7283,8 +7325,8 @@ def _chat_profile_preflight(message: str, candidate: dict, history: list[dict]) 
     # whether a paraphrase such as "bachelors" is the existing B.Tech record,
     # and it must never turn an add statement into a deletion.
     bare_education = re.search(
-        r"\b(?:completed|done(?:\s+with)?|finished|earned|have(?:\s+done)?|add|include|my)\s+"
-        r"(?:a\s+|an\s+)?(?P<degree>master'?s?|bachelor'?s?|mba|m\.?tech|m\.?sc|m\.?a|mca|"
+        r"\b(?:i\s+)?(?:completed|done(?:\s+with)?|finished|earned|have(?:\s+done)?|add|include|my)\s+"
+        r"(?:my\s+|a\s+|an\s+)?(?P<degree>master'?s?|bachelor'?s?|mba|m\.?tech|m\.?sc|m\.?a|mca|"
         r"b\.?tech|b\.?e|b\.?sc|b\.?a|bca|ph\.?d)(?:\s+degree)?\b"
         r"(?:\s+(?:in|during)\s+(?P<year>(?:19|20)\d{2}))?",
         text_value,
@@ -8411,6 +8453,10 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                     {"cid": request.candidate_id},
                 )
                 prefs_row = prefs_result.mappings().fetchone()
+            # Keep the canonical preference row on the edit snapshot too.
+            # Duplicate preflight must compare against the same authoritative
+            # values that are shown in the profile and used for scoring.
+            candidate_row_for_edit["_prefs_row"] = dict(prefs_row) if prefs_row else None
             frontend_profile["_prefs_row"] = dict(prefs_row) if prefs_row else None
             frontend_profile["missing_questions"] = await _build_authoritative_missing_questions(
                 row, frontend_profile["_prefs_row"]
@@ -8466,7 +8512,7 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                 except Exception:
                     logger.exception("Profile preflight update failed")
                     return ChatResponse(reply="I couldn't update your profile right now, so no changes were made.", session_id=request.session_id)
-            reply = preflight["reply"]
+            reply = _acknowledge_candidate_reply(last_user.content, preflight["reply"])
             logger.info(
                 "[eve-cache-flow] candidate=%s decision=handled_before_llm updates=%s",
                 request.candidate_id, bool(updates),
@@ -8639,6 +8685,19 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                     profile_updates = _merge_profile_updates(profile_updates or {}, multi_updates) or None
             except Exception as _e:
                 logger.warning("[chat-multi-field] merge failed: %s", _e)
+
+    # Final persistence safety belt. Even if the LLM or multi-field extractor
+    # missed the duplicate during conversation planning, never append it
+    # blindly. Ask the candidate to choose before any database write.
+    duplicate_update = _duplicate_profile_update(candidate_row_for_edit or {}, profile_updates)
+    if duplicate_update:
+        section, existing_value = duplicate_update
+        clean_reply = (
+            f"Thanks for sharing that. I already have {existing_value} in your {section}. "
+            "Would you like me to update/replace the existing information, "
+            "or keep it and add this as a separate entry?"
+        )
+        profile_updates = None
 
     incomplete_experience = _incomplete_new_chat_experience(profile_updates, candidate_row_for_edit)
     if incomplete_experience:
@@ -9910,10 +9969,10 @@ def _merge_education(existing: Any, new_items: Any) -> list:
 
 def _education_level(value: Any) -> str:
     """Return the broad degree level used to prevent duplicate degrees."""
-    text = _normalize_profile_key(value)
-    if re.search(r"\b(?:bachelor|btech|b tech|b e|bsc|b sc|ba|bca)\b", text):
+    text = re.sub(r"[^a-z0-9]+", " ", _normalize_profile_key(value)).strip()
+    if re.search(r"\b(?:bachelor|bachelors|btech|b tech|b e|bsc|b sc|ba|bca)\b", text):
         return "bachelor"
-    if re.search(r"\b(?:master|mtech|m tech|m e|msc|m sc|ma|mba|mca)\b", text):
+    if re.search(r"\b(?:master|masters|mtech|m tech|m e|msc|m sc|ma|mba|mca)\b", text):
         return "master"
     if re.search(r"\b(?:phd|ph d|doctorate)\b", text):
         return "doctorate"
@@ -9927,6 +9986,26 @@ def _same_education_level(existing: dict, incoming: dict) -> bool:
     )
 
 
+def _existing_profile_list(candidate: dict, field: str) -> list:
+    """Read a list field from its canonical profile source."""
+    direct = candidate.get(field)
+    if isinstance(direct, list) and direct:
+        return direct
+    prefs = candidate.get("_prefs_row") or {}
+    if isinstance(prefs, dict) and isinstance(prefs.get(field), list):
+        return prefs[field]
+    raw = _parse_raw_data(candidate.get("raw_data"))
+    aliases = {
+        "preferred_locations": ("preferred_locations", "location_preferences"),
+        "preferred_industries": ("preferred_industries", "target_industries"),
+    }
+    for key in aliases.get(field, (field,)):
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def _duplicate_profile_record(candidate: dict, field: str, incoming: dict) -> tuple[int, dict] | None:
     """Find an existing record that the candidate may be updating."""
     records = candidate.get(field) or []
@@ -9936,12 +10015,50 @@ def _duplicate_profile_record(candidate: dict, field: str, incoming: dict) -> tu
         if field == "education" and _same_education_level(row, incoming):
             return index, row
         if field == "work_experience":
-            same_company = _normalize_profile_key(row.get("company")) == _normalize_profile_key(incoming.get("company"))
-            same_title = _normalize_profile_key(row.get("title")) == _normalize_profile_key(incoming.get("title"))
-            if same_company and (same_title or not incoming.get("title")):
+            existing_company = _normalize_profile_key(row.get("company"))
+            incoming_company = _normalize_profile_key(incoming.get("company"))
+            existing_title = _normalize_profile_key(row.get("title"))
+            incoming_title = _normalize_profile_key(incoming.get("title"))
+            same_company = bool(existing_company and incoming_company and existing_company == incoming_company)
+            same_title = bool(existing_title and incoming_title and existing_title == incoming_title)
+            # A repeat employer is potentially an update or another role at
+            # the same company. Both cases require the candidate to choose;
+            # neither may be appended silently.
+            if same_company or (same_title and not incoming_company):
                 return index, row
         if field == "projects" and _normalize_profile_key(row.get("title")) == _normalize_profile_key(incoming.get("title")):
             return index, row
+    return None
+
+
+def _duplicate_profile_update(candidate: dict, updates: Optional[dict]) -> Optional[tuple[str, str]]:
+    """Return (section, existing identity) when an update may duplicate data."""
+    if not isinstance(updates, dict) or updates.get("profile_deletions"):
+        return None
+    labels = {
+        "skills": "skills", "certifications": "certifications",
+        "preferred_roles": "preferred roles", "preferred_locations": "preferred locations",
+        "preferred_industries": "preferred industries", "employment_types": "employment preferences",
+    }
+    for field, label in labels.items():
+        incoming = updates.get(field)
+        if not isinstance(incoming, list):
+            continue
+        existing = _existing_profile_list(candidate, field)
+        existing_by_key = {_normalize_profile_key(item): str(item) for item in existing if _normalize_profile_key(item)}
+        for item in incoming:
+            key = _normalize_profile_key(item)
+            if key and key in existing_by_key:
+                return label, existing_by_key[key]
+    for field, label in (("work_experience", "work experience"), ("education", "education"), ("projects", "projects")):
+        for incoming in updates.get(field) or []:
+            if not isinstance(incoming, dict):
+                continue
+            duplicate = _duplicate_profile_record(candidate, field, incoming)
+            if duplicate:
+                _, row = duplicate
+                identity = row.get("company") or row.get("title") or row.get("degree") or row.get("institution") or label
+                return label, str(identity)
     return None
 
 
