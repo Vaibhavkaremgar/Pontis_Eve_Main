@@ -37,6 +37,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from app.job_ingestion.lifecycle import candidate_visible_where
 from location_matching import country_eligible, country_code
 from skill_normalization import canonical_skill_key
+import profile_cache
 
 try:  # pragma: no cover - optional dependency
     from reportlab.lib import colors
@@ -3605,6 +3606,7 @@ async def _save_voice_intake_resume(candidate_id: str, resume: dict) -> None:
             {"voice_intake": json.dumps(resume), "cid": candidate_id},
         )
         await db.commit()
+    await profile_cache.invalidate(candidate_id)
 
 
 INTAKE_TOPIC_PRIORITY = (
@@ -3946,6 +3948,9 @@ async def _advance_voice_intake_from_chat(
 
 
 async def _get_candidate_row(candidate_id: str) -> dict:
+    cached = await profile_cache.get(candidate_id)
+    if cached:
+        return cached
     async with SessionLocal() as db:
         row = await db.execute(
             text("SELECT * FROM candidates WHERE id = :cid LIMIT 1"),
@@ -3970,6 +3975,7 @@ async def _get_candidate_row(candidate_id: str) -> dict:
     except Exception:
         # The billing migration may not have run in older installations yet.
         candidate["subscription_active"] = False
+    await profile_cache.set(candidate_id, candidate)
     return candidate
 
 
@@ -4311,6 +4317,7 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
 
         await db.commit()
 
+    await profile_cache.invalidate(cid)
     logger.info("[parse-resume] final candidate_id returned=%s", cid)
     return cid
 
@@ -4470,6 +4477,7 @@ async def _seed_employment_gaps_after_parse(candidate_id: str, parsed: dict) -> 
                 {"rd": json.dumps(raw_data), "cid": candidate_id},
             )
             await db.commit()
+        await profile_cache.invalidate(candidate_id)
         logger.info("[gap-seed] seeded unanswered gap for candidate %s", candidate_id)
     except Exception as exc:
         logger.warning("[gap-seed] failed for candidate %s: %s", candidate_id, exc)
@@ -4512,6 +4520,7 @@ async def upload_profile_photo(
                 {"rd": json.dumps(raw_data), "cid": canonical_candidate_id},
             )
             await db.commit()
+        await profile_cache.invalidate(canonical_candidate_id)
         logger.info("[candidate-photo] candidate=%s persisted_path=%s exists=%s bytes=%d version=%s", canonical_candidate_id, dest_path, dest_path.exists(), len(file_bytes), photo_version)
     except Exception:
         try:
@@ -4572,6 +4581,8 @@ async def delete_profile_photo(
             {"rd": json.dumps(raw_data), "cid": candidate_id},
         )
         await db.commit()
+
+    await profile_cache.invalidate(candidate_id)
 
     await _delete_candidate_photo(candidate_id, photo_path)
     return {"photo_url": None, "status": "deleted"}
@@ -4644,6 +4655,8 @@ async def delete_candidate_account(
 
         await db.execute(text("DELETE FROM candidates WHERE id = :cid"), {"cid": candidate_id})
         await db.commit()
+
+    await profile_cache.invalidate(candidate_id)
 
     for path_str in sorted(file_paths):
         try:
@@ -4764,6 +4777,7 @@ async def update_candidate_profile(candidate_id: str, body: ManualProfileUpdateR
             "raw_data": json.dumps(raw), "parsed_resume": json.dumps(parsed),
         })
         await db.commit()
+        await profile_cache.invalidate(candidate_id)
     return await _get_candidate_profile_payload(candidate_id)
 
 
@@ -4921,6 +4935,7 @@ async def delete_resume(candidate_id: str, authorization: Optional[str] = Header
             {"rid": resume_id, "cid": candidate_id},
         )
         await db.commit()
+        await profile_cache.invalidate(candidate_id)
     stored_file_path = _resolve_candidate_document_path(candidate_id, "resume", source_path)
     if stored_file_path:
         try:
@@ -5238,7 +5253,8 @@ async def _extract_and_merge_chat_facts(candidate_id: str, messages: list[dict],
                 text("UPDATE candidates SET raw_data = CAST(:rd AS jsonb), updated_at = now() WHERE id = :cid"),
                 {"rd": json.dumps(raw), "cid": candidate_id},
             )
-            await db.commit()
+        await db.commit()
+        await profile_cache.invalidate(candidate_id)
         logger.info("[chat-facts] merged facts for candidate %s", candidate_id)
     except Exception as e:
         logger.warning("[chat-facts] extraction failed for %s: %s", candidate_id, e)
@@ -7630,6 +7646,7 @@ async def _record_demonstrated_skill_usage(candidate_id: str, existing_skills: A
             {"raw_data": json.dumps(updated_raw), "cid": candidate_id},
         )
         await db.commit()
+    await profile_cache.invalidate(candidate_id)
 
 
 async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
@@ -8090,6 +8107,7 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
             )
             await db.commit()
         persisted = True
+        await profile_cache.invalidate(candidate_id)
 
     preference_payload = {
         "preferred_roles": _normalize_preferred_roles(existing_raw.get("preferred_roles") or []),
@@ -8219,6 +8237,7 @@ async def _update_preferred_roles(candidate_id: str, new_roles: list[str]) -> No
             {"rd": json.dumps(raw), "cid": candidate_id},
         )
         await db.commit()
+    await profile_cache.invalidate(candidate_id)
     logger.info("[chat] Updated preferred_roles for candidate %s: %s", candidate_id, new_roles)
 
 
@@ -10398,6 +10417,8 @@ async def _persist_voice_intake_profile_state(
         )
         await db.commit()
 
+    await profile_cache.invalidate(candidate_id)
+
     await _upsert_candidate_preferences(candidate_id, voice_data)
     return merged
 
@@ -12264,6 +12285,7 @@ async def _save_resume_editor_updates(candidate_id: str, updates: dict) -> dict:
         # A failed metadata transaction must not leave a selectable resume.
         updated_resume_path.unlink(missing_ok=True)
         raise
+    await profile_cache.invalidate(candidate_id)
     return {"updated": bool(changed), "changed": changed}
 
 
@@ -13913,6 +13935,7 @@ async def reset_test_candidate(
 
         await db.commit()
 
+    await profile_cache.invalidate(cid)
     logger.info("[test-reset] Reset complete for candidate %s", cid)
     return {
         "status": "reset",
