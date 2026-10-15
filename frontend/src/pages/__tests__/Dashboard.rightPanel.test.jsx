@@ -7,6 +7,19 @@ import { saveOnboardingState } from "../../lib/onboardingStorage";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 jest.mock("axios");
+jest.mock("pdfjs-dist/build/pdf", () => ({
+  GlobalWorkerOptions: {},
+  getDocument: jest.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 3,
+      getPage: jest.fn(() => Promise.resolve({
+        getViewport: () => ({ width: 612, height: 792 }),
+        render: () => ({ promise: Promise.resolve() }),
+      })),
+    }),
+  })),
+}));
+jest.mock("pdfjs-dist/build/pdf.worker.entry", () => "pdf-worker");
 jest.mock("react-router-dom", () => ({ useNavigate: () => jest.fn(), useSearchParams: () => [new URLSearchParams(), jest.fn()] }), { virtual: true });
 jest.mock("../../components/Sidebar", () => ({ setActiveTab, collapsed, onToggleCollapsed }) => <div data-testid="sidebar" data-collapsed={collapsed ? "true" : "false"}><button data-testid="sidebar-collapse-btn" onClick={onToggleCollapsed}>toggle</button>{["jobs", "tracked", "profile", "documents", "opportunities", "billing"].map((id) => <button key={id} data-testid={`nav-tab-${id}`} onClick={() => setActiveTab(id)}>{id}</button>)}</div>);
 jest.mock("../../components/ChatHub", () => (props) => <div data-testid="chat-hub"><button data-testid="chat-mic-btn" onClick={props.onMicClick}>mic</button></div>);
@@ -35,11 +48,11 @@ function setupAxios({ profiles = [profile()], resume = { filename: "uploaded-res
   });
 }
 function renderDashboard() { const container = document.createElement("div"); document.body.appendChild(container); const root = ReactDOM.createRoot(container); act(() => root.render(<Dashboard />)); return { container, unmount: () => { act(() => root.unmount()); container.remove(); } }; }
-async function flush() { for (let i = 0; i < 10; i += 1) await act(async () => Promise.resolve()); }
+async function flush() { for (let i = 0; i < 20; i += 1) await act(async () => Promise.resolve()); }
 function click(container, id) { act(() => container.querySelector(`[data-testid="${id}"]`).click()); }
 
 describe("Dashboard three-panel context", () => {
-  beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); global.URL.createObjectURL = jest.fn(() => "blob:resume"); global.URL.revokeObjectURL = jest.fn(); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
+  beforeEach(() => { localStorage.clear(); jest.clearAllMocks(); global.URL.createObjectURL = jest.fn(() => "blob:resume"); global.URL.revokeObjectURL = jest.fn(); global.fetch = jest.fn(() => Promise.resolve({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) })); saveOnboardingState({ candidateId: "cand-123", isOpenToMatches: true, activeTab: "jobs" }); });
 
   it("emphasizes the candidate's primary tab while preserving selected-tab styling", async () => {
     setupAxios({ profiles: [profile()] });
@@ -82,6 +95,7 @@ describe("Dashboard three-panel context", () => {
     setupAxios(); const view = renderDashboard(); await flush();
     expect(view.container.querySelector("[data-testid=jobs-deck]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=resume-inline-preview]")).toBeTruthy();
+    expect(view.container.querySelector("iframe[title='Resume preview']")).toBeNull();
     expect(view.container.querySelector("[data-testid=dashboard-content-panel]").dataset.singleContentPanel).toBe("false");
     expect(view.container.querySelector("[data-testid=right-panel]")).toBeTruthy();
     expect(view.container.querySelector("[data-testid=right-resume-context]").textContent).toContain("uploaded-resume.pdf"); view.unmount();

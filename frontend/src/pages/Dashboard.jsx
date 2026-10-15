@@ -3,6 +3,8 @@ import axios from "axios";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Toaster, toast } from "sonner";
 import { Bell } from "lucide-react";
+import * as pdfjsLib from "pdfjs-dist/build/pdf";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.entry";
 
 import Sidebar from "../components/Sidebar";
 import ChatHub from "../components/ChatHub";
@@ -26,6 +28,10 @@ export { getVoiceIntakeCenterView };
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+// Use PDF.js rather than the browser's native PDF plugin so the preview is
+// just the document pages, without browser-controlled viewer chrome.
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 function buildFallbackProfile(isOpenToMatches = true) {
   return {
@@ -108,10 +114,53 @@ function openAuthenticatedResume(candidateId, candidateToken) {
   form.remove();
 }
 
+function ResumePagePreview({ previewUrl, onError }) {
+  const pagesRef = React.useRef(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    let loadingTask = null;
+    const renderPages = async () => {
+      try {
+        const response = await fetch(previewUrl);
+        const data = await response.arrayBuffer();
+        loadingTask = pdfjsLib.getDocument({ data });
+        const pdf = await loadingTask.promise;
+
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+          if (cancelled) return;
+          const page = await pdf.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          canvas.className = "block h-auto w-full bg-white shadow-sm";
+          canvas.setAttribute("data-testid", "resume-preview-page");
+          canvas.setAttribute("aria-label", `Resume page ${pageNumber}`);
+          pagesRef.current?.appendChild(canvas);
+          const context = canvas.getContext("2d");
+          await page.render({ canvasContext: context, viewport }).promise;
+        }
+      } catch (error) {
+        if (!cancelled) onError();
+      }
+    };
+    renderPages();
+
+    return () => {
+      cancelled = true;
+      loadingTask?.destroy();
+    };
+  }, [onError, previewUrl]);
+
+  return <div data-testid="resume-inline-preview" className="h-[620px] overflow-y-auto bg-[#F5F4F2] p-3 eve-scroll"><div ref={pagesRef} className="mx-auto flex max-w-[612px] flex-col gap-3" /></div>;
+}
+
 function ResumeContextPanel({ candidateId, candidateToken, documents, docsLoading }) {
   const resume = documents?.resume;
   const [previewUrl, setPreviewUrl] = React.useState(null);
   const [previewError, setPreviewError] = React.useState(false);
+  const handlePreviewError = React.useCallback(() => setPreviewError(true), []);
 
   React.useEffect(() => {
     let objectUrl = null;
@@ -152,7 +201,7 @@ function ResumeContextPanel({ candidateId, candidateToken, documents, docsLoadin
             <p className="min-w-0 truncate text-sm font-medium text-[#1F1F1F]">{resume.filename || "Uploaded resume"}</p>
             <button type="button" onClick={() => openAuthenticatedResume(candidateId, candidateToken)} className="shrink-0 text-[12.5px] text-[#62578F] underline underline-offset-2">Open</button>
           </div>
-          {previewUrl ? <iframe title="Resume preview" data-testid="resume-inline-preview" src={previewUrl} className="h-[620px] w-full bg-white" /> : previewError ? (
+          {previewUrl ? <ResumePagePreview previewUrl={previewUrl} onError={handlePreviewError} /> : previewError ? (
             <div data-testid="resume-preview-fallback" className="p-4 text-[13px] leading-6 text-[#777571]">This resume can’t be previewed here. Use Open to view the saved document.</div>
           ) : <p data-testid="resume-preview-loading" className="p-4 text-[13px] text-[#777571]">Loading resume preview…</p>}
         </div>
