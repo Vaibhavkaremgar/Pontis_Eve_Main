@@ -306,6 +306,29 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
 
 
 @pytest.mark.asyncio
+async def test_linkedin_id_token_validation_failure_cannot_issue_candidate_session(monkeypatch):
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
+    async def consume_transaction(provider, returned_state, stored_state):
+        return "transaction-id", json.dumps({"nonce": "nonce"})
+    async def exchange(code, verifier=None):
+        return {"id_token": "id-token"}
+    async def invalid_validation(id_token, nonce):
+        raise HTTPException(status_code=400, detail="LinkedIn identity validation failed.")
+    session_issued = False
+    async def unexpected_identity(claims):
+        raise AssertionError("identity mapping must not run")
+    monkeypatch.setattr(server, "_consume_oauth_transaction", consume_transaction)
+    monkeypatch.setattr(server, "_exchange_linkedin_authorization_code", exchange)
+    monkeypatch.setattr(server, "_validate_linkedin_id_token", invalid_validation)
+    monkeypatch.setattr(server, "_find_or_create_linkedin_candidate", unexpected_identity)
+    with pytest.raises(HTTPException) as exc:
+        await server.linkedin_callback(code="code", state="state", linkedin_oauth_state="state")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_linkedin_init_requires_complete_confidential_client_configuration(monkeypatch):
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "")

@@ -13511,16 +13511,32 @@ async def _validate_linkedin_id_token(id_token: str, nonce: str) -> dict[str, An
             algorithms=["RS256"],
             audience=LINKEDIN_CLIENT_ID,
             issuer=LINKEDIN_EXPECTED_ISSUER,
-            options={"require": ["iss", "sub", "aud", "iat", "exp", "nonce"]},
+            # LinkedIn's published discovery metadata does not advertise a
+            # nonce claim. Require the claims LinkedIn documents and validate
+            # nonce opportunistically when the provider returns it.
+            options={"require": ["iss", "sub", "aud", "iat", "exp"]},
         )
-        if not hmac.compare_digest(str(claims.get("nonce", "")), nonce):
+        nonce_claim_present = "nonce" in claims
+        logger.info(
+            "LinkedIn ID token claims validated nonce_claim_present=%s",
+            nonce_claim_present,
+        )
+        # LinkedIn's published OIDC contract does not list nonce in
+        # claims_supported and production evidence confirms omission. State
+        # remains the replay/CSRF control. If LinkedIn supplies nonce, bind it
+        # to the transaction and reject any mismatch; absence is explicit and
+        # must not be described as nonce validation having succeeded.
+        if nonce_claim_present and not hmac.compare_digest(str(claims["nonce"]), nonce):
             raise ValueError("invalid_nonce")
         if not isinstance(claims.get("sub"), str) or not claims["sub"]:
             raise ValueError("missing_subject")
         return claims
     except (httpx.HTTPError, ValueError, KeyError, StopIteration, pyjwt.PyJWTError) as exc:
+        missing_claim = getattr(exc, "claim", None)
         logger.warning(
-            "LinkedIn ID token validation failed exception_type=%s", type(exc).__name__
+            "LinkedIn ID token validation failed exception_type=%s missing_claim=%s",
+            type(exc).__name__,
+            missing_claim if isinstance(missing_claim, str) else "none",
         )
         raise HTTPException(status_code=400, detail="LinkedIn identity validation failed.") from exc
 
@@ -13602,6 +13618,11 @@ async def linkedin_init():
         "scope": "openid profile email",
         "nonce": nonce,
     })
+    logger.info(
+        "LinkedIn authorization request prepared nonce_parameter_sent=%s scopes=%s",
+        True,
+        "openid profile email",
+    )
     auth_url = f"{LINKEDIN_AUTHORIZATION_ENDPOINT}?{params}"
     response = RedirectResponse(url=auth_url, status_code=302)
     response.set_cookie(
