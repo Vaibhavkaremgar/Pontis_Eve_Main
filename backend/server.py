@@ -3809,10 +3809,10 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
         saved = values.get(topic)
         ledger_item = ledger_by_topic.get(topic) or {}
         status = ledger_item.get("status")
-        # A topic asked by voice or chat is no longer an unknown detail. Do
-        # not surface it again in either the sidebar or suggestions, even if
-        # the candidate did not provide a usable answer yet.
-        if status in {"ASKED", "ANSWERED"}:
+        # An ANSWERED topic is complete.  ASKED means the question was shown
+        # but the candidate has not supplied a usable answer yet, so it must
+        # remain available as the next missing detail.
+        if status == "ANSWERED":
             continue
         if saved not in (None, "", []) or status == "ANSWERED" or topic in evidence_topics:
             continue
@@ -8594,6 +8594,46 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
             except Exception as e:
                 logger.warning("Chat history persistence failed for candidate %s: %s", request.candidate_id, e)
             return ChatResponse(reply=reply, session_id=request.session_id, profile_updates=updates)
+
+        # This is a deterministic profile-state question. Do not send it to
+        # the LLM, because the answer must come from the same authoritative
+        # missing-question list shown in the dashboard/sidebar.
+        if re.search(
+            r"\b(?:what|which)\s+(?:else\s+)?(?:is|are)\s+(?:still\s+)?missing\b|"
+            r"\b(?:ask|show|tell)\s+me\s+(?:the\s+)?(?:missing|remaining|unanswered)\b|"
+            r"\bbring\s+my\s+profile\s+to\s+100%\b",
+            last_user.content,
+            re.IGNORECASE,
+        ):
+            questions = [
+                item.get("question") for item in current_eligible_questions
+                if item.get("question")
+            ]
+            if questions:
+                if len(questions) == 1:
+                    reply = f"Sure — the next detail I need is: {questions[0]}"
+                else:
+                    reply = "Sure — here are the remaining details I need:\n" + "\n".join(
+                        f"{index}. {question}" for index, question in enumerate(questions, 1)
+                    )
+                await _save_chat_window(
+                    request.candidate_id,
+                    request.session_id,
+                    combined + [{"role": "assistant", "content": reply}],
+                )
+                logger.info(
+                    "[eve-cache-flow] candidate=%s decision=answered_from_missing_questions count=%d",
+                    request.candidate_id,
+                    len(questions),
+                )
+                return ChatResponse(reply=reply, session_id=request.session_id)
+            reply = "You’ve covered the details I currently need for your profile. If you’d like, we can refine any section or add more context."
+            await _save_chat_window(
+                request.candidate_id,
+                request.session_id,
+                combined + [{"role": "assistant", "content": reply}],
+            )
+            return ChatResponse(reply=reply, session_id=request.session_id)
 
     # If the user is explicitly asking for job matches, retrieve real jobs first
     job_context = ""

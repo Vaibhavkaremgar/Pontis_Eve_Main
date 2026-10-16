@@ -68,10 +68,17 @@ export default function Sidebar({
     >
       <div className="flex-1 overflow-y-auto eve-scroll">
         {/* Brand */}
-        <div className={`flex items-center pt-5 pb-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
-          <span className={`text-[15px] font-medium tracking-tight text-[#1F1F1F] ${collapsed ? "hidden" : ""}`}>
-            Eve
-          </span>
+        <div className={`flex items-center pt-4 pb-3 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
+          <div
+            aria-label="Pontis"
+            role="img"
+            className={`h-10 overflow-hidden rounded-md bg-[#1F1F1F] bg-no-repeat ${collapsed ? "w-9" : "w-[136px]"}`}
+            style={{
+              backgroundImage: "url('/pontis.one.jpeg')",
+              backgroundSize: collapsed ? "154px auto" : "231px auto",
+              backgroundPosition: collapsed ? "center 43%" : "center 43%",
+            }}
+          />
           <button
             type="button"
             data-testid="sidebar-collapse-btn"
