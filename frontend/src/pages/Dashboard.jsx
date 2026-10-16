@@ -1367,7 +1367,7 @@ export default function DashboardGuard() {
     const candidateToken = searchParams.get("candidate_token");
     if (fromUrl) {
       const s = loadOnboardingState();
-      saveOnboardingState({ ...s, linkedInAuthenticated: true, candidateId: fromUrl, candidateToken: candidateToken || s.candidateToken || null });
+      saveOnboardingState({ ...s, authenticated: true, candidateId: fromUrl, candidateToken: candidateToken || s.candidateToken || null });
       return fromUrl;
     }
     return loadOnboardingState().candidateId ?? null;

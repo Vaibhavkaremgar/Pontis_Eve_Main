@@ -724,24 +724,24 @@ export default function Onboarding() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();  
 
-  // Accept backend redirect: /onboarding?linkedin_profile=<encoded>
+  // Accept backend redirect profile data when present.
   // Process the OAuth param synchronously so storage is ready before any effect runs.
-  const linkedInProfileParam = searchParams.get("linkedin_profile");
+  const profileParam = searchParams.get("profile");
   const candidateIdParam = searchParams.get("candidate_id");
   const candidateTokenParam = searchParams.get("candidate_token");
   const resumeVoiceParam = searchParams.get("resume_voice");
-  const isOAuthCallback = !!linkedInProfileParam;
+  const isOAuthCallback = !!profileParam;
 
   // useMemo runs synchronously during render — save to storage before effects fire.
   const persisted = React.useMemo(() => {
-    if (linkedInProfileParam) {
+    if (profileParam) {
       try {
-        const profile = JSON.parse(decodeURIComponent(linkedInProfileParam));
+        const profile = JSON.parse(decodeURIComponent(profileParam));
         const current = loadOnboardingState();
         const next = {
           ...current,
-          linkedInAuthenticated: true,
-          linkedInProfile: profile,
+          authenticated: true,
+          profile,
           candidateId: candidateIdParam || current.candidateId || null,
           candidateToken: candidateTokenParam || current.candidateToken || null,
         };
@@ -760,10 +760,10 @@ export default function Onboarding() {
     return base;
   });
 
-  // Guard: must have gone through LinkedIn auth (either via storage or URL param)
+  // Guard: must have gone through authentication.
   React.useEffect(() => {
     const state = loadOnboardingState();
-    if (!state.linkedInAuthenticated) {
+    if (!state.authenticated) {
       navigate("/", { replace: true });
       return;
     }
@@ -873,8 +873,8 @@ export default function Onboarding() {
     const current = loadOnboardingState();
     saveOnboardingState({
       // Preserve auth fields — never let the persist effect wipe them
-      linkedInAuthenticated: current.linkedInAuthenticated,
-      linkedInProfile: current.linkedInProfile,
+      authenticated: current.authenticated,
+      profile: current.profile,
       candidateToken: current.candidateToken,
       isOpenToMatches: current.isOpenToMatches,
       step,
@@ -926,8 +926,12 @@ export default function Onboarding() {
       const url = existingId
         ? `${API}/onboarding/parse-resume?existing_id=${existingId}`
         : `${API}/onboarding/parse-resume`;
-      const res = await axios.post(url, fd, {      
-        headers: { "Content-Type": "multipart/form-data" },
+      const existingToken = loadOnboardingState().candidateToken;
+      const res = await axios.post(url, fd, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+          ...(existingId && existingToken ? { Authorization: `Bearer ${existingToken}` } : {}),
+        },
       });
       const { candidate_id, candidate_token, ...profile } = res.data;
       // Keep the persisted ID with the parsed profile as well as React/storage
@@ -959,7 +963,7 @@ export default function Onboarding() {
         }
       }
       // Verify email + phone against parsed resume before advancing
-      const loginEmail = loadOnboardingState().linkedInProfile?.email;
+      const loginEmail = loadOnboardingState().profile?.email;
       const vErrors = checkVerificationErrors(loginEmail, phone.formatted, profileWithCandidateId);
       setVerificationErrors(vErrors);
       if (vErrors.length > 0) {

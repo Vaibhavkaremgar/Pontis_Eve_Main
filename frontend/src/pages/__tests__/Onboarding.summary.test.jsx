@@ -83,7 +83,7 @@ describe("Onboarding voice intake summary", () => {
     jest.clearAllMocks();
     saveOnboardingState({
       step: 5,
-      linkedInAuthenticated: true,
+      authenticated: true,
       voiceIntakeCompleted: true,
       candidateId: "cand-123",
       parsedProfile: mergedProfile,
@@ -188,7 +188,7 @@ describe("post-Voice-Intake navigation flow", () => {
   function renderAtStep4() {
     saveOnboardingState({
       step: 4,
-      linkedInAuthenticated: true,
+      authenticated: true,
       candidateId: "cand-456",
       parsedProfile: baseProfile,
       voiceIntakeCompleted: false,
@@ -220,7 +220,7 @@ describe("post-Voice-Intake navigation flow", () => {
     // Re-render at step 5 directly to verify the summary page is shown
     saveOnboardingState({
       step: 5,
-      linkedInAuthenticated: true,
+      authenticated: true,
       candidateId: "cand-456",
       parsedProfile: baseProfile,
       voiceIntakeCompleted: true,
@@ -239,7 +239,7 @@ describe("post-Voice-Intake navigation flow", () => {
   it("incomplete Voice Intake → Summary page (never directly to Dashboard)", async () => {
     saveOnboardingState({
       step: 5,
-      linkedInAuthenticated: true,
+      authenticated: true,
       candidateId: "cand-456",
       parsedProfile: baseProfile,
       voiceIntakeCompleted: false,
@@ -266,7 +266,7 @@ describe("post-Voice-Intake navigation flow", () => {
   it("Summary page displays captured Voice Intake information and Enter Dashboard navigates", async () => {
     saveOnboardingState({
       step: 5,
-      linkedInAuthenticated: true,
+      authenticated: true,
       candidateId: "cand-456",
       parsedProfile: baseProfile,
       voiceIntakeCompleted: true,
@@ -496,7 +496,7 @@ describe("Upload page Back button", () => {
   afterEach(() => { document.body.innerHTML = ""; });
 
   it("navigates to the previous onboarding step (step 1) when Back is clicked", async () => {
-    saveOnboardingState({ step: 2, linkedInAuthenticated: true });
+    saveOnboardingState({ step: 2, authenticated: true });
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = ReactDOM.createRoot(container);
@@ -578,8 +578,8 @@ describe("Resume upload — email/mobile mismatch regression", () => {
   function seedStep2(extraState = {}) {
     saveOnboardingState({
       step: 2,
-      linkedInAuthenticated: true,
-      linkedInProfile: { email: LOGIN_EMAIL },
+      authenticated: true,
+      profile: { email: LOGIN_EMAIL },
       candidateId: null,
       phoneDigits: LOGIN_PHONE_DIGITS,
       countryCode: "US",
@@ -694,8 +694,8 @@ describe("Resume upload — parse/429 failure regression", () => {
   function seedStep2() {
     saveOnboardingState({
       step: 2,
-      linkedInAuthenticated: true,
-      linkedInProfile: { email: LOGIN_EMAIL },
+      authenticated: true,
+      profile: { email: LOGIN_EMAIL },
       candidateId: null,
       phoneDigits: LOGIN_PHONE_DIGITS,
       countryCode: "US",

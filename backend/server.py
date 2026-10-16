@@ -8,6 +8,7 @@ from starlette.requests import Request as StarletteRequest
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
 from jose import JWTError, jwt
+import jwt as pyjwt
 import os
 import json
 import logging
@@ -3614,7 +3615,8 @@ INTAKE_TOPIC_PRIORITY = (
     "name", "location", "bio", "current_role", "current_company", "experience_years", "skills",
     "work_experience",
     "preferred_roles", "preferred_locations", "remote_preference",
-    "notice_period", "expected_salary", "education", "certifications", "projects",
+    "preferred_industries", "employment_types", "willing_to_relocate",
+    "open_to_opportunities", "notice_period", "expected_salary", "education", "certifications", "projects",
 )
 _PROFILE_FIELD_TOPICS = {
     "current_role": "current_role", "current_company": "current_company",
@@ -3630,6 +3632,9 @@ def _stable_intake_topic(question: str) -> str:
     q = _clean_str(question).lower()
     rules = (
         ("notice_period", ("notice period", "available to start", "availability")),
+        ("employment_types", ("employment type", "kind of employment", "full-time", "full time", "part-time", "part time", "contract", "freelance")),
+        ("willing_to_relocate", ("relocat", "move for a job", "outside your current city", "different city")),
+        ("open_to_opportunities", ("open to new opportun", "open to opportunities", "looking for work", "seeking opportunities")),
         ("preferred_locations", ("preferred location", "where do you want to work", "cities", "locations")),
         ("current_company", ("current company", "company do you work", "employer")),
         ("current_role", ("current role", "current position", "role are you currently", "working as", "job title")),
@@ -3735,6 +3740,10 @@ _INTAKE_TOPIC_QUESTIONS = {
     "preferred_roles": "What kinds of roles are you looking for?",
     "preferred_locations": "Which locations would you prefer to work in?",
     "remote_preference": "Do you prefer remote, hybrid, on-site, or flexible work?",
+    "preferred_industries": "Which industries would you like to work in?",
+    "employment_types": "Are you looking for full-time, part-time, contract, or freelance work?",
+    "willing_to_relocate": "Are you open to relocating for the right opportunity?",
+    "open_to_opportunities": "Are you currently open to new opportunities?",
     "notice_period": "What is your notice period or when could you start?",
     "expected_salary": "What salary range are you targeting?",
     "education": "What's your highest level of education?",
@@ -3749,6 +3758,7 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
 
     candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "")
     raw = _parse_raw_data(candidate.get("raw_data"))
+    parsed_resume = _parse_raw_data(candidate.get("parsed_resume_json"))
     resume_text = _normalize_profile_text(
         candidate.get("resume_text") or candidate.get("parsed_resume_text") or ""
     ).lower()
@@ -3817,22 +3827,32 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
         ledger = []
     ledger_by_topic = {item.get("topic_id"): item for item in ledger}
 
+    def first_value(*items):
+        for item in items:
+            if item not in (None, "", []):
+                return item
+        return None
+
     values = {
-        "name": candidate.get("name"),
-        "location": candidate.get("location") or raw.get("location"),
-        "bio": candidate.get("summary") or candidate.get("bio") or raw.get("bio"),
-        "current_role": candidate.get("current_role") or candidate.get("headline"),
-        "experience_years": candidate.get("experience_years") or candidate.get("total_experience_years"),
-        "skills": candidate.get("skills"),
-        "work_experience": candidate.get("work_experience"),
+        "name": first_value(candidate.get("name"), parsed_resume.get("name")),
+        "location": first_value(candidate.get("location"), raw.get("location"), parsed_resume.get("location")),
+        "bio": first_value(candidate.get("summary"), candidate.get("bio"), raw.get("bio"), parsed_resume.get("summary"), parsed_resume.get("bio")),
+        "current_role": first_value(candidate.get("current_role"), candidate.get("headline"), parsed_resume.get("current_role"), parsed_resume.get("headline")),
+        "experience_years": first_value(candidate.get("experience_years"), candidate.get("total_experience_years"), parsed_resume.get("experience_years"), parsed_resume.get("total_experience_years")),
+        "skills": first_value(candidate.get("skills"), parsed_resume.get("skills")),
+        "work_experience": first_value(candidate.get("work_experience"), parsed_resume.get("work_experience")),
         "preferred_roles": preferences.get("preferred_roles") or raw.get("preferred_roles"),
         "preferred_locations": preferences.get("preferred_locations") or raw.get("location_preferences"),
         "remote_preference": preferences.get("remote_preference") or raw.get("work_type_preference"),
+        "preferred_industries": preferences.get("preferred_industries") or raw.get("preferred_industries") or raw.get("target_industries"),
+        "employment_types": preferences.get("employment_types") or raw.get("employment_types"),
+        "willing_to_relocate": preferences.get("willing_to_relocate") if preferences.get("willing_to_relocate") is not None else raw.get("willing_to_relocate"),
+        "open_to_opportunities": preferences.get("open_to_opportunities") if preferences.get("open_to_opportunities") is not None else raw.get("open_to_opportunities"),
         "notice_period": preferences.get("notice_period") or raw.get("notice_period") or raw.get("availability"),
         "expected_salary": preferences.get("expected_salary") or raw.get("salary_expectation"),
-        "education": candidate.get("education"),
-        "certifications": raw.get("certifications") or candidate.get("candidate_certificates"),
-        "projects": raw.get("projects"),
+        "education": first_value(candidate.get("education"), parsed_resume.get("education")),
+        "certifications": first_value(raw.get("certifications"), candidate.get("candidate_certificates"), candidate.get("certifications"), parsed_resume.get("certifications")),
+        "projects": first_value(raw.get("projects"), parsed_resume.get("projects")),
     }
 
     questions: list[dict] = []
@@ -8503,6 +8523,7 @@ async def _persist_chat_profile_update_background(
         logger.info("[chat-update] background persistence completed for candidate=%s", candidate_id)
     except Exception:
         logger.exception("[chat-update] background persistence failed for candidate=%s", candidate_id)
+        raise
 
 
 @api_router.post("/chat", response_model=ChatResponse)
@@ -8611,13 +8632,17 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
                 except Exception as e:
                     logger.warning("Chat history persistence failed for candidate %s: %s", request.candidate_id, e)
                 return ChatResponse(reply=reply, session_id=request.session_id)
+            persistence_failed = False
             if updates:
-                asyncio.ensure_future(
-                    _persist_chat_profile_update_background(request.candidate_id, updates)
-                )
+                try:
+                    await _persist_chat_profile_update_background(request.candidate_id, updates)
+                except Exception:
+                    persistence_failed = True
             reply = _acknowledge_candidate_reply(last_user.content, preflight["reply"])
-            if updates:
-                reply += " I’m saving this to your profile now."
+            if updates and not persistence_failed:
+                reply += " I’ve saved that to your profile."
+            elif persistence_failed:
+                reply += " I couldn’t save that update yet, so your profile is unchanged. Please try again."
             logger.info(
                 "[eve-cache-flow] candidate=%s decision=handled_before_llm updates=%s",
                 request.candidate_id, bool(updates),
@@ -8866,10 +8891,12 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
 
     # Apply profile updates to PostgreSQL
     if profile_updates and request.candidate_id:
-        asyncio.ensure_future(
-            _persist_chat_profile_update_background(request.candidate_id, profile_updates)
-        )
-        clean_reply += " I’m saving this to your profile now."
+        try:
+            await _persist_chat_profile_update_background(request.candidate_id, profile_updates)
+            clean_reply += " I’ve saved that to your profile."
+        except Exception:
+            logger.exception("[chat-update] synchronous persistence failed for candidate=%s", request.candidate_id)
+            clean_reply += " I couldn’t save that update yet, so your profile is unchanged. Please try again."
 
     # Do not show an empty model-generated profile heading after a successful
     # update; confirm the exact fields that survived persistence instead.
@@ -9176,7 +9203,6 @@ async def _ensure_schema():
 @app.on_event("startup")
 async def on_startup():
     _validated_candidate_session_secret()
-    _log_linkedin_oauth_startup_config()
     await _ensure_schema()
     asyncio.ensure_future(_retry_worker())
     from app.job_ingestion.scheduler import start_scheduler
@@ -12303,12 +12329,17 @@ def _job_required_skills(
     structured_data: Any = None,
     job_fields: Any = None,
 ) -> list[str]:
-    """Read the selected job's declared skills, with its JD as a fallback.
+    """Return only the selected job's dedicated ``skills`` column.
 
-    ``skills`` is a legacy column.  ATS ingestion writes ``skills_required``
-    instead, so gap guidance must consider both fields.  This helper is
-    intentionally display-only; the matcher continues to own score logic.
+    Fix My Resume guidance must stay deterministic and focused. The broader
+    matcher may use requirements, descriptions, and semantic signals, but the
+    user-facing missing-skills list is strictly the job skills column compared
+    with the candidate's canonical skills.
     """
+    return _normalize_skills(job_skills)
+
+    # Kept below for reference by callers that may pass legacy metadata; it is
+    # intentionally unreachable for Fix My Resume guidance.
     declared: list[Any] = []
 
     # These are attributes, rather than a vocabulary of technologies: ATSes use
@@ -12480,7 +12511,9 @@ def _job_missing_requirements(job_skills: Any, requirements: Any, candidate: dic
 
     # Include canonical profile skills plus the uploaded-resume/voice snapshots
     # that are actual candidate evidence but may not yet have been merged.
-    current_skills = _candidate_profile_skills(candidate)
+    # Fix My Resume compares the dedicated canonical candidate skills column
+    # only; resume/voice snapshots are intentionally excluded from this list.
+    current_skills = _normalize_skills(candidate.get("skills") or [])
     known = {skill_key(skill_name(skill)) for skill in current_skills if skill_key(skill_name(skill))}
     missing_skills = []
     seen_job_skills = set()
@@ -13047,7 +13080,7 @@ import httpx
 
 _LINKEDIN_CLIENT_ID_RAW = os.environ.get("LINKEDIN_CLIENT_ID", "")
 _LINKEDIN_CLIENT_SECRET_RAW = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
-_LINKEDIN_REDIRECT_URI_RAW = os.environ.get("LINKEDIN_REDIRECT_URI", "http://localhost:3000")
+_LINKEDIN_REDIRECT_URI_RAW = os.environ.get("LINKEDIN_REDIRECT_URI", "")
 
 
 def _has_wrapping_quotes(value: str) -> bool:
@@ -13061,18 +13094,6 @@ if _has_wrapping_quotes(LINKEDIN_CLIENT_ID) or _has_wrapping_quotes(LINKEDIN_CLI
     raise RuntimeError("LinkedIn OAuth credentials must not include wrapping quotes.")
 
 
-def _log_linkedin_oauth_startup_config() -> None:
-    logger.info(
-        "LinkedIn OAuth startup config client_id=%s client_secret_length=%d "
-        "redirect_uri=%s client_id_had_whitespace=%s "
-        "client_secret_had_whitespace=%s redirect_uri_had_whitespace=%s",
-        LINKEDIN_CLIENT_ID,
-        len(LINKEDIN_CLIENT_SECRET),
-        LINKEDIN_REDIRECT_URI,
-        _LINKEDIN_CLIENT_ID_RAW != LINKEDIN_CLIENT_ID,
-        _LINKEDIN_CLIENT_SECRET_RAW != LINKEDIN_CLIENT_SECRET,
-        _LINKEDIN_REDIRECT_URI_RAW != LINKEDIN_REDIRECT_URI,
-    )
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 OAUTH_STATE_TTL_SECONDS = 10 * 60
 OAUTH_EXCHANGE_TTL_SECONDS = 60
@@ -13338,19 +13359,30 @@ def _linkedin_token_error_category(response: httpx.Response) -> str:
     return "unexpected_response"
 
 
-async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -> str:
+LINKEDIN_DISCOVERY_URL = "https://www.linkedin.com/oauth/.well-known/openid-configuration"
+LINKEDIN_EXPECTED_ISSUER = "https://www.linkedin.com/oauth"
+LINKEDIN_AUTHORIZATION_ENDPOINT = "https://www.linkedin.com/oauth/v2/authorization"
+LINKEDIN_TOKEN_ENDPOINT = "https://www.linkedin.com/oauth/v2/accessToken"
+LINKEDIN_JWKS_URI = "https://www.linkedin.com/oauth/openid/jwks"
+
+
+def _validate_linkedin_configuration() -> None:
+    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+    parsed = urllib.parse.urlparse(LINKEDIN_REDIRECT_URI)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+    if _runtime_environment() in _PRODUCTION_ENVIRONMENTS and parsed.scheme != "https":
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured securely.")
+
+
+async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -> dict[str, Any]:
     """Exchange one LinkedIn code while keeping credentials and error bodies private."""
     request_id = str(uuid.uuid4())
-    logger.info(
-        "LinkedIn token exchange config request_id=%s client_id=%s "
-        "client_secret_length=%d redirect_uri=%s",
-        request_id, LINKEDIN_CLIENT_ID, len(LINKEDIN_CLIENT_SECRET),
-        LINKEDIN_REDIRECT_URI,
-    )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                "https://www.linkedin.com/oauth/v2/accessToken",
+                LINKEDIN_TOKEN_ENDPOINT,
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
@@ -13380,15 +13412,6 @@ async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -
             error_payload = {}
         if not isinstance(error_payload, dict):
             error_payload = {}
-        error = str(error_payload.get("error") or "unexpected_response")
-        description = " ".join(
-            str(error_payload.get("error_description") or "").split()
-        )[:300]
-        logger.warning(
-            "LinkedIn token exchange rejected request_id=%s "
-            "upstream_status=%s error=%s description=%s",
-            request_id, response.status_code, error, description,
-        )
         logger.warning(
             "LinkedIn OAuth token exchange rejected request_id=%s upstream_status=%s category=%s",
             request_id,
@@ -13406,107 +13429,187 @@ async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -
             response.status_code,
         )
         raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.") from exc
-    access_token = payload.get("access_token") if isinstance(payload, dict) else None
-    if not isinstance(access_token, str) or not access_token:
+    id_token = payload.get("id_token") if isinstance(payload, dict) else None
+    if not isinstance(id_token, str) or not id_token:
         logger.warning(
-            "LinkedIn OAuth token exchange invalid response request_id=%s upstream_status=%s category=missing_access_token",
+            "LinkedIn OAuth token exchange invalid response request_id=%s upstream_status=%s category=missing_id_token",
             request_id,
             response.status_code,
         )
         raise HTTPException(status_code=502, detail="LinkedIn token exchange failed.")
-    return access_token
+    return payload
 
 
-@api_router.get("/auth/linkedin/init")
-async def linkedin_init(redirect: bool = True):
-    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
-        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
+async def _validate_linkedin_id_token(id_token: str, nonce: str) -> dict[str, Any]:
+    """Validate a provider-issued OIDC token without exposing it to application clients."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            discovery_response = await client.get(LINKEDIN_DISCOVERY_URL)
+            discovery_response.raise_for_status()
+            discovery = discovery_response.json()
+            if (
+                discovery.get("issuer") != LINKEDIN_EXPECTED_ISSUER
+                or discovery.get("jwks_uri") != LINKEDIN_JWKS_URI
+                or "RS256" not in discovery.get("id_token_signing_alg_values_supported", [])
+            ):
+                raise ValueError("untrusted_discovery_metadata")
+            jwks_response = await client.get(LINKEDIN_JWKS_URI)
+            jwks_response.raise_for_status()
+            jwks = jwks_response.json()
+        header = pyjwt.get_unverified_header(id_token)
+        if header.get("alg") != "RS256" or not header.get("kid"):
+            raise ValueError("invalid_token_header")
+        matching_key = next(
+            key for key in jwks.get("keys", []) if key.get("kid") == header["kid"]
+        )
+        claims = pyjwt.decode(
+            id_token,
+            pyjwt.PyJWK.from_dict(matching_key).key,
+            algorithms=["RS256"],
+            audience=LINKEDIN_CLIENT_ID,
+            issuer=LINKEDIN_EXPECTED_ISSUER,
+            options={"require": ["iss", "sub", "aud", "iat", "exp", "nonce"]},
+        )
+        if not hmac.compare_digest(str(claims.get("nonce", "")), nonce):
+            raise ValueError("invalid_nonce")
+        if not isinstance(claims.get("sub"), str) or not claims["sub"]:
+            raise ValueError("missing_subject")
+        return claims
+    except (httpx.HTTPError, ValueError, KeyError, StopIteration, pyjwt.PyJWTError) as exc:
+        logger.warning(
+            "LinkedIn ID token validation failed exception_type=%s", type(exc).__name__
+        )
+        raise HTTPException(status_code=400, detail="LinkedIn identity validation failed.") from exc
+
+
+def _linkedin_profile_from_claims(claims: dict[str, Any]) -> dict[str, Any]:
+    verified_email = claims.get("email") if claims.get("email_verified") is True else None
+    return {
+        "name": claims.get("name") if isinstance(claims.get("name"), str) else "",
+        "email": verified_email if isinstance(verified_email, str) else None,
+        "email_verified": claims.get("email_verified") is True,
+        "picture": claims.get("picture") if isinstance(claims.get("picture"), str) else "",
+        "linkedin_id": claims["sub"],
+    }
+
+
+async def _find_or_create_linkedin_candidate(claims: dict[str, Any]) -> tuple[str, bool]:
+    """Map the stable LinkedIn subject; email is never used to merge identities."""
+    subject = claims["sub"]
+    profile = _linkedin_profile_from_claims(claims)
+    async with SessionLocal() as db:
+        existing_result = await db.execute(text("""
+            SELECT c.id, c.name, c.phone, c.summary, c.parsing_status
+            FROM oauth_identities oi
+            JOIN candidates c ON c.id = oi.candidate_id
+            WHERE oi.provider = 'linkedin' AND oi.provider_subject = :subject
+            LIMIT 1
+        """), {"subject": subject})
+        existing = existing_result.mappings().fetchone()
+        if existing:
+            complete = bool(existing["name"] and existing["phone"] and existing["summary"] and existing["parsing_status"] == "completed")
+            return str(existing["id"]), not complete
+
+        candidate_id = str(uuid.uuid4())
+        await db.execute(text("""
+            INSERT INTO candidates
+                (id, name, email, source, created_by_source, updated_by_source,
+                 parsing_status, created_at, updated_at)
+            VALUES
+                (:id, :name, :email, 'eve', 'linkedin_oidc', 'linkedin_oidc',
+                 'pending', now(), now())
+        """), {"id": candidate_id, "name": profile["name"] or None, "email": profile["email"]})
+        identity_result = await db.execute(text("""
+            INSERT INTO oauth_identities (id, provider, provider_subject, candidate_id)
+            VALUES (:id, 'linkedin', :subject, :candidate_id)
+            ON CONFLICT (provider, provider_subject) DO NOTHING
+            RETURNING candidate_id
+        """), {"id": str(uuid.uuid4()), "subject": subject, "candidate_id": candidate_id})
+        created = identity_result.fetchone()
+        if not created:
+            await db.rollback()
+            winner_result = await db.execute(text("""
+                SELECT candidate_id FROM oauth_identities
+                WHERE provider = 'linkedin' AND provider_subject = :subject
+            """), {"subject": subject})
+            winner = winner_result.fetchone()
+            if not winner:
+                raise HTTPException(status_code=503, detail="Unable to establish LinkedIn identity.")
+            # A uniqueness race can only occur while another first-login
+            # transaction is creating the same pending candidate.
+            return str(winner[0]), True
+        await db.commit()
+        return candidate_id, True
+
+
+@api_router.get("/auth/linkedin/login")
+async def linkedin_init():
+    _validate_linkedin_configuration()
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
     code_verifier = secrets.token_urlsafe(64)
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode()).digest()
     ).rstrip(b"=").decode()
-    await _create_oauth_transaction("linkedin", state, code_verifier)
+    transaction_secret = json.dumps({"code_verifier": code_verifier, "nonce": nonce})
+    await _create_oauth_transaction("linkedin", state, transaction_secret)
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": LINKEDIN_REDIRECT_URI,
         "state": state,
         "scope": "openid profile email",
+        "nonce": nonce,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     })
-    auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{params}"
-    if redirect:
-        response = RedirectResponse(url=auth_url, status_code=302)
-        response.set_cookie(
-            key=_oauth_state_cookie_name("linkedin"), value=state,
-            max_age=OAUTH_STATE_TTL_SECONDS, httponly=True,
-            secure=_oauth_cookie_secure(), samesite="lax",
-            path="/api/auth/linkedin",
-        )
-        return response
-    return _oauth_state_response("linkedin", state, {"auth_url": auth_url, "state": state})
+    auth_url = f"{LINKEDIN_AUTHORIZATION_ENDPOINT}?{params}"
+    response = RedirectResponse(url=auth_url, status_code=302)
+    response.set_cookie(
+        key=_oauth_state_cookie_name("linkedin"), value=state,
+        max_age=OAUTH_STATE_TTL_SECONDS, httponly=True,
+        secure=_oauth_cookie_secure(), samesite="lax",
+        path="/api/auth/linkedin",
+    )
+    return response
 
 
 @api_router.get("/auth/linkedin/callback")
 async def linkedin_callback(
-    code: str,
+    code: Optional[str] = None,
     state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
     linkedin_oauth_state: Optional[str] = Cookie(default=None),
 ):
-    if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
-        raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
-    transaction_id, code_verifier = await _consume_oauth_transaction(
+    _validate_linkedin_configuration()
+    transaction_id, transaction_secret = await _consume_oauth_transaction(
         "linkedin", state, linkedin_oauth_state
     )
-
-    access_token = await _exchange_linkedin_authorization_code(code, code_verifier)
-
-    async with httpx.AsyncClient() as client:
-        userinfo_resp = await client.get(
-            "https://api.linkedin.com/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        if userinfo_resp.status_code != 200:
-            raise HTTPException(status_code=400, detail="Failed to fetch LinkedIn profile.")
-        userinfo = userinfo_resp.json()
-
-    linkedin_id = userinfo.get("sub", "")
-    name = userinfo.get("name", "")
-    email = userinfo.get("email", "")
-    picture = userinfo.get("picture", "")
-
-    candidate_id = None
-    needs_onboarding = False
-    async with SessionLocal() as db:
-        if email:
-            row = await db.execute(
-                text("SELECT id, name, phone, summary, parsing_status FROM candidates WHERE email = :email LIMIT 1"),
-                {"email": email},
-            )
-            existing = row.mappings().fetchone()
-            if existing:
-                candidate_id = str(existing["id"])
-                # Onboarding is complete only when key profile fields are populated
-                is_complete = bool(
-                    existing["name"]
-                    and existing["phone"]
-                    and existing["summary"]
-                    and existing["parsing_status"] == "completed"
-                )
-                needs_onboarding = not is_complete
-
-    # Test candidate: always route to onboarding, preserving existing candidate_id
-    test_email = os.environ.get("TEST_CANDIDATE_EMAIL", "").strip()
-    if test_email and email.strip().lower() == test_email.lower():
-        needs_onboarding = True
+    error_redirect = f"{FRONTEND_URL}/?auth_error=linkedin_cancelled"
+    if error:
+        logger.info("LinkedIn authorization declined category=%s", "access_denied" if error == "access_denied" else "provider_error")
+        response = RedirectResponse(url=error_redirect, status_code=302)
+        _consume_oauth_state(response, "linkedin")
+        return response
+    if not code:
+        raise HTTPException(status_code=400, detail="LinkedIn authorization code is missing.")
+    try:
+        transaction_data = json.loads(transaction_secret)
+        code_verifier = transaction_data["code_verifier"]
+        nonce = transaction_data["nonce"]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid OAuth exchange.") from exc
+    token_payload = await _exchange_linkedin_authorization_code(code, code_verifier)
+    claims = await _validate_linkedin_id_token(token_payload["id_token"], nonce)
+    candidate_id, needs_onboarding = await _find_or_create_linkedin_candidate(claims)
+    profile = _linkedin_profile_from_claims(claims)
 
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
     exchange_code = await _create_oauth_exchange(transaction_id, {
         "candidate_id": candidate_id,
         "candidate_token": candidate_token,
-        "linkedin_profile": {"name": name, "email": email, "picture": picture, "linkedin_id": linkedin_id},
+        "profile": profile,
         "needs_onboarding": needs_onboarding,
     })
     if candidate_id and not needs_onboarding:
@@ -13625,7 +13728,7 @@ async def google_callback(
     exchange_code = await _create_oauth_exchange(transaction_id, {
         "candidate_id": candidate_id,
         "candidate_token": candidate_token,
-        "linkedin_profile": {"name": name, "email": email, "picture": picture, "google_id": google_id},
+        "profile": {"name": name, "email": email, "picture": picture, "google_id": google_id},
         "needs_onboarding": needs_onboarding,
     })
     if candidate_id and not needs_onboarding:

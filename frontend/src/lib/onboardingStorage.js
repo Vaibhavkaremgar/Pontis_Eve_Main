@@ -19,8 +19,8 @@ const DEFAULT_STATE = {
   voiceIntakeCompleted: false,
   voiceIntakeProgress: 0, // last answered question index (0 = not started)
   isOpenToMatches: true,
-  linkedInAuthenticated: false,
-  linkedInProfile: null, // { name, email, picture, linkedin_id }
+  authenticated: false,
+  profile: null, // { name, email, picture, google_id }
 };
 
 export function loadOnboardingState() {
@@ -53,8 +53,8 @@ export function saveOnboardingState(state) {
       voiceIntakeCompleted: state.voiceIntakeCompleted ?? false,
       voiceIntakeProgress: state.voiceIntakeProgress ?? 0,
       isOpenToMatches: state.isOpenToMatches ?? true,
-      linkedInAuthenticated: state.linkedInAuthenticated ?? false,
-      linkedInProfile: state.linkedInProfile ?? null,
+      authenticated: state.authenticated ?? false,
+      profile: state.profile ?? null,
       activeTab: state.activeTab ?? null,
     };
     localStorage.setItem(KEY, JSON.stringify(slim));

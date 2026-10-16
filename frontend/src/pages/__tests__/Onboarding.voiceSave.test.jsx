@@ -23,7 +23,7 @@ describe("new-candidate voice intake save handoff", () => {
     globalThis.__voiceIntakeProps = null;
     saveOnboardingState({
       step: 4,
-      linkedInAuthenticated: true,
+      authenticated: true,
       candidateId: "new-candidate-id",
       parsedProfile: {
         candidate_id: "new-candidate-id",

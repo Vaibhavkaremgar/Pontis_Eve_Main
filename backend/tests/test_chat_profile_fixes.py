@@ -80,6 +80,11 @@ def _run_apply(candidate_state, updates):
     class FakeResult:
         def __init__(self, rows=None):
             self._rows = rows or []
+            # SQLAlchemy UPDATE results expose rowcount.  The production
+            # persistence path uses it to detect a missing candidate; the
+            # fixture should model that interface instead of failing before
+            # the behavior under test is reached.
+            self.rowcount = 1
 
         def mappings(self):
             return self
@@ -169,7 +174,7 @@ def test_chat_job_profile_update_uses_candidates_constraint_value():
     )
 
     assert "updated your profile" in clean
-    assert updates == {"opportunity_type": "job"}
+    assert updates == {"opportunity_type": "jobs"}
     _run_apply(state, updates)
     assert state["opportunity_type"] == "jobs"
 

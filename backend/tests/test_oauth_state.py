@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import urllib.parse
 
 import pytest
 from fastapi import HTTPException
@@ -23,23 +24,19 @@ async def test_oauth_state_rejects_missing_and_mismatched_values(provider):
 
 
 @pytest.mark.asyncio
-async def test_google_and_linkedin_init_bind_state_to_http_only_cookie(monkeypatch):
+async def test_google_init_binds_state_to_http_only_cookie(monkeypatch):
     monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "configured-google-client")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "configured-linkedin-client")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "configured-linkedin-secret")
+    monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
     async def create_transaction(provider, state, verifier):
         return "transaction-id"
     monkeypatch.setattr(server, "_create_oauth_transaction", create_transaction)
 
     google_response = await server.google_init(redirect=False)
-    linkedin_response = await server.linkedin_init(redirect=False)
-
     assert json.loads(google_response.body)["state"]
-    assert json.loads(linkedin_response.body)["state"]
     assert "google_oauth_state=" in google_response.headers["set-cookie"]
-    assert "linkedin_oauth_state=" in linkedin_response.headers["set-cookie"]
     assert "HttpOnly" in google_response.headers["set-cookie"]
-    assert "HttpOnly" in linkedin_response.headers["set-cookie"]
 
 
 @pytest.mark.asyncio
@@ -55,6 +52,13 @@ async def test_linkedin_top_level_init_redirect_sets_state_cookie(monkeypatch):
 
     assert response.status_code == 302
     assert response.headers["location"].startswith("https://www.linkedin.com/oauth/v2/authorization?")
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(response.headers["location"]).query)
+    assert query["client_id"] == ["configured-linkedin-client"]
+    assert query["redirect_uri"] == ["https://api.example.test/api/auth/linkedin/callback"]
+    assert query["scope"] == ["openid profile email"]
+    assert query["nonce"][0]
+    assert query["state"][0]
+    assert query["code_challenge_method"] == ["S256"]
     assert "linkedin_oauth_state=" in response.headers["set-cookie"]
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "Path=/api/auth/linkedin" in response.headers["set-cookie"]
@@ -106,11 +110,11 @@ async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(mo
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
-    _MockLinkedInClient.response = _response(200, {"access_token": "access-token"})
+    _MockLinkedInClient.response = _response(200, {"access_token": "access-token", "id_token": "id-token"})
 
     result = await server._exchange_linkedin_authorization_code("authorization-code", "pkce-verifier")
 
-    assert result == "access-token"
+    assert result == {"access_token": "access-token", "id_token": "id-token"}
     url, request = _MockLinkedInClient.posted
     assert url == "https://www.linkedin.com/oauth/v2/accessToken"
     assert request["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
@@ -122,7 +126,6 @@ async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(mo
         "client_secret": "client-secret",
         "code_verifier": "pkce-verifier",
     }
-    assert "client_secret_length=13" in caplog.text
     assert "client-secret" not in caplog.text
     assert "authorization-code" not in caplog.text
     assert "pkce-verifier" not in caplog.text
@@ -148,8 +151,7 @@ async def test_linkedin_token_exchange_rejects_sanitized_oauth_errors(monkeypatc
     assert exc.value.status_code == 400
     assert exc.value.detail == "LinkedIn token exchange failed."
     assert f"category={category}" in caplog.text
-    assert f"error={category}" in caplog.text
-    assert "description=sensitive upstream detail" in caplog.text
+    assert "sensitive upstream detail" not in caplog.text
     assert "client-secret" not in caplog.text
 
 
@@ -210,7 +212,7 @@ async def test_failed_linkedin_exchange_cannot_create_candidate_session_exchange
 
     monkeypatch.setattr(server, "_exchange_linkedin_authorization_code", rejected_exchange)
     async def consume_transaction(provider, returned_state, stored_state):
-        return "transaction-id", "verifier"
+        return "transaction-id", json.dumps({"code_verifier": "verifier", "nonce": "nonce"})
     exchange_created = False
     async def create_exchange(transaction_id, payload):
         nonlocal exchange_created
@@ -235,21 +237,22 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
     monkeypatch.setattr(server, "FRONTEND_URL", "https://app.example.test")
 
     async def successful_exchange(code, verifier):
-        return "access-token"
+        return {"access_token": "access-token", "id_token": "id-token"}
 
-    class EmptySession:
-        async def __aenter__(self):
-            return self
+    async def validate_id_token(id_token, nonce):
+        assert id_token == "id-token"
+        assert nonce == "nonce"
+        return {"sub": "member-id", "name": "Member", "email": "member@example.test", "email_verified": True}
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
+    async def find_or_create(claims):
+        return "candidate-id", True
 
     monkeypatch.setattr(server, "_exchange_linkedin_authorization_code", successful_exchange)
-    monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
-    monkeypatch.setattr(server, "SessionLocal", lambda: EmptySession())
-    _MockLinkedInClient.get_response = _response(200, {"sub": "member-id", "name": "", "email": "", "picture": ""})
+    monkeypatch.setattr(server, "_validate_linkedin_id_token", validate_id_token)
+    monkeypatch.setattr(server, "_find_or_create_linkedin_candidate", find_or_create)
+    monkeypatch.setattr(server, "_issue_candidate_session_token", lambda candidate_id: "candidate-token")
     async def consume_transaction(provider, returned_state, stored_state):
-        return "transaction-id", "verifier"
+        return "transaction-id", json.dumps({"code_verifier": "verifier", "nonce": "nonce"})
     captured = {}
     async def create_exchange(transaction_id, payload):
         captured["transaction_id"] = transaction_id
@@ -265,8 +268,9 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
     assert response.status_code == 302
     assert response.headers["location"].endswith("exchange_code=exchange-code")
     assert captured["transaction_id"] == "transaction-id"
-    assert captured["payload"]["candidate_id"] is None
-    assert captured["payload"]["candidate_token"] == ""
+    assert captured["payload"]["candidate_id"] == "candidate-id"
+    assert captured["payload"]["candidate_token"] == "candidate-token"
+    assert captured["payload"]["profile"]["linkedin_id"] == "member-id"
 
 
 @pytest.mark.asyncio
@@ -278,3 +282,30 @@ async def test_linkedin_init_requires_complete_confidential_client_configuration
         await server.linkedin_init()
 
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_linkedin_authorization_error_consumes_state_and_redirects_safely(monkeypatch):
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
+    monkeypatch.setattr(server, "FRONTEND_URL", "https://app.example.test")
+
+    async def consume_transaction(provider, returned_state, stored_state):
+        return "transaction-id", "unused"
+
+    monkeypatch.setattr(server, "_consume_oauth_transaction", consume_transaction)
+    response = await server.linkedin_callback(
+        state="state", error="access_denied", error_description="private detail",
+        linkedin_oauth_state="state",
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://app.example.test/?auth_error=linkedin_cancelled"
+    assert "private detail" not in response.headers["location"]
+
+
+def test_linkedin_profile_uses_only_verified_email():
+    claims = {"sub": "subject", "name": "Name", "email": "user@example.test", "email_verified": False}
+    assert server._linkedin_profile_from_claims(claims)["email"] is None
+    claims["email_verified"] = True
+    assert server._linkedin_profile_from_claims(claims)["email"] == "user@example.test"
