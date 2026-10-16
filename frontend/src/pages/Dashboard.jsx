@@ -972,15 +972,15 @@ function Dashboard() {
       )}
 
       {/* Dashboard top header with Bell */}
-      <div className="shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-3 py-2 sm:px-5 border-b border-black/[0.05]">
-        <div className="flex min-h-6 items-center sm:min-h-7">
+      <div className="shrink-0 grid h-16 grid-cols-[1fr_auto_1fr] items-center px-3 py-1 sm:px-5 border-b border-black/[0.05]">
+        <div className="flex min-h-6 items-center">
           <div
             role="img"
             aria-label="Pontis"
-            className="h-10 w-[150px] overflow-hidden rounded-md bg-[#1F1F1F] bg-no-repeat sm:h-11 sm:w-[168px]"
+            className="h-9 w-[156px] overflow-hidden rounded-md bg-[#1F1F1F] bg-no-repeat sm:h-10 sm:w-[174px]"
             style={{
               backgroundImage: "url('/pontis.one.jpeg')",
-              backgroundSize: "285px auto",
+              backgroundSize: "252px auto",
               backgroundPosition: "center 43%",
             }}
           />
