@@ -3773,6 +3773,38 @@ async def _build_authoritative_missing_questions(candidate: dict, prefs_row: Opt
             topic = _stable_intake_topic(_clean_str(turn.get("question")))
             if topic:
                 evidence_topics.add(topic)
+
+    # The structured voice_intake snapshot is not the only source of truth.
+    # Older/interrupted calls can have a complete raw transcript even when the
+    # LLM did not produce usable completed_turns. Reconstruct Q&A pairs from
+    # persisted transcripts so answered topics are never presented as missing.
+    if candidate_id:
+        try:
+            async with SessionLocal() as db:
+                transcript_rows = await db.execute(
+                    text("""
+                        SELECT transcript
+                        FROM candidate_voice_intakes
+                        WHERE candidate_id = :cid
+                          AND transcript IS NOT NULL
+                          AND transcript <> ''
+                        ORDER BY created_at DESC
+                        LIMIT 20
+                    """),
+                    {"cid": candidate_id},
+                )
+                for transcript_row in transcript_rows.mappings().all():
+                    raw_transcript = _clean_str(transcript_row.get("transcript"))
+                    if not raw_transcript:
+                        continue
+                    transcript_turns, _ = _voice_intake_turn_pairs([], raw_transcript)
+                    for turn in transcript_turns:
+                        if _clean_str(turn.get("answer")):
+                            topic = _stable_intake_topic(_clean_str(turn.get("question")))
+                            if topic:
+                                evidence_topics.add(topic)
+        except Exception as exc:
+            logger.warning("[intake-transcript] could not inspect candidate=%s: %s", candidate_id, exc)
     # `known_topics` is an LLM planning hint, not candidate evidence. It can
     # contain topics the model inferred or still wants to verify, so only a
     # completed turn with a non-empty answer counts here.
