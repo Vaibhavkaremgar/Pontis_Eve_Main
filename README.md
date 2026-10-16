@@ -14,3 +14,12 @@ Connect** product enabled. The implementation requests only `openid`, `profile`,
 and `email`; email is optional and is used only when LinkedIn marks it verified.
 Apply `backend/migrations/20261013_oauth_transactions.sql` and
 `backend/migrations/20261016_oauth_identities.sql` before enabling the flow.
+
+Railway runs these standalone SQL migrations in order through the backend
+service's `preDeployCommand`. For a controlled manual repair, run from the
+backend project directory against the intended Railway service database:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20261013_oauth_transactions.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20261016_oauth_identities.sql
+```
