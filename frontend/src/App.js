@@ -1,5 +1,6 @@
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 
 import GoogleAuth from "./pages/GoogleAuth";
 import Onboarding from "./pages/Onboarding";
@@ -9,6 +10,7 @@ import ResumeEditor from "./pages/ResumeEditor";
 export default function App() {
   return (
     <BrowserRouter>
+      <Toaster position="top-right" richColors closeButton />
       <Routes>
         <Route path="/" element={<GoogleAuth />} />
         <Route path="/onboarding" element={<Onboarding />} />
