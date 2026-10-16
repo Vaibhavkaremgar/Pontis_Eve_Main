@@ -23,8 +23,15 @@ export function buildDashboardEveGreetingFromProfile({
   profileComplete,
   hasResume,
   voiceIntakeResume,
+  missingQuestions,
 }) {
-  const currentQuestion = voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "";
+  // The authoritative missing-question list is built from the persisted
+  // profile plus the intake ledger. Prefer it over the resumable voice
+  // transcript, whose current_question can be stale after a completed turn.
+  const authoritativeQuestion = (missingQuestions || []).find((item) => item?.question)?.question || "";
+  const currentQuestion = Array.isArray(missingQuestions)
+    ? authoritativeQuestion
+    : (voiceIntakeResume?.current_question || voiceIntakeResume?.next_question || "");
   const voiceIntakeInProgress =
     voiceIntakeResume?.status === "in_progress" &&
     Boolean(voiceIntakeResume?.has_open_question) &&

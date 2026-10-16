@@ -580,6 +580,7 @@ function Dashboard() {
       profileComplete,
       hasResume,
       voiceIntakeResume,
+      missingQuestions: userProfile.missing_questions,
     });
     if (!greeting) return;
     setChats((prev) =>
@@ -588,7 +589,7 @@ function Dashboard() {
         : prev
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatRestored, voiceIntakeInProgress, voiceIntakeResumeQuestion, userProfile.name, userProfile.headline, userProfile.keySkills?.length, documents?.resume]);
+  }, [chatRestored, voiceIntakeInProgress, voiceIntakeResumeQuestion, userProfile.name, userProfile.headline, userProfile.keySkills?.length, userProfile.missing_questions, documents?.resume]);
   // Opportunities count
   React.useEffect(() => {
     if (!candidateId || !hasJobsAccess) {
