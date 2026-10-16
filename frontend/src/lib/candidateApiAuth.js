@@ -1,5 +1,6 @@
 import axios from "axios";
 import { clearOnboardingState, loadOnboardingState } from "./onboardingStorage";
+import { notifyApiError } from "./apiError";
 
 function isCandidateApiRequest(config) {
   const url = String(config?.url || "");
@@ -20,6 +21,13 @@ axios.interceptors.request.use((config) => {
     config.headers = config.headers || {};
     config.headers.Authorization = headers.Authorization;
   }
+  // Track only requests authenticated with the current candidate session. This
+  // prevents unrelated 401s (for example an integration or public endpoint)
+  // from signing the candidate out.
+  config.__eveCandidateSessionRequest = Boolean(
+    isCandidateApiRequest(config) && headers.Authorization &&
+    config.headers?.Authorization === headers.Authorization,
+  );
   return config;
 });
 
@@ -30,12 +38,16 @@ axios.interceptors.response.use(
   (response) => response,
   (error) => {
     const config = error?.config;
-    if (error?.response?.status === 401 && isCandidateApiRequest(config)) {
+    if (error?.response?.status === 401 && config?.__eveCandidateSessionRequest) {
       clearOnboardingState();
       if (typeof window !== "undefined" && window.location.pathname !== "/") {
         window.location.replace("/");
       }
     }
+    // A single response interceptor provides visible, consistent feedback for
+    // every Axios request. notifyApiError marks the error so component-level
+    // handlers can safely add inline context without duplicate notifications.
+    notifyApiError(error);
     return Promise.reject(error);
   },
 );

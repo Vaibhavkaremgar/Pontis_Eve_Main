@@ -103,7 +103,7 @@ export function useApplicationFollowUp(candidateId, onApplied) {
       await onApplied?.(pendingJob.id);
       toast.success("Job moved to Tracked Jobs.");
     } catch {
-      toast.error("Couldn't save your application. Please try again.");
+      // The shared Axios error handler shows a safe retry message.
     } finally {
       setSaving(false);
     }

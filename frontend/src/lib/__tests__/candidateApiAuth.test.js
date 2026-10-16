@@ -21,13 +21,27 @@ describe("candidate API authentication", () => {
 
   it("clears an invalid candidate session after a protected 401", async () => {
     const responseInterceptor = axios.interceptors.response.handlers.at(-1).rejected;
+    const requestInterceptor = axios.interceptors.request.handlers.at(-1).fulfilled;
     window.history.replaceState({}, "", "/");
 
+    const config = requestInterceptor({ url: "https://api.example.test/api/candidate/candidate-a/profile" });
+
     await expect(responseInterceptor({
-      config: { url: "https://api.example.test/api/candidate/candidate-a/profile" },
+      config,
       response: { status: 401 },
     })).rejects.toMatchObject({ response: { status: 401 } });
 
     expect(loadOnboardingState().candidateToken).toBeNull();
+  });
+
+  it("does not clear a candidate session for an unrelated 401", async () => {
+    const responseInterceptor = axios.interceptors.response.handlers.at(-1).rejected;
+
+    await expect(responseInterceptor({
+      config: { url: "https://api.example.test/api/auth/session/exchange" },
+      response: { status: 401 },
+    })).rejects.toMatchObject({ response: { status: 401 } });
+
+    expect(loadOnboardingState().candidateToken).toBe("session-token-a");
   });
 });

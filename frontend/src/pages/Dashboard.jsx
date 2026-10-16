@@ -1,7 +1,7 @@
 import React from "react";
 import axios from "axios";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { Toaster, toast } from "sonner";
+import { toast } from "sonner";
 import { Bell } from "lucide-react";
 import * as pdfjsLib from "pdfjs-dist/build/pdf";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.entry";
@@ -776,7 +776,6 @@ function Dashboard() {
       if (candidateId) await refreshProfile();
     } catch (err) {
       console.error("chat request failed");
-      toast.error("Couldn't reach Eve right now.");
     } finally {
       if (turnId === latestChatTurnRef.current) setSending(false);
     }
@@ -921,7 +920,6 @@ function Dashboard() {
       className="h-screen w-full bg-[#FBFBF9] text-[#1F1F1F] overflow-hidden flex flex-col"
       data-testid="app-shell"
     >
-      <Toaster position="top-right" richColors closeButton />
       {showSubscriptionPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="job-limit-modal-title">
           <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-white p-7 shadow-2xl">

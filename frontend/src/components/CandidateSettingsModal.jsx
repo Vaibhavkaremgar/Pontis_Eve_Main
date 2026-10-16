@@ -2,6 +2,7 @@ import React from "react";
 import axios from "axios";
 import { ChevronLeft, HelpCircle, Mail, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { getApiErrorMessage } from "../lib/apiError";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
 import {
@@ -123,8 +124,7 @@ export default function CandidateSettingsModal({
       onOpenChange?.(false);
       onDeleteSuccess?.();
     } catch (error) {
-      const detail = error?.response?.data?.detail || "We couldn't delete your account right now.";
-      toast.error(detail);
+      const detail = getApiErrorMessage(error);
       setDeleting(false);
     }
   };
@@ -164,9 +164,8 @@ export default function CandidateSettingsModal({
       setSubject("");
       setMessage("");
     } catch (error) {
-      const detail = error?.response?.data?.detail || "We couldn't send your message right now.";
+      const detail = getApiErrorMessage(error);
       setFormError(detail);
-      toast.error(detail);
     } finally {
       setSending(false);
     }

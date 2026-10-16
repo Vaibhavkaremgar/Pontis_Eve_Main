@@ -2,7 +2,7 @@
 import axios from "axios";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { toast, Toaster } from "sonner";
+import { toast } from "sonner";
 import {
   FileText,
   Award,
@@ -670,6 +670,25 @@ export function buildSummary(profile = {}) {
 
 function StepBridge({ profile, voiceIntakeCompleted }) {
   const items = buildSummary(profile);
+  React.useEffect(() => {
+    try {
+      const timing = JSON.parse(sessionStorage.getItem("eve_voice_intake_timing") || "null");
+      if (!timing?.call_end_at_ms) return;
+      const summaryAtMs = performance.now();
+      console.info("[voice-intake-timing]", {
+        event: "summary_displayed",
+        request_id: timing.request_id || null,
+        vapi_call_id: timing.vapi_call_id || null,
+        transcript_revision: timing.transcript_revision || null,
+        call_end_to_response_ms: timing.response_at_ms ? Math.round(timing.response_at_ms - timing.call_end_at_ms) : null,
+        call_end_to_summary_ms: Math.round(summaryAtMs - timing.call_end_at_ms),
+        outcome: timing.outcome || "no_backend_response",
+      });
+      sessionStorage.removeItem("eve_voice_intake_timing");
+    } catch (_) {
+      // Timing is diagnostic only; storage restrictions must not affect onboarding.
+    }
+  }, []);
   return (
     <div>
       <h1 className="text-[26px] font-medium tracking-tight leading-tight mb-2">
@@ -1056,7 +1075,6 @@ export default function Onboarding() {
 
   return (
     <Shell step={step} actions={actions} hideActions={step === 3 || step === 4} backButton={uploadBackButton}>
-      <Toaster position="top-right" richColors closeButton />
       <AnimatePresence mode="wait">
         <motion.div key={step} {...stepMotion}>
           {step === 1 && <StepPhone phone={phone} />}
