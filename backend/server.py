@@ -6105,7 +6105,7 @@ def _extract_profile_updates(reply_text: str, candidate_message: str = "") -> tu
 
 
 def _replace_generic_profile_update_reply(reply: str, updates: Optional[dict]) -> str:
-    """Replace an empty LLM profile heading with a confirmation of persisted fields."""
+    """Replace an empty LLM profile heading with a conversational save notice."""
     if not updates or not re.fullmatch(
         r"(?:here(?:'|’)s|here is) the (?:corrected|updated) profile\s*[:.!]?",
         (reply or "").strip(), flags=re.IGNORECASE,
@@ -6114,7 +6114,7 @@ def _replace_generic_profile_update_reply(reply: str, updates: Optional[dict]) -
     deletions = updates.get("profile_deletions") or {}
     if deletions:
         items = [item for values in deletions.values() for item in (values if isinstance(values, list) else [values])]
-        return f"I've removed {', '.join(str(item) for item in items)} from your profile." if items else "I've updated your profile."
+        return f"I’m saving the removal of {', '.join(str(item) for item in items)} to your profile now." if items else "I’m saving that profile update now."
     labels = {
         "location": "location", "country": "country", "certifications": "certifications",
         "skills": "skills", "preferred_locations": "preferred locations",
@@ -6126,8 +6126,8 @@ def _replace_generic_profile_update_reply(reply: str, updates: Optional[dict]) -
         field = next(field for field in labels if labels[field] == changed[0])
         value = updates.get(field)
         if field in {"location", "country", "bio"} and isinstance(value, str) and value.strip():
-            return f"I've updated your {changed[0]} to {value.strip()}."
-    return f"I've updated your {', '.join(changed) or 'profile'}."
+            return f"I’m saving your {changed[0]} as {value.strip()} now."
+    return f"I’m saving your {', '.join(changed) or 'profile'} update now."
 
 
 def _acknowledge_candidate_reply(message: str, reply: str) -> str:
@@ -6140,6 +6140,46 @@ def _acknowledge_candidate_reply(message: str, reply: str) -> str:
     if re.search(r"\b(?:remove|delete)\b", message, re.I):
         return f"Understood — you want that removed. {text_value}"
     return f"Thanks for sharing that. {text_value}"
+
+
+def _validate_chat_profile_updates(updates: Optional[dict]) -> tuple[Optional[dict], list[str]]:
+    """Keep persistence deterministic and explain malformed profile input plainly."""
+    if not updates:
+        return updates, []
+    clean = dict(updates)
+    problems: list[str] = []
+
+    for field, label, required in (
+        ("work_experience", "work experience", ("title", "company")),
+        ("education", "education", ("degree", "institution")),
+    ):
+        value = clean.get(field)
+        if not isinstance(value, list):
+            continue
+        valid = []
+        for item in value:
+            if not isinstance(item, dict):
+                problems.append(f"For {label}, please provide the details as normal text.")
+                continue
+            missing = [name.replace("_", " ") for name in required if not str(item.get(name) or "").strip()]
+            if missing:
+                problems.append(f"For {label}, please include the {', '.join(missing)}.")
+            else:
+                valid.append(item)
+        if valid:
+            clean[field] = valid
+        else:
+            clean.pop(field, None)
+
+    for field, label in (("skills", "skills"), ("certifications", "certifications"), ("preferred_roles", "target roles")):
+        value = clean.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+            problems.append(f"Please provide your {label} as one or more names, such as “Python” or “Project Manager”.")
+            clean.pop(field, None)
+
+    return (clean or None), problems
 
 
 def _split_update_list(text: str) -> list[str]:
@@ -8216,10 +8256,12 @@ async def _apply_profile_updates(candidate_id: str, updates: dict) -> dict:
         set_clauses.append("updated_by_source = 'eve_chat'")
 
         async with SessionLocal() as db:
-            await db.execute(
+            update_result = await db.execute(
                 text(f"UPDATE candidates SET {', '.join(set_clauses)} WHERE id = :cid"),
                 params,
             )
+            if update_result.rowcount == 0:
+                raise RuntimeError("candidate update matched no rows")
             await db.commit()
         persisted = True
         await profile_cache.invalidate(candidate_id)
@@ -8412,6 +8454,24 @@ def _format_voice_intake_resume_context(resume: dict) -> str:
     return "\n".join(lines)
 
 
+async def _persist_chat_profile_update_background(
+    candidate_id: str,
+    updates: dict,
+) -> None:
+    """Persist a validated chat update after the chat response is returned."""
+    try:
+        result = await _apply_profile_updates(candidate_id, updates)
+        if not result.get("updated") and not result.get("deleted"):
+            logger.info("[chat-update] no database change for candidate=%s", candidate_id)
+            return
+        await _sync_profile_updates_to_ledger(candidate_id, updates, "chat")
+        await profile_cache.invalidate(candidate_id)
+        asyncio.ensure_future(_trigger_matching(candidate_id))
+        logger.info("[chat-update] background persistence completed for candidate=%s", candidate_id)
+    except Exception:
+        logger.exception("[chat-update] background persistence failed for candidate=%s", candidate_id)
+
+
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, authorization: Optional[str] = Header(default=None)):
     if not request.messages:
@@ -8503,16 +8563,28 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
         preflight = _chat_profile_preflight(last_user.content, candidate_row_for_edit, combined)
         if preflight:
             updates = preflight.get("updates")
-            if updates:
+            updates, input_problems = _validate_chat_profile_updates(updates)
+            if input_problems:
+                reply = (
+                    "I can help with that, but I need a little more detail: "
+                    + " ".join(dict.fromkeys(input_problems))
+                )
                 try:
-                    apply_result = await _apply_profile_updates(request.candidate_id, updates)
-                    if not apply_result.get("updated") or not await _verify_profile_update_persisted(request.candidate_id, updates):
-                        return ChatResponse(reply="I couldn't update your profile, so no confirmation was made.", session_id=request.session_id)
-                    asyncio.ensure_future(_trigger_matching(request.candidate_id))
-                except Exception:
-                    logger.exception("Profile preflight update failed")
-                    return ChatResponse(reply="I couldn't update your profile right now, so no changes were made.", session_id=request.session_id)
+                    await _save_chat_window(
+                        request.candidate_id,
+                        request.session_id,
+                        combined + [{"role": "assistant", "content": reply}],
+                    )
+                except Exception as e:
+                    logger.warning("Chat history persistence failed for candidate %s: %s", request.candidate_id, e)
+                return ChatResponse(reply=reply, session_id=request.session_id)
+            if updates:
+                asyncio.ensure_future(
+                    _persist_chat_profile_update_background(request.candidate_id, updates)
+                )
             reply = _acknowledge_candidate_reply(last_user.content, preflight["reply"])
+            if updates:
+                reply += " I’m saving this to your profile now."
             logger.info(
                 "[eve-cache-flow] candidate=%s decision=handled_before_llm updates=%s",
                 request.candidate_id, bool(updates),
@@ -8686,6 +8758,13 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
             except Exception as _e:
                 logger.warning("[chat-multi-field] merge failed: %s", _e)
 
+    profile_updates, input_problems = _validate_chat_profile_updates(profile_updates)
+    if input_problems:
+        clean_reply = (
+            "I can help with that, but I need a little more detail: "
+            + " ".join(dict.fromkeys(input_problems))
+        )
+
     # Final persistence safety belt. Even if the LLM or multi-field extractor
     # missed the duplicate during conversation planning, never append it
     # blindly. Ask the candidate to choose before any database write.
@@ -8714,48 +8793,10 @@ async def chat(request: ChatRequest, authorization: Optional[str] = Header(defau
 
     # Apply profile updates to PostgreSQL
     if profile_updates and request.candidate_id:
-        try:
-            apply_result = await _apply_profile_updates(request.candidate_id, profile_updates)
-            requested_deletions = profile_updates.get("profile_deletions") or {}
-            applied_deletions = apply_result.get("deleted") or {}
-            not_found_deletions = apply_result.get("not_found") or {}
-            if not apply_result.get("updated") and not applied_deletions:
-                # _apply_profile_updates intentionally reports no SQL change
-                # for an identical employment merge. Treat that as success when
-                # the canonical row already contains the requested values.
-                if not await _verify_profile_update_persisted(request.candidate_id, profile_updates):
-                    clean_reply = "I couldn't update your profile, so no changes were made."
-                    profile_updates = None
-            elif requested_deletions and not applied_deletions:
-                # The LLM writes its reply before persistence. Do not tell the
-                # candidate an item was removed unless the database changed.
-                missing_additional = not_found_deletions.get("additional_information") or []
-                if missing_additional:
-                    clean_reply = (
-                        "I couldn't find "
-                        f"{', '.join(missing_additional)} in your Additional Information, "
-                        "so no change was made."
-                    )
-                else:
-                    clean_reply = "I couldn't find that item in your saved profile, so no change was made."
-                profile_updates = None
-            elif not_found_deletions.get("additional_information"):
-                missing = ", ".join(not_found_deletions["additional_information"])
-                clean_reply = (
-                    f"{clean_reply.rstrip()} I couldn't find {missing} in your "
-                    "Additional Information, so it was left unchanged."
-                )
-            asyncio.ensure_future(_trigger_matching(request.candidate_id))
-            await _sync_profile_updates_to_ledger(request.candidate_id, profile_updates, "chat")
-            # Rebuild the authoritative state after persistence. The initial
-            # profile snapshot predates this answer and must not drive final
-            # question validation.
-            refreshed_profile = await _get_candidate_profile_payload(request.candidate_id)
-            current_eligible_questions = list(refreshed_profile.get("missing_questions") or [])
-        except Exception as e:
-            logger.exception("Profile update failed: %s", e)
-            clean_reply = "I couldn't update your profile right now, so no changes were made. Please try again."
-            profile_updates = None
+        asyncio.ensure_future(
+            _persist_chat_profile_update_background(request.candidate_id, profile_updates)
+        )
+        clean_reply += " I’m saving this to your profile now."
 
     # Do not show an empty model-generated profile heading after a successful
     # update; confirm the exact fields that survived persistence instead.
