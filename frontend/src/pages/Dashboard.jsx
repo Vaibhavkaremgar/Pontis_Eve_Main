@@ -981,7 +981,7 @@ function Dashboard() {
             style={{
               backgroundImage: "url('/pontis.one.jpeg')",
               backgroundSize: "220px auto",
-              backgroundPosition: "center 42%",
+              backgroundPosition: "center 44%",
             }}
           />
         </div>
