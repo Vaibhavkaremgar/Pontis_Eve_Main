@@ -58,7 +58,8 @@ async def test_linkedin_top_level_init_redirect_sets_state_cookie(monkeypatch):
     assert query["scope"] == ["openid profile email"]
     assert query["nonce"][0]
     assert query["state"][0]
-    assert query["code_challenge_method"] == ["S256"]
+    assert "code_challenge" not in query
+    assert "code_challenge_method" not in query
     assert "linkedin_oauth_state=" in response.headers["set-cookie"]
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "Path=/api/auth/linkedin" in response.headers["set-cookie"]
@@ -104,15 +105,15 @@ def _reset_linkedin_client():
 
 
 @pytest.mark.asyncio
-async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(monkeypatch, caplog):
+async def test_linkedin_token_exchange_success_uses_confidential_web_request(monkeypatch, caplog):
     caplog.set_level("INFO", logger=server.logger.name)
     monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "client-id")
-    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client+/==")
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
     _MockLinkedInClient.response = _response(200, {"access_token": "access-token", "id_token": "id-token"})
 
-    result = await server._exchange_linkedin_authorization_code("authorization-code", "pkce-verifier")
+    result = await server._exchange_linkedin_authorization_code("authorization-code")
 
     assert result == {"access_token": "access-token", "id_token": "id-token"}
     url, request = _MockLinkedInClient.posted
@@ -123,8 +124,7 @@ async def test_linkedin_token_exchange_success_uses_confidential_pkce_request(mo
         "code": "authorization-code",
         "redirect_uri": "https://api.example.test/api/auth/linkedin/callback",
         "client_id": "client-id",
-        "client_secret": "client-secret",
-        "code_verifier": "pkce-verifier",
+        "client_secret": "client+/==",
     }
     assert "client-secret" not in caplog.text
     assert "authorization-code" not in caplog.text
@@ -239,7 +239,7 @@ async def test_failed_linkedin_exchange_cannot_create_candidate_session_exchange
     monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
 
-    async def rejected_exchange(code, verifier):
+    async def rejected_exchange(code, verifier=None):
         raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
 
     monkeypatch.setattr(server, "_exchange_linkedin_authorization_code", rejected_exchange)
@@ -268,7 +268,7 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
     monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.example.test/api/auth/linkedin/callback")
     monkeypatch.setattr(server, "FRONTEND_URL", "https://app.example.test")
 
-    async def successful_exchange(code, verifier):
+    async def successful_exchange(code, verifier=None):
         return {"access_token": "access-token", "id_token": "id-token"}
 
     async def validate_id_token(id_token, nonce):
@@ -284,7 +284,7 @@ async def test_successful_linkedin_callback_creates_short_lived_exchange_code(mo
     monkeypatch.setattr(server, "_find_or_create_linkedin_candidate", find_or_create)
     monkeypatch.setattr(server, "_issue_candidate_session_token", lambda candidate_id: "candidate-token")
     async def consume_transaction(provider, returned_state, stored_state):
-        return "transaction-id", json.dumps({"code_verifier": "verifier", "nonce": "nonce"})
+        return "transaction-id", json.dumps({"nonce": "nonce"})
     captured = {}
     async def create_exchange(transaction_id, payload):
         captured["transaction_id"] = transaction_id

@@ -13132,6 +13132,10 @@ async def _create_oauth_transaction(provider: str, state: str, pkce_verifier: st
             await db.commit()
     except Exception as exc:
         raise _oauth_storage_error("create_state", exc) from exc
+    logger.info(
+        "OAuth state transaction created provider=%s transaction_id=%s ttl_seconds=%s",
+        provider, transaction_id, OAUTH_STATE_TTL_SECONDS,
+    )
     _schedule_oauth_cleanup()
     return transaction_id
 
@@ -13201,8 +13205,10 @@ async def _consume_oauth_transaction(
         raise _oauth_storage_error("consume_state", exc) from exc
     if not row:
         logger.warning(
-            "OAuth state rejected provider=%s request_id=%s category=%s",
-            provider, request_id, failure_reason,
+            "OAuth state rejected provider=%s request_id=%s transaction_id=%s category=%s",
+            provider, request_id,
+            "unknown",
+            failure_reason,
         )
         raise HTTPException(status_code=400, detail="Invalid or replayed OAuth state.")
     verifier = row.get("pkce_verifier")
@@ -13212,7 +13218,12 @@ async def _consume_oauth_transaction(
             provider, request_id,
         )
         raise HTTPException(status_code=400, detail="Invalid OAuth exchange.")
-    return str(row["id"]), verifier
+    transaction_id = str(row["id"])
+    logger.info(
+        "OAuth state consumed provider=%s request_id=%s transaction_id=%s",
+        provider, request_id, transaction_id,
+    )
+    return transaction_id, verifier
 
 
 async def _create_oauth_exchange(transaction_id: str, payload: dict[str, Any]) -> str:
@@ -13398,21 +13409,26 @@ def _validate_linkedin_configuration() -> None:
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured securely.")
 
 
-async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -> dict[str, Any]:
+async def _exchange_linkedin_authorization_code(code: str, code_verifier: Optional[str] = None) -> dict[str, Any]:
     """Exchange one LinkedIn code while keeping credentials and error bodies private."""
     request_id = str(uuid.uuid4())
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": LINKEDIN_REDIRECT_URI,
+                "client_id": LINKEDIN_CLIENT_ID,
+                "client_secret": LINKEDIN_CLIENT_SECRET,
+            }
+            # LinkedIn's confidential web OIDC flow does not use the native
+            # PKCE endpoint. Keep this conditional for providers/flows that
+            # explicitly bind an authorization code to a verifier.
+            if code_verifier:
+                token_data["code_verifier"] = code_verifier
             response = await client.post(
                 LINKEDIN_TOKEN_ENDPOINT,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": LINKEDIN_REDIRECT_URI,
-                    "client_id": LINKEDIN_CLIENT_ID,
-                    "client_secret": LINKEDIN_CLIENT_SECRET,
-                    "code_verifier": code_verifier,
-                },
+                data=token_data,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
     except httpx.RequestError as exc:
@@ -13574,11 +13590,9 @@ async def linkedin_init():
     _validate_linkedin_configuration()
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).rstrip(b"=").decode()
-    transaction_secret = json.dumps({"code_verifier": code_verifier, "nonce": nonce})
+    # This is a confidential web-client flow. Native LinkedIn PKCE uses a
+    # separate authorization endpoint and is not mixed into this request.
+    transaction_secret = json.dumps({"nonce": nonce})
     await _create_oauth_transaction("linkedin", state, transaction_secret)
     params = urllib.parse.urlencode({
         "response_type": "code",
@@ -13587,8 +13601,6 @@ async def linkedin_init():
         "state": state,
         "scope": "openid profile email",
         "nonce": nonce,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
     })
     auth_url = f"{LINKEDIN_AUTHORIZATION_ENDPOINT}?{params}"
     response = RedirectResponse(url=auth_url, status_code=302)
@@ -13623,11 +13635,10 @@ async def linkedin_callback(
         raise HTTPException(status_code=400, detail="LinkedIn authorization code is missing.")
     try:
         transaction_data = json.loads(transaction_secret)
-        code_verifier = transaction_data["code_verifier"]
         nonce = transaction_data["nonce"]
     except (TypeError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail="Invalid OAuth exchange.") from exc
-    token_payload = await _exchange_linkedin_authorization_code(code, code_verifier)
+    token_payload = await _exchange_linkedin_authorization_code(code)
     claims = await _validate_linkedin_id_token(token_payload["id_token"], nonce)
     candidate_id, needs_onboarding = await _find_or_create_linkedin_candidate(claims)
     profile = _linkedin_profile_from_claims(claims)
