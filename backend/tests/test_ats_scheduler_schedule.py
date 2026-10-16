@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.job_ingestion.scheduler import IST, _ats_sync_trigger, _fantastic_sync_trigger
+from app.job_ingestion import scheduler
 
 
 def _next_run(startup_time: datetime) -> datetime:
@@ -55,3 +56,30 @@ def test_fantastic_sync_schedule_matches_the_six_hour_ats_slots_in_ist():
     assert first_run == datetime(2026, 9, 24, 6, 0, tzinfo=IST)
     assert second_run == datetime(2026, 9, 24, 12, 0, tzinfo=IST)
     assert second_run - first_run == timedelta(hours=6)
+
+
+def test_scheduler_initialization_is_idempotent_and_does_not_sync(monkeypatch):
+    """Registering cron jobs must not execute an ingestion cycle at startup."""
+    calls = []
+
+    async def sync_jobs():
+        calls.append("sync")
+
+    scheduler.stop_scheduler()
+    monkeypatch.setenv("JOB_SCHEDULER_ENABLED", "true")
+    monkeypatch.setattr(scheduler, "sync_jobs", sync_jobs)
+
+    try:
+        scheduler.start_scheduler()
+        first = scheduler._scheduler
+        assert first is not None and first.running
+        assert [job.id for job in first.get_jobs()] == ["job_sync"]
+        assert first.get_job("job_sync").trigger.timezone == IST
+        assert calls == []
+
+        scheduler.start_scheduler()
+        assert scheduler._scheduler is first
+        assert [job.id for job in first.get_jobs()] == ["job_sync"]
+        assert calls == []
+    finally:
+        scheduler.stop_scheduler()

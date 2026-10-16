@@ -23,10 +23,10 @@ SYNC_HOURS_IST = "0,6,12,18"
 def _scheduler_enabled() -> bool:
     """Return whether automatic job pulling is enabled.
 
-    Automatic pulls are paused by default so deployments must explicitly opt
-    into background ingestion with JOB_SCHEDULER_ENABLED=true.
+    The production schedule is enabled by default. Set
+    ``JOB_SCHEDULER_ENABLED=false`` only when intentionally pausing ingestion.
     """
-    return os.getenv("JOB_SCHEDULER_ENABLED", "false").strip().lower() in {
+    return os.getenv("JOB_SCHEDULER_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
 METADATA_RETRY_BATCH_SIZE = 25
@@ -403,9 +403,13 @@ async def _sync_jobs_guarded() -> None:
         logger.info("[job-scheduler] previous sync still running — skipping this interval")
         return
     async with _sync_lock:
-        logger.info("[job-scheduler] Starting ATS job sync")
-        await sync_jobs()
-        logger.info("[job-scheduler] Job sync completed")
+        logger.info("[job-scheduler] job_id=job_sync started")
+        try:
+            await sync_jobs()
+        except Exception:
+            logger.exception("[job-scheduler] job_id=job_sync failed")
+            raise
+        logger.info("[job-scheduler] job_id=job_sync completed")
 
 
 async def retry_pending_metadata_extraction() -> int:
@@ -599,8 +603,13 @@ async def sync_theirstack_jobs() -> dict[str, int]:
     logger.info("[theirstack] sync completed %s", stats); return stats
 
 async def _sync_theirstack_guarded() -> None:
-    try: await sync_theirstack_jobs()
-    except Exception: logger.exception("[theirstack] unexpected scheduled sync failure")
+    logger.info("[job-scheduler] job_id=theirstack_job_sync started")
+    try:
+        await sync_theirstack_jobs()
+    except Exception:
+        logger.exception("[job-scheduler] job_id=theirstack_job_sync failed")
+        raise
+    logger.info("[job-scheduler] job_id=theirstack_job_sync completed")
 
 
 def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
@@ -638,15 +647,40 @@ def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
 
 
 async def _sync_fantastic_guarded() -> None:
+    logger.info("[job-scheduler] job_id=fantastic_job_sync started")
     try:
         await sync_fantastic_jobs()
     except Exception:
-        logger.exception("[fantastic] unexpected scheduled sync failure")
+        logger.exception("[job-scheduler] job_id=fantastic_job_sync failed")
+        raise
+    logger.info("[job-scheduler] job_id=fantastic_job_sync completed")
+
+
+async def _cleanup_fantastic_expired_jobs_guarded() -> None:
+    logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup started")
+    try:
+        await cleanup_fantastic_expired_jobs()
+    except Exception:
+        logger.exception("[job-scheduler] job_id=fantastic_expiration_cleanup failed")
+        raise
+    logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup completed")
+
+
+async def _cleanup_theirstack_closed_jobs_guarded() -> None:
+    logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup started")
+    try:
+        await cleanup_theirstack_closed_jobs()
+    except Exception:
+        logger.exception("[job-scheduler] job_id=theirstack_expiration_cleanup failed")
+        raise
+    logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup completed")
 
 
 def _apscheduler_listener(event) -> None:
     if event.exception:
-        logger.error("[job-scheduler] scheduled run raised an exception: %s", event.exception)
+        logger.error("[job-scheduler] job_id=%s execution failed: %s", event.job_id, event.exception)
+    else:
+        logger.info("[job-scheduler] job_id=%s execution completed", event.job_id)
 
 
 def _ats_sync_trigger() -> CronTrigger:
@@ -664,17 +698,12 @@ def start_scheduler() -> None:
     global _scheduler, _sync_lock
 
     if not _scheduler_enabled():
-        logger.info(
-            "[job-scheduler] automatic job pulling is paused; "
-            "set JOB_SCHEDULER_ENABLED=true to resume"
-        )
+        logger.info("[job-scheduler] scheduler skipped because JOB_SCHEDULER_ENABLED=false")
         return
 
-    # Guard against uvicorn --reload spawning a second scheduler in the same process
-    if os.environ.get("_JOB_SCHEDULER_STARTED") == str(os.getpid()):
-        logger.info("[job-scheduler] scheduler already started in this process — skipping")
+    if _scheduler is not None and _scheduler.running:
+        logger.info("[job-scheduler] scheduler already running in this process; skipping duplicate startup")
         return
-    os.environ["_JOB_SCHEDULER_STARTED"] = str(os.getpid())
 
     logger.info("[job-scheduler] Starting scheduler")
 
@@ -688,7 +717,13 @@ def start_scheduler() -> None:
         id="job_sync",
         replace_existing=True,
     )
-    _scheduler.start()
+    try:
+        _scheduler.start()
+    except Exception:
+        logger.exception("[job-scheduler] scheduler startup failed")
+        _scheduler = None
+        _sync_lock = None
+        raise
     if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
         fantastic_job = _scheduler.add_job(
             _sync_fantastic_guarded,
@@ -708,15 +743,24 @@ def start_scheduler() -> None:
             "[job-scheduler] Next ATS job sync scheduled for %s IST",
             next_run.astimezone(IST).strftime("%Y-%m-%d %I:%M:%S %p"),
         )
+    for scheduled_job in _scheduler.get_jobs():
+        scheduled_next_run = scheduled_job.next_run_time
+        logger.info(
+            "[job-scheduler] registered job_id=%s next_run_ist=%s",
+            scheduled_job.id,
+            scheduled_next_run.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S %Z") if scheduled_next_run else "none",
+        )
+    logger.info("[job-scheduler] scheduler started successfully timezone=Asia/Kolkata")
 
 
 def stop_scheduler() -> None:
     """Shut down the APScheduler gracefully."""
-    global _scheduler
+    global _scheduler, _sync_lock
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("[job-scheduler] scheduler shut down")
     _scheduler = None
+    _sync_lock = None
 
 
 def run_sync() -> None:
