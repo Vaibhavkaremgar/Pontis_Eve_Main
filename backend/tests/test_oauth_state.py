@@ -156,6 +156,38 @@ async def test_linkedin_token_exchange_rejects_sanitized_oauth_errors(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_invalid_client_logs_presence_only_configuration_diagnostics(monkeypatch, caplog):
+    monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "sensitive-client-id")
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "sensitive-client-secret")
+    monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.pontis.one/api/auth/linkedin/callback")
+    _MockLinkedInClient.response = _response(401, {"error": "invalid_client"})
+
+    with pytest.raises(HTTPException):
+        await server._exchange_linkedin_authorization_code("sensitive-code", "sensitive-verifier")
+
+    assert "client_id_configured=True" in caplog.text
+    assert "client_secret_configured=True" in caplog.text
+    assert "redirect_uri_configured=True" in caplog.text
+    assert "sensitive-client-id" not in caplog.text
+    assert "sensitive-client-secret" not in caplog.text
+    assert "sensitive-code" not in caplog.text
+    assert "sensitive-verifier" not in caplog.text
+
+
+def test_linkedin_configuration_status_never_contains_values(monkeypatch):
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_ID", "sensitive-client-id")
+    monkeypatch.setattr(server, "LINKEDIN_CLIENT_SECRET", "sensitive-client-secret")
+    monkeypatch.setattr(server, "LINKEDIN_REDIRECT_URI", "https://api.pontis.one/api/auth/linkedin/callback")
+
+    assert server._linkedin_configuration_status() == {
+        "client_id_configured": True,
+        "client_secret_configured": True,
+        "redirect_uri_configured": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_linkedin_token_exchange_rejects_unexpected_non_json_response(monkeypatch, caplog):
     monkeypatch.setattr(server.httpx, "AsyncClient", _MockLinkedInClient)
     _MockLinkedInClient.response = server.httpx.Response(500, text="upstream internal detail")

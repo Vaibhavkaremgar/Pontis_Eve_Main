@@ -13366,8 +13366,30 @@ LINKEDIN_TOKEN_ENDPOINT = "https://www.linkedin.com/oauth/v2/accessToken"
 LINKEDIN_JWKS_URI = "https://www.linkedin.com/oauth/openid/jwks"
 
 
+def _linkedin_configuration_status() -> dict[str, bool]:
+    """Return presence-only diagnostics; never include credential values."""
+    return {
+        "client_id_configured": bool(LINKEDIN_CLIENT_ID),
+        "client_secret_configured": bool(LINKEDIN_CLIENT_SECRET),
+        "redirect_uri_configured": bool(LINKEDIN_REDIRECT_URI),
+    }
+
+
+def _log_linkedin_configuration_status(level: int, event: str) -> None:
+    status = _linkedin_configuration_status()
+    logger.log(
+        level,
+        "%s client_id_configured=%s client_secret_configured=%s redirect_uri_configured=%s",
+        event,
+        status["client_id_configured"],
+        status["client_secret_configured"],
+        status["redirect_uri_configured"],
+    )
+
+
 def _validate_linkedin_configuration() -> None:
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET or not LINKEDIN_REDIRECT_URI:
+        _log_linkedin_configuration_status(logging.ERROR, "LinkedIn OAuth configuration incomplete")
         raise HTTPException(status_code=503, detail="LinkedIn OAuth is not configured.")
     parsed = urllib.parse.urlparse(LINKEDIN_REDIRECT_URI)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
@@ -13412,12 +13434,17 @@ async def _exchange_linkedin_authorization_code(code: str, code_verifier: str) -
             error_payload = {}
         if not isinstance(error_payload, dict):
             error_payload = {}
+        category = _linkedin_token_error_category(response)
         logger.warning(
             "LinkedIn OAuth token exchange rejected request_id=%s upstream_status=%s category=%s",
             request_id,
             response.status_code,
-            _linkedin_token_error_category(response),
+            category,
         )
+        if category in {"invalid_client", "invalid_client_id"}:
+            _log_linkedin_configuration_status(
+                logging.WARNING, "LinkedIn OAuth provider rejected client credentials"
+            )
         raise HTTPException(status_code=400, detail="LinkedIn token exchange failed.")
 
     try:
