@@ -980,8 +980,8 @@ function Dashboard() {
             className="h-9 w-[156px] overflow-hidden rounded-md bg-[#1F1F1F] bg-no-repeat sm:h-10 sm:w-[174px]"
             style={{
               backgroundImage: "url('/pontis.one.jpeg')",
-              backgroundSize: "252px auto",
-              backgroundPosition: "center 43%",
+              backgroundSize: "220px auto",
+              backgroundPosition: "center 42%",
             }}
           />
         </div>
