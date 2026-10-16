@@ -710,7 +710,7 @@ class TestVoiceIntakePersistenceRegression:
             saved["persisted_resume"] = resume
             return received_candidate
 
-        async def fake_extract_voice_info(transcript):
+        async def fake_extract_voice_info(*_args):
             return {}
 
         class FakeCompletions:
@@ -734,7 +734,8 @@ class TestVoiceIntakePersistenceRegression:
                 server.VoiceCandidateIntakeProgressRequest(
                     candidate_id=candidate_id,
                     transcript="Candidate: I am looking for a backend role.",
-                )
+                ),
+                authorization=f"Bearer {server._issue_candidate_session_token(candidate_id)}",
             )
         )
 

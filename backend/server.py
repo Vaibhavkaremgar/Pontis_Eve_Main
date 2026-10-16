@@ -29,6 +29,7 @@ from groq_client import GroqClientPool, AllKeysRateLimitedError
 import pypdf
 import io
 import asyncio
+import time
 import html
 import textwrap
 import mimetypes
@@ -2988,6 +2989,7 @@ async def _llm_analyze_intake(
     *,
     endpoint: str,
     session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> dict:
     """Ask the LLM to determine what's known, what's missing, and what to ask next."""
     raw_data = _parse_raw_data(candidate_profile.get("raw_data"))
@@ -3050,9 +3052,8 @@ async def _llm_analyze_intake(
             temperature=0,
             response_format={"type": "json_object"},
             _telemetry={"workflow": "voice_intake_analysis", "function_name": "_llm_analyze_intake",
-                        "candidate_id": candidate_profile.get("id") or candidate_profile.get("candidate_id"),
                         "endpoint": endpoint, "vapi_call_id": vapi_call_id,
-                        "session_id": session_id},
+                        "session_id": session_id, "request_id": request_id},
         )
         return json.loads(resp.choices[0].message.content or "{}")
     except Exception as e:
@@ -9231,7 +9232,8 @@ Return only the JSON object."""
 
 async def _extract_voice_info(transcript: str, candidate_id: Optional[str] = None,
                               vapi_call_id: Optional[str] = None,
-                              endpoint: str = "/api/voice/candidate-intake") -> dict:
+                              endpoint: str = "/api/voice/candidate-intake",
+                              request_id: Optional[str] = None) -> dict:
     """Use LLM to extract structured candidate info from voice transcript."""
     try:
         resp = await openai_client.chat.completions.create(
@@ -9243,7 +9245,8 @@ async def _extract_voice_info(transcript: str, candidate_id: Optional[str] = Non
             temperature=0,
             response_format={"type": "json_object"},
             _telemetry={"workflow": "voice_info_extraction", "function_name": "_extract_voice_info",
-                        "candidate_id": candidate_id, "endpoint": endpoint, "vapi_call_id": vapi_call_id},
+                        "endpoint": endpoint, "vapi_call_id": vapi_call_id,
+                        "request_id": request_id},
         )
         raw = resp.choices[0].message.content or "{}"
         return _sanitize_profile_field_mapping(json.loads(raw))
@@ -10961,8 +10964,72 @@ async def download_application_resume(candidate_id: str, rec_id: str, authorizat
 
 # ---------- Voice intake endpoint ----------
 
+_VOICE_TIMING_EVENTS = frozenset({
+    "request_started", "analysis_finished", "extraction_finished",
+    "profile_persisted", "request_finished",
+})
+_VOICE_TIMING_ENDPOINTS = frozenset({
+    "/api/voice/candidate-intake", "/api/voice/candidate-intake/progress",
+})
+_VOICE_TIMING_OUTCOMES = frozenset({"duplicate", "stale"})
+_VOICE_TIMING_SOURCES = frozenset({"browser", "provider_webhook"})
+_VOICE_TIMING_STATUSES = frozenset({"in_progress", "completed"})
+_VOICE_VAPI_CALL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_VOICE_TRANSCRIPT_REVISION_RE = re.compile(r"[0-9]{1,9}")
+
+
+def _safe_voice_request_id(value: Any) -> str:
+    """Accept only canonical UUID request IDs; otherwise create an opaque server ID."""
+    if isinstance(value, str) and len(value) <= 36:
+        try:
+            return str(uuid.UUID(value))
+        except (ValueError, AttributeError, TypeError):
+            pass
+    return str(uuid.uuid4())
+
+
+def _safe_voice_vapi_call_id(value: Any) -> Optional[str]:
+    if isinstance(value, str) and _VOICE_VAPI_CALL_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _safe_voice_transcript_revision(value: Any) -> Optional[str]:
+    if isinstance(value, str) and _VOICE_TRANSCRIPT_REVISION_RE.fullmatch(value):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 999_999_999:
+        return str(value)
+    return None
+
+
+def _voice_intake_timing(event: str, *, request_id: str,
+                         vapi_call_id: Optional[str], transcript_revision: Optional[str],
+                         endpoint: str, duration_ms: Optional[float] = None,
+                         source: Optional[str] = None, outcome: Optional[str] = None,
+                         intake_status: Optional[str] = None) -> None:
+    """Emit fixed, metadata-only Voice Intake timing fields."""
+    if event not in _VOICE_TIMING_EVENTS or endpoint not in _VOICE_TIMING_ENDPOINTS:
+        return
+    fields = {"event": event, "request_id": _safe_voice_request_id(request_id), "endpoint": endpoint}
+    safe_call_id = _safe_voice_vapi_call_id(vapi_call_id)
+    safe_revision = _safe_voice_transcript_revision(transcript_revision)
+    if safe_call_id is not None:
+        fields["vapi_call_id"] = safe_call_id
+    if safe_revision is not None:
+        fields["transcript_revision"] = safe_revision
+    if source in _VOICE_TIMING_SOURCES:
+        fields["source"] = source
+    if outcome in _VOICE_TIMING_OUTCOMES:
+        fields["outcome"] = outcome
+    if intake_status in _VOICE_TIMING_STATUSES:
+        fields["intake_status"] = intake_status
+    if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool) and duration_ms >= 0:
+        fields["duration_ms"] = round(duration_ms, 1)
+    logger.info("[voice-intake-timing] %s", json.dumps(fields, sort_keys=True))
+
 @api_router.post("/voice/candidate-intake")
-async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authorization: Optional[str] = Header(default=None)):
+async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authorization: Optional[str] = Header(default=None),
+                                 x_request_id: Optional[str] = Header(default=None, alias="X-Request-ID")):
     """
     Receive voice intake transcript, extract structured info, merge into candidate profile.
     candidate_id is validated against the DB — never trusted blindly from the browser.
@@ -10970,6 +11037,14 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
     # Request validation must precede every candidate/database or transcript
     # processing operation.  In particular, do not let an empty submission
     # reach the database-backed candidate lookup.
+    request_id = _safe_voice_request_id(x_request_id)
+    timing_vapi_call_id = _safe_voice_vapi_call_id(request.vapi_call_id)
+    timing_revision = _safe_voice_transcript_revision(request.transcript_revision)
+    endpoint = "/api/voice/candidate-intake"
+    started = time.monotonic()
+    _voice_intake_timing("request_started", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, source="provider_webhook" if request.provider_event_id else "browser")
     if not request.transcript or not request.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
     transcript = request.transcript.strip()
@@ -10999,7 +11074,11 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
             {"cid": request.candidate_id, "transcript": transcript},
         )
         if dup.fetchone():
-            logger.info("Duplicate voice intake ignored for candidate %s", request.candidate_id)
+            logger.info("Duplicate voice intake ignored")
+            _voice_intake_timing("request_finished", request_id=request_id,
+                                 vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                                 endpoint=endpoint, duration_ms=(time.monotonic() - started) * 1000,
+                                 outcome="duplicate")
             return {"status": "duplicate", "candidate_id": request.candidate_id}
 
     # 3. Persist intake record (status=pending)
@@ -11025,6 +11104,7 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
     existing_raw = _parse_raw_data(existing_candidate.get("raw_data"))
     existing_vi = _parse_raw_data(existing_raw.get("voice_intake"))
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+    stage_started = time.monotonic()
     llm_analysis = await _llm_analyze_intake(
         existing_candidate,
         completed_turns,
@@ -11033,9 +11113,13 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
         # duplicate.  A new transcript must be evaluated on its own rather
         # than inheriting the previous request's active question/status.
         authoritative_next_question="",
-        vapi_call_id=request.vapi_call_id,
-        endpoint="/api/voice/candidate-intake",
+        vapi_call_id=timing_vapi_call_id,
+        endpoint=endpoint,
+        request_id=request_id,
     )
+    _voice_intake_timing("analysis_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     voice_intake_state = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
         candidate_profile=existing_candidate,
@@ -11074,18 +11158,26 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
                 pass
     # 4. Extract structured info via LLM
     voice_data_source = _voice_intake_turns_to_transcript(voice_intake_state.get("completed_turns") or [])
+    stage_started = time.monotonic()
     voice_data = await _extract_voice_info(
-        voice_data_source or transcript, request.candidate_id, request.vapi_call_id,
+        voice_data_source or transcript, request.candidate_id, timing_vapi_call_id, endpoint, request_id,
     )
+    _voice_intake_timing("extraction_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
 
     # 5. Merge into existing profile, preferences, and resume state.
+    stage_started = time.monotonic()
     merged = await _persist_voice_intake_profile_state(
         request.candidate_id,
         existing_candidate,
         voice_data,
         voice_intake_state,
     )
+    _voice_intake_timing("profile_persisted", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     await _sync_voice_ledger(request.candidate_id, voice_intake_state, request.provider_event_id)
     await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
 
@@ -11102,12 +11194,11 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
         )
         await db.commit()
 
-    logger.info(
-        "Voice intake saved for candidate %s (intake %s, status=%s)",
-        request.candidate_id,
-        intake_id,
-        voice_intake_state["status"],
-    )
+    logger.info("Voice intake saved status=%s", voice_intake_state["status"])
+    _voice_intake_timing("request_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - started) * 1000,
+                         intake_status=voice_intake_state["status"])
 
     if voice_intake_state["status"] == "completed":
         asyncio.ensure_future(_trigger_matching(request.candidate_id))
@@ -11149,8 +11240,17 @@ async def candidate_voice_intake(request: VoiceCandidateIntakeRequest, authoriza
 
 
 @api_router.post("/voice/candidate-intake/progress")
-async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest, authorization: Optional[str] = Header(default=None)):
+async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressRequest, authorization: Optional[str] = Header(default=None),
+                                          x_request_id: Optional[str] = Header(default=None, alias="X-Request-ID")):
     """Persist an in-progress voice intake snapshot without completing the profile merge."""
+    request_id = _safe_voice_request_id(x_request_id)
+    timing_vapi_call_id = _safe_voice_vapi_call_id(request.vapi_call_id)
+    timing_revision = _safe_voice_transcript_revision(request.transcript_revision)
+    endpoint = "/api/voice/candidate-intake/progress"
+    started = time.monotonic()
+    _voice_intake_timing("request_started", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, source="browser")
     transcript = (request.transcript or "").strip()
     _authorize_candidate(request.candidate_id, authorization)
     if not transcript and not request.voice_notes:
@@ -11172,26 +11272,27 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
     incoming_vapi_call_id = _clean_str(request.vapi_call_id)
     same_vapi_call = bool(incoming_vapi_call_id and stored_vapi_call_id and incoming_vapi_call_id == stored_vapi_call_id)
     if same_vapi_call and incoming_revision is not None and incoming_revision < stored_revision:
-        logger.warning(
-            "[voice-intake] ignored stale progress candidate_id=%s vapi_call_id=%s "
-            "stored_vapi_call_id=%s incoming_revision=%s stored_revision=%s",
-            request.candidate_id,
-            incoming_vapi_call_id,
-            stored_vapi_call_id,
-            incoming_revision,
-            stored_revision,
-        )
+        logger.warning("[voice-intake] ignored stale progress")
+        _voice_intake_timing("request_finished", request_id=request_id,
+                             vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                             endpoint=endpoint, duration_ms=(time.monotonic() - started) * 1000,
+                             outcome="stale")
         return {"status": "ignored_stale", "accepted": False, "candidate_id": request.candidate_id,
                 "transcript_revision": stored_revision, "voice_intake_resume": existing_vi}
     completed_turns, pending_question = _voice_intake_turn_pairs(voice_notes, transcript)
+    stage_started = time.monotonic()
     llm_analysis = await _llm_analyze_intake(
         candidate,
         completed_turns,
         pending_question,
         authoritative_next_question=(existing_vi.get("current_question") or existing_vi.get("next_question") or ""),
-        vapi_call_id=request.vapi_call_id,
-        endpoint="/api/voice/candidate-intake/progress",
+        vapi_call_id=timing_vapi_call_id,
+        endpoint=endpoint,
+        request_id=request_id,
     )
+    _voice_intake_timing("analysis_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     resume = _build_voice_intake_resume_from_notes(
         voice_notes, transcript, existing_vi,
         candidate_profile=candidate,
@@ -11208,26 +11309,32 @@ async def candidate_voice_intake_progress(request: VoiceCandidateIntakeProgressR
 
     await _save_voice_intake_resume(request.candidate_id, resume)
     voice_data_source = _voice_intake_turns_to_transcript(resume.get("completed_turns") or [])
+    stage_started = time.monotonic()
     voice_data = await _extract_voice_info(
-        voice_data_source or transcript, request.candidate_id, request.vapi_call_id,
-        "/api/voice/candidate-intake/progress",
+        voice_data_source or transcript, request.candidate_id, timing_vapi_call_id,
+        endpoint, request_id,
     ) if (voice_data_source or transcript) else {}
+    _voice_intake_timing("extraction_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     voice_data = _validate_voice_current_employment(voice_data, voice_data_source or transcript)
+    stage_started = time.monotonic()
     await _persist_voice_intake_profile_state(request.candidate_id, candidate, voice_data, resume)
+    _voice_intake_timing("profile_persisted", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - stage_started) * 1000)
     await _sync_voice_ledger(request.candidate_id, resume)
     await _sync_profile_updates_to_ledger(request.candidate_id, voice_data, "vapi")
     resume_status = resume.get("status")
     if resume_status == "completed":
-        logger.info(
-            "[voice-intake] candidate=%s persisted progress status=%s; scheduling matching refresh",
-            request.candidate_id, resume_status,
-        )
+        logger.info("[voice-intake] persisted progress status=%s; scheduling matching refresh", resume_status)
     else:
-        logger.info(
-            "[voice-intake] candidate=%s persisted progress status=%s; matching refresh deferred",
-            request.candidate_id, resume_status,
-        )
+        logger.info("[voice-intake] persisted progress status=%s; matching refresh deferred", resume_status)
     _schedule_voice_intake_matching(request.candidate_id, resume_status)
+    _voice_intake_timing("request_finished", request_id=request_id,
+                         vapi_call_id=timing_vapi_call_id, transcript_revision=timing_revision,
+                         endpoint=endpoint, duration_ms=(time.monotonic() - started) * 1000,
+                         intake_status=resume_status)
     return {
         "status": "saved",
         "accepted": True,

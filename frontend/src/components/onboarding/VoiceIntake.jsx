@@ -154,6 +154,20 @@ const STATE_LABELS = {
 };
 
 const NOT_CONFIGURED_MSG = "Voice intake is not configured. Please contact support.";
+const VOICE_TIMING_KEY = "eve_voice_intake_timing";
+
+function newVoiceRequestId() {
+  return globalThis.crypto?.randomUUID?.() || `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function recordVoiceTiming(update) {
+  try {
+    const prior = JSON.parse(sessionStorage.getItem(VOICE_TIMING_KEY) || "{}");
+    sessionStorage.setItem(VOICE_TIMING_KEY, JSON.stringify({ ...prior, ...update }));
+  } catch (_) {
+    // Timing is diagnostic only; storage restrictions must not affect intake.
+  }
+}
 
 export default function VoiceIntake({ firstName, candidateId, onComplete, candidateProfile }) {
   const [showTranscript, setShowTranscript] = React.useState(true);
@@ -162,6 +176,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const progressTimerRef = React.useRef(null);
   const progressGenerationRef = React.useRef(0);
   const terminalRef = React.useRef(false);
+  const terminalRequestIdRef = React.useRef(null);
   const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, candidateProfile);
 
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
@@ -206,6 +221,9 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       transcript_revision: String(transcript.length),
       termination_reason: null,
     };
+    // A progress snapshot is its own request, so do not share its correlation
+    // ID with another snapshot or with terminal finalization.
+    const progressRequestId = newVoiceRequestId();
 
     const generation = progressGenerationRef.current;
     progressTimerRef.current = setTimeout(() => {
@@ -214,7 +232,9 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         generation,
         currentGeneration: progressGenerationRef.current,
       })) return;
-      axios.post(`${API}/voice/candidate-intake/progress`, payload).catch(() => {});
+      axios.post(`${API}/voice/candidate-intake/progress`, payload, {
+        headers: { "X-Request-ID": progressRequestId },
+      }).catch(() => {});
     }, 900);
 
     return () => {
@@ -233,6 +253,14 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     // before the terminal VAPI state was observed.
     terminalRef.current = true;
     progressGenerationRef.current += 1;
+    const terminalRequestId = terminalRequestIdRef.current || newVoiceRequestId();
+    terminalRequestIdRef.current = terminalRequestId;
+    recordVoiceTiming({
+      vapi_call_id: callId.current || null,
+      request_id: terminalRequestId,
+      transcript_revision: String(transcript.length),
+      call_end_at_ms: performance.now(),
+    });
 
     const persistInterruptedState = async () => {
       // The transcript effect schedules a best-effort snapshot save.  Cancel
@@ -260,7 +288,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
           vapi_call_id: callId.current || null,
           transcript_revision: String(transcript.length),
           termination_reason: terminationReason || "disconnect",
-        });
+        }, { headers: { "X-Request-ID": terminalRequestId } });
       } catch (err) {
         console.warn("[voice-intake] interrupted-state save failed");
       }
@@ -300,12 +328,14 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         candidate_id: resolvedCandidateId,
           vapi_call_id: callId.current || null,
           termination_reason: terminationReason || "disconnect",
-          transcript_revision: String(transcript.length),
-      })
+        transcript_revision: String(transcript.length),
+      }, { headers: { "X-Request-ID": terminalRequestId } })
       .then((res) => {
+        recordVoiceTiming({ response_at_ms: performance.now(), outcome: "success" });
         onComplete(res.data);
       })
       .catch((err) => {
+        recordVoiceTiming({ response_at_ms: performance.now(), outcome: "error" });
         console.error("Voice intake submission failed");
         toast.error("Couldn't save your voice intake — your profile is still intact.");
         // Still advance — don't block onboarding

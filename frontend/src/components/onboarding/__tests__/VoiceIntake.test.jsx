@@ -1,6 +1,7 @@
 import React from "react";
 import { act } from "react";
 import ReactDOM from "react-dom/client";
+import axios from "axios";
 import {
   buildVoiceIntakeAssistantOverrides,
   canPersistVoiceProgress,
@@ -9,6 +10,8 @@ import {
 import VoiceIntake from "../VoiceIntake";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+let mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
 
 jest.mock("../../../hooks/useVapi", () => {
   const VAPI_STATES = {
@@ -25,7 +28,7 @@ jest.mock("../../../hooks/useVapi", () => {
   function useVapi() {
     return {
       callState: VAPI_STATES.LISTENING,
-      transcript: [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }],
+      transcript: mockTranscript,
       error: null,
       terminationReason: null,
       startCall: () => {},
@@ -45,6 +48,7 @@ describe("VoiceIntake transcript visibility", () => {
   let root;
 
   beforeEach(() => {
+    mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
     container = document.createElement("div");
     document.body.appendChild(container);
     root = ReactDOM.createRoot(container);
@@ -91,6 +95,55 @@ describe("VoiceIntake transcript visibility", () => {
 });
 
 describe("VoiceIntake progress terminal guard", () => {
+  it("sends a distinct request ID with each regular progress snapshot", () => {
+    jest.useFakeTimers();
+    axios.post.mockClear();
+    axios.post.mockResolvedValue({ data: {} });
+    const container = document.createElement("div");
+    const root = ReactDOM.createRoot(container);
+    document.body.appendChild(container);
+
+    act(() => {
+      root.render(
+        <VoiceIntake
+          firstName="Alex"
+          candidateId="cid-1"
+          onComplete={jest.fn()}
+          candidateProfile={{ name: "Alex Smith" }}
+        />
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(900);
+    });
+
+    mockTranscript = [
+      ...mockTranscript,
+      { role: "user", text: "I build backend systems.", final: true },
+    ];
+    act(() => {
+      root.render(
+        <VoiceIntake firstName="Alex" candidateId="cid-1" onComplete={jest.fn()} candidateProfile={{ name: "Alex Smith" }} />
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(900);
+    });
+
+    const progressCalls = axios.post.mock.calls.filter(([url]) => url.includes("/voice/candidate-intake/progress"));
+    expect(progressCalls).toHaveLength(2);
+    const requestIds = progressCalls.map(([, , config]) => config?.headers?.["X-Request-ID"]);
+    expect(requestIds[0]).toEqual(expect.any(String));
+    expect(requestIds[1]).toEqual(expect.any(String));
+    expect(requestIds[0]).not.toBe("");
+    expect(requestIds[1]).not.toBe("");
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+
+    act(() => root.unmount());
+    container.remove();
+    jest.useRealTimers();
+  });
+
   it("allows the current generation during normal progress saving", () => {
     expect(canPersistVoiceProgress({ terminal: false, generation: 3, currentGeneration: 3 })).toBe(true);
   });
