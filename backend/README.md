@@ -1,0 +1,153 @@
+# Pontis Eve backend
+
+The backend is the FastAPI service for Pontis Eve. It handles candidate authentication and sessions, onboarding and profile data, chat and voice intake, job recommendations and applications, resume/document workflows, and billing/webhooks. PostgreSQL is the system of record; Qdrant supports semantic job retrieval.
+
+The candidate-facing React application lives in [`../frontend`](../frontend/README.md). Repository-wide engineering and agent requirements are in [`../agents.md`](../agents.md).
+
+## Requirements
+
+- Python 3.11 (the version is recorded in `.python-version`)
+- PostgreSQL, with a schema compatible with the application
+- A Groq API key for LLM-powered workflows
+- `poppler-utils` for PDF operations that use Poppler (included in the backend Docker image)
+- Credentials for external integrations enabled in the environment, such as Qdrant, OAuth, Vapi, or payment processing
+
+The backend uses async FastAPI endpoints and SQLAlchemy with `asyncpg`. SQLite does not match the PostgreSQL types and behavior used by the application.
+
+## Local development
+
+Run these commands from `backend/`:
+
+```sh
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Configure a PostgreSQL `DATABASE_URL`, at least one Groq API key, and a strong candidate-session secret in `.env`:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@localhost:5432/pontis
+CANDIDATE_SESSION_SECRET=replace-with-a-random-secret-of-at-least-32-characters
+GROQ_API_KEY_1=
+FRONTEND_URL=http://localhost:3000
+CORS_ORIGINS=http://localhost:3000
+```
+
+The application loads `backend/.env` and requires `DATABASE_URL` during import. The Groq client pool accepts `GROQ_API_KEY_1` through `GROQ_API_KEY_7`; the legacy `GROQ_API_KEY` is accepted if no numbered keys are set. The candidate session secret must be non-placeholder and at least 32 characters.
+
+Start the API:
+
+```sh
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
+
+The API runs at `http://localhost:8000`; interactive FastAPI docs are available at `/docs` in development. In production, explicitly set `EVE_ENVIRONMENT`, `ENVIRONMENT`, or `RAILWAY_ENVIRONMENT` to `production`/`prod`; this disables docs endpoints and requires the candidate-session secret.
+
+Run the frontend separately from `frontend/`, set `REACT_APP_BACKEND_URL=http://localhost:8000`, and allow its origin in `CORS_ORIGINS`.
+
+## Configuration
+
+`backend/.env.example` documents core database, session, CORS/frontend, and OAuth settings. Additional variables are read by individual integrations:
+
+| Variable(s) | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Required PostgreSQL connection; SQLAlchemy uses the async `asyncpg` driver. |
+| `CANDIDATE_SESSION_SECRET` | Candidate JWT signing key; use at least 32 random characters and do not reuse `EVE_INTERNAL_TOKEN`. |
+| `FRONTEND_URL`, `CORS_ORIGINS` | Trusted frontend redirect and comma-separated browser origins. Set explicit production origins. |
+| `GROQ_API_KEY_1`–`GROQ_API_KEY_7` or `GROQ_API_KEY` | Groq API credentials for LLM workflows. |
+| `GROQ_MODEL` | Optional model override; defaults to `llama-3.3-70b-versatile`. |
+| `EVE_DOCS_DIR` | Persistent storage directory for candidate documents; defaults to `backend/data/documents`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Google OAuth credentials and registered backend callback. |
+| `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, `LINKEDIN_REDIRECT_URI` | LinkedIn OpenID Connect credentials and registered backend callback. |
+| `QDRANT_URL`, `QDRANT_API_KEY` | Qdrant vector search service. |
+| `VAPI_PUBLIC_KEY`, `EVE_VAPI_ASSISTANT_ID`, `VAPI_WEBHOOK_SECRET` | Voice-intake server configuration and webhook verification. Browser-safe key/assistant ID are also configured in the frontend. |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Payment order verification and webhook validation. |
+| `JOB_SCHEDULER_ENABLED` | Disable recurring job ingestion with `false`; enabled by default. |
+| `FANTASTIC_ENABLED`, `FANTASTIC_JOBS_API_KEY`, `FANTASTIC_TIME_FRAME` | Fantastic job connector settings. |
+| `THEIRSTACK_ENABLED`, `THEIRSTACK_API_KEY` | TheirStack job connector settings. |
+
+Optional settings also exist for email, internal-service authentication, telemetry, and embeddings. Configure them only when enabling those integrations. Do not commit `.env` files, secrets, or production credentials.
+
+## Architecture
+
+- `server.py` is the FastAPI entry point (`server:app`), defines the `/api` router, handles most request orchestration, and contains inline Pydantic request models and some schema SQL.
+- Root-level modules contain domain services for profile strength, candidate/job matching, profile caching, LLM provider key rotation, and telemetry.
+- `app/job_ingestion/connectors/` fetches provider job-board data. `normalize.py` maps provider records into a shared shape; `job_ingestion_service.py` owns canonical job persistence; `job_skill_extraction.py` enriches incomplete records.
+- `app/job_ingestion/scheduler.py` coordinates recurring sync, metadata retries, and lifecycle reconciliation. `embedding_service.py` builds job vectors; `qdrant_service.py` stores and retrieves them.
+- Candidate document metadata is stored in PostgreSQL; document files live under `EVE_DOCS_DIR`. Deployments must mount durable storage at this path.
+- `migrations/` contains standalone SQL migrations. `railway.json` runs the listed migration commands sequentially before deployment.
+
+### Current persistence and route structure
+
+The current implementation has a single large route module rather than separate controller, service, repository, and model packages. It uses async SQLAlchemy sessions created in `server.py` and opens them directly with `async with SessionLocal()`. Many database operations currently use SQLAlchemy `text(...)` with bound parameters; inline SQL constants and standalone migration files also define schema changes. There is no centralized declarative ORM model package or `Depends(...)`-based database/session dependency today.
+
+These are descriptions of the existing code, not patterns to extend. When adding or materially changing backend behavior, follow the standards below and [`../agents.md`](../agents.md). Refactor touched legacy code progressively when practical, keeping changes scoped and covered by tests.
+
+## Engineering standards for backend changes
+
+Apply these requirements to new code and to code being refactored:
+
+- **Layering:** Keep HTTP parsing, status codes, and response shaping in the FastAPI layer. Put business workflows in services and database access/mapping in repositories or a dedicated data-access layer. Do not add business logic or direct database operations to route handlers.
+- **Async behavior:** Use `async def` for awaitable I/O. Do not block an async route with synchronous network, file, or database operations. Use a synchronous FastAPI route for blocking work that can safely run in its thread pool, `run_in_threadpool` for blocking sections in a mixed async flow, and a background process/task runner for substantial CPU work.
+- **Dependency injection:** Use FastAPI dependencies for shared request-scoped concerns such as the async database session and authentication. Declare injected parameters with `Annotated[T, Depends(...)]`. Do not add more direct `SessionLocal()` session creation to request handlers.
+- **Transactions:** Keep each multi-step mutation within a clear transaction boundary (`async with db.begin():`). Handle expected database constraint conflicts in the service layer and preserve rollback/error behavior.
+- **Database queries:** Prefer SQLAlchemy 2.0 async `select`, `insert`, `update`, and `delete` expressions with mapped models. Do not add raw SQL strings or interpolate request data into SQL. If a fixed SQL statement is unavoidable during a scoped legacy migration, bind all values as parameters and do not dynamically compose identifiers or predicates from user input.
+- **Schemas and types:** Validate input and output at API boundaries with explicit Pydantic v2 schemas. Use concrete field types and constraints; do not pass unchecked dictionaries or `Any` through business/data layers. Keep Python names in `snake_case` and frontend names in `camelCase`; configure shared Pydantic aliases to translate at the API boundary. Use Pydantic v2 serialization APIs, not deprecated `.dict()` or `json_encoders`.
+- **Authentication:** Keep Google/LinkedIn provider credentials server-side. For new session work, follow `agents.md`: use PyJWT (`import jwt`) rather than `python-jose`, and deliver session credentials in `HttpOnly`, `Secure`, appropriately `SameSite` cookies. A cookie migration must include the matching CSRF protections and credentialed-CORS configuration; do not change token transport on only one side.
+- **Cryptography:** Do not implement custom encryption or cryptographic primitives. Use established libraries and approved algorithms for cryptographic operations.
+- **Errors and logs:** Return the shared error envelope documented in `agents.md` for unsuccessful API responses. A global exception handler must log detailed diagnostics on the server and return a sanitized 500 response. Never log secrets, tokens, full request/response payloads, or candidate PII. Avoid broad exception handlers that hide errors or return success-shaped fallbacks.
+- **Code quality:** Use four spaces, UTF-8 source, `ruff format`, and `ruff check --fix` as specified in `agents.md`.
+
+## Authentication and authorization
+
+The current implementation uses custom HS256 candidate JWTs with candidate ID (`sub`), issue/expiry timestamps, and `scope: candidate`. Candidate requests send the token in a Bearer Authorization header; middleware and route helpers check token signature, expiry, candidate scope, and ownership. OAuth state and one-time exchange codes are stored in PostgreSQL and consumed once. Google uses an S256 PKCE verifier; LinkedIn uses OpenID Connect and validates the provider ID token against its JWKS. Internal service routes and external webhooks have their own bearer/shared-secret or provider-signature checks.
+
+The current bearer-token transport is legacy behavior. The standards section and `agents.md` describe the target for new/refactored session handling; changing transport requires coordinated backend/frontend implementation and must not be inferred from this current-state description.
+
+## API areas
+
+The API router is prefixed with `/api` and currently covers:
+
+- Google and LinkedIn authentication and one-time session exchange
+- Resume parsing, candidate profiles, profile strength, documents, photos, and certificates
+- Candidate chat and Vapi voice-intake progress/webhooks
+- Job opportunities, recommendation lifecycle, tracking, dismissals, applications, and resume improvements
+- Billing, payment webhooks, notifications, and internal service callbacks
+
+`server.py` contains the current route definitions. Candidate IDs in a request are not authorization: preserve explicit candidate ownership checks when working on these routes.
+
+## Tests and checks
+
+Run commands from `backend/` after installing `requirements.txt`.
+
+```sh
+pytest tests
+pytest tests/test_linkedin_oidc.py
+pytest tests/test_linkedin_oidc.py -k callback
+pytest tests -n 0
+```
+
+`pytest.ini` requires `pytest-xdist` and configures `-n 2 --dist loadscope`. Keep those `addopts` unchanged; use `-n 0` for a serial run. Backend tests generally mock external providers and database sessions. Keep tests isolated from production data and services.
+
+`requirements.txt` currently includes `flake8`, `black`, `isort`, and `mypy`; it does not list Ruff, and no Ruff configuration or lint script is currently defined. The repository-wide standard is Ruff, so verify/install the approved Ruff tooling and establish its project configuration before treating lint/format checks as automated gates. Do not silently substitute an unrelated linter for the repository standard.
+
+## Database migrations
+
+Railway runs the SQL migrations listed in `railway.json` using `psql` and `DATABASE_URL`, in listed order. Verify that new migrations are safe to rerun where intended and add deployment migrations to that configuration when required.
+
+LinkedIn sign-in requires these migration files:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20261013_oauth_transactions.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20261016_oauth_identities.sql
+```
+
+Run manual migrations from `backend/` only after verifying the target database. The root README contains LinkedIn provider setup details.
+
+## Deployment
+
+The Docker image uses Python 3.11, installs `requirements.txt`, and includes Poppler utilities and the PostgreSQL client. It starts Uvicorn on the platform-provided `$PORT`.
+
+Set production secrets and trusted `CORS_ORIGINS`/`FRONTEND_URL` values in the hosting platform. Configure a strong candidate-session secret, persist `EVE_DOCS_DIR` on durable storage, and apply the required migrations. LinkedIn's OpenID Connect product must be enabled, and its registered redirect URI must exactly match `LINKEDIN_REDIRECT_URI`.
