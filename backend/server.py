@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi import Cookie
 from contextlib import asynccontextmanager
