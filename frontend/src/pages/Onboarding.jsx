@@ -895,6 +895,7 @@ export default function Onboarding() {
       authenticated: current.authenticated,
       profile: current.profile,
       candidateToken: current.candidateToken,
+      googleRegistrationToken: current.googleRegistrationToken,
       isOpenToMatches: current.isOpenToMatches,
       step,
       countryCode: phone.country.code,
@@ -908,6 +909,7 @@ export default function Onboarding() {
       parsedProfile,
       candidateId,
       candidateToken: current.candidateToken ?? null,
+      googleRegistrationToken: current.googleRegistrationToken ?? null,
       transcription,
       muted,
       voiceElapsedMs,
@@ -946,10 +948,14 @@ export default function Onboarding() {
         ? `${API}/onboarding/parse-resume?existing_id=${existingId}`
         : `${API}/onboarding/parse-resume`;
       const existingToken = loadOnboardingState().candidateToken;
+      const googleRegistrationToken = loadOnboardingState().googleRegistrationToken;
       const res = await axios.post(url, fd, {
         headers: {
           "Content-Type": "multipart/form-data",
           ...(existingId && existingToken ? { Authorization: `Bearer ${existingToken}` } : {}),
+          ...(!existingId && googleRegistrationToken
+            ? { "X-Google-Registration": googleRegistrationToken }
+            : {}),
         },
       });
       const { candidate_id, candidate_token, ...profile } = res.data;
@@ -961,13 +967,13 @@ export default function Onboarding() {
       // so Dashboard always reads the correct ID even if it mounts before the effect runs
       if (candidate_id) {
         const current = loadOnboardingState();
-        saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token || current.candidateToken || null });
+        saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token || current.candidateToken || null, googleRegistrationToken: null });
       }
       if (candidate_id) {
         setCandidateId(candidate_id);
         if (candidate_token) {
           const current = loadOnboardingState();
-          saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token });
+          saveOnboardingState({ ...current, candidateId: candidate_id, candidateToken: candidate_token, googleRegistrationToken: null });
         }
         // Upload any pending certs now that we have a candidate_id
         if (certsFiles.length > 0) {

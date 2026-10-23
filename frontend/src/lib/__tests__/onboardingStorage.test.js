@@ -1,4 +1,4 @@
-import { isVoiceIntakeCompleteStatus } from "../onboardingStorage";
+import { isVoiceIntakeCompleteStatus, loadOnboardingState, saveOnboardingState } from "../onboardingStorage";
 
 describe("isVoiceIntakeCompleteStatus", () => {
   it("treats the backend success variants as complete", () => {
@@ -14,5 +14,18 @@ describe("isVoiceIntakeCompleteStatus", () => {
     expect(isVoiceIntakeCompleteStatus("partial")).toBe(false);
     expect(isVoiceIntakeCompleteStatus("")).toBe(false);
     expect(isVoiceIntakeCompleteStatus(null)).toBe(false);
+  });
+});
+
+describe("Google registration state", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("persists the short-lived registration credential for resume onboarding", () => {
+    saveOnboardingState({
+      authenticated: true,
+      googleRegistrationToken: "registration-credential",
+    });
+
+    expect(loadOnboardingState().googleRegistrationToken).toBe("registration-credential");
   });
 });
