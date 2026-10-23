@@ -7,6 +7,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request as StarletteRequest
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from jose import JWTError, jwt
 import jwt as pyjwt
 import os
@@ -103,6 +104,7 @@ _INSECURE_CANDIDATE_SESSION_SECRETS = {
 CANDIDATE_SESSION_SECRET_MIN_LENGTH = 32
 CANDIDATE_SESSION_SECRET = os.environ.get("CANDIDATE_SESSION_SECRET", "").strip()
 CANDIDATE_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
+GOOGLE_REGISTRATION_TTL_SECONDS = 10 * 60
 SUPPORT_EMAIL_TO = "info@pontis.one"
 
 
@@ -1840,6 +1842,100 @@ def _issue_candidate_session_token(candidate_id: str) -> str:
         "scope": "candidate",
     }
     return jwt.encode(payload, signing_secret, algorithm="HS256")
+
+
+def _issue_google_registration_token(subject: str, email: str) -> str:
+    """Bind an unmapped Google identity to one short-lived onboarding attempt."""
+    signing_secret = _validated_candidate_session_secret()
+    now = int(datetime.now(timezone.utc).timestamp())
+    payload = {
+        "sub": subject,
+        "email": email,
+        "scope": "google_registration",
+        "iat": now,
+        "exp": now + GOOGLE_REGISTRATION_TTL_SECONDS,
+        "jti": str(uuid.uuid4()),
+    }
+    return pyjwt.encode(payload, signing_secret, algorithm="HS256")
+
+
+def _verify_google_registration_token(token: str) -> tuple[str, str]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Google registration is required.")
+    try:
+        payload = pyjwt.decode(
+            token,
+            _validated_candidate_session_secret(),
+            algorithms=["HS256"],
+            options={"require": ["sub", "email", "scope", "iat", "exp", "jti"]},
+        )
+    except pyjwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired Google registration.") from exc
+    subject = payload.get("sub")
+    email = payload.get("email")
+    if (
+        payload.get("scope") != "google_registration"
+        or not isinstance(subject, str)
+        or not subject.strip()
+        or not isinstance(email, str)
+        or not email.strip()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or expired Google registration.")
+    return subject.strip(), email.strip()
+
+
+async def _create_google_identity_or_resolve_winner(
+    db: Any,
+    *,
+    candidate_id: str,
+    subject: str,
+    verified_email: str,
+) -> tuple[str, bool]:
+    """Insert one Google mapping or return a verified concurrent winner."""
+    try:
+        identity_result = await db.execute(text("""
+            INSERT INTO oauth_identities
+                (id, provider, provider_subject, candidate_id)
+            VALUES
+                (:id, 'google', :subject, :candidate_id)
+            ON CONFLICT (provider, provider_subject) DO NOTHING
+            RETURNING candidate_id
+        """), {
+            "id": str(uuid.uuid4()),
+            "subject": subject,
+            "candidate_id": candidate_id,
+        })
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.error("Google identity creation failed category=schema_or_identity_conflict")
+        raise HTTPException(
+            status_code=503,
+            detail="Google registration is temporarily unavailable.",
+        ) from exc
+
+    if identity_result.fetchone():
+        return candidate_id, True
+
+    await db.rollback()
+    winner_result = await db.execute(text("""
+        SELECT oi.candidate_id, c.email
+        FROM oauth_identities oi
+        JOIN candidates c ON c.id = oi.candidate_id
+        WHERE oi.provider = 'google'
+          AND oi.provider_subject = :subject
+        LIMIT 1
+    """), {"subject": subject})
+    winner = winner_result.fetchone()
+    if (
+        not winner
+        or not isinstance(winner[1], str)
+        or winner[1].strip().casefold() != verified_email.strip().casefold()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This Google identity cannot be linked automatically.",
+        )
+    return str(winner[0]), False
 
 
 def _verify_candidate_session_token(token: str, candidate_id: str) -> None:
@@ -4104,7 +4200,8 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
                              original_filename: str, resume_text: str = "",
                              existing_id: Optional[str] = None,
                              force_new: bool = False,
-                             telemetry_request_id: Optional[str] = None) -> str:
+                             telemetry_request_id: Optional[str] = None,
+                             google_identity: Optional[tuple[str, str]] = None) -> str:
     """
     Create or update a candidate record.
     Identity: existing_id (re-upload) > email match > fingerprint > new record.
@@ -4368,6 +4465,24 @@ async def _upsert_candidate(parsed: dict, fingerprint: str, file_bytes: bytes,
             from llm_telemetry import associate_candidate_in_transaction
             await associate_candidate_in_transaction(db, telemetry_request_id, cid)
 
+        if google_identity:
+            google_subject, verified_email = google_identity
+            try:
+                resolved_candidate_id, identity_created = (
+                    await _create_google_identity_or_resolve_winner(
+                        db,
+                        candidate_id=cid,
+                        subject=google_subject,
+                        verified_email=verified_email,
+                    )
+                )
+            except HTTPException:
+                await asyncio.to_thread(shutil.rmtree, DOCS_DIR / cid, True)
+                raise
+            if not identity_created:
+                await asyncio.to_thread(shutil.rmtree, DOCS_DIR / cid, True)
+                return resolved_candidate_id
+
         await db.commit()
 
     await profile_cache.invalidate(cid)
@@ -4423,11 +4538,15 @@ async def parse_resume(
     file: UploadFile = File(...),
     existing_id: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
+    google_registration: Optional[str] = Header(default=None, alias="X-Google-Registration"),
 ):
     # Public onboarding may create a new candidate, but an existing-candidate
     # continuation must prove ownership before any upload or processing work.
+    google_identity = None
     if existing_id:
         _verify_candidate_session_token(_get_bearer_token(authorization), existing_id)
+    elif google_registration:
+        google_identity = _verify_google_registration_token(google_registration)
 
     filename = (file.filename or "").lower()
     extension = Path(filename).suffix
@@ -4449,6 +4568,17 @@ async def parse_resume(
     parsed = await _parse_resume_with_llm(
         resume_text, candidate_id=existing_id, request_id=resume_request_id,
     )
+    if google_identity:
+        _, verified_google_email = google_identity
+        parsed_email = parsed.get("email")
+        if (
+            not isinstance(parsed_email, str)
+            or parsed_email.strip().casefold() != verified_google_email.casefold()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Resume email must match the verified Google account.",
+            )
     fingerprint = hashlib.sha256(file_bytes).hexdigest()
 
     # Reject duplicate resume when creating a new candidate (force_new path).
@@ -4466,7 +4596,16 @@ async def parse_resume(
     if existing_id:
         cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, existing_id=existing_id, telemetry_request_id=resume_request_id)
     else:
-        cid = await _upsert_candidate(parsed, fingerprint, file_bytes, file.filename or "resume.pdf", resume_text=resume_text, force_new=True, telemetry_request_id=resume_request_id)
+        cid = await _upsert_candidate(
+            parsed,
+            fingerprint,
+            file_bytes,
+            file.filename or "resume.pdf",
+            resume_text=resume_text,
+            force_new=True,
+            telemetry_request_id=resume_request_id,
+            google_identity=google_identity,
+        )
 
     asyncio.ensure_future(_trigger_matching(cid))
     asyncio.ensure_future(_seed_employment_gaps_after_parse(cid, parsed))
@@ -13685,6 +13824,57 @@ async def linkedin_callback(
 
 # ---------- Google OAuth ----------
 
+
+def _google_profile_from_userinfo(userinfo: Any) -> dict[str, Any]:
+    if not isinstance(userinfo, dict):
+        raise HTTPException(status_code=400, detail="Google identity response is invalid.")
+    subject = userinfo.get("sub")
+    if not isinstance(subject, str) or not subject.strip():
+        raise HTTPException(status_code=400, detail="Google identity response is invalid.")
+    email_verified = userinfo.get("email_verified") is True
+    raw_email = userinfo.get("email")
+    verified_email = (
+        raw_email.strip()
+        if email_verified and isinstance(raw_email, str) and raw_email.strip()
+        else None
+    )
+    return {
+        "name": userinfo.get("name") if isinstance(userinfo.get("name"), str) else "",
+        "email": verified_email,
+        "email_verified": email_verified,
+        "picture": userinfo.get("picture") if isinstance(userinfo.get("picture"), str) else "",
+        "google_id": subject.strip(),
+    }
+
+
+async def _resolve_google_identity(profile: dict[str, Any]) -> tuple[Optional[str], bool]:
+    """Resolve returning users by stable Google subject only.
+
+    An unmapped subject always follows the new-registration path when the
+    profile contains a verified email. Email equality is deliberately not
+    consulted for account selection or recovery decisions.
+    """
+    async with SessionLocal() as db:
+        identity_result = await db.execute(text("""
+            SELECT c.id, c.name, c.phone, c.summary, c.parsing_status
+            FROM oauth_identities oi
+            JOIN candidates c ON c.id = oi.candidate_id
+            WHERE oi.provider = 'google' AND oi.provider_subject = :subject
+            LIMIT 1
+        """), {"subject": profile["google_id"]})
+        existing = identity_result.mappings().fetchone()
+        if existing:
+            complete = bool(
+                existing["name"]
+                and existing["phone"]
+                and existing["summary"]
+                and existing["parsing_status"] == "completed"
+            )
+            return str(existing["id"]), not complete
+
+        return None, False
+
+
 @api_router.get("/auth/google/init")
 async def google_init(redirect: bool = True):
     if not GOOGLE_CLIENT_ID:
@@ -13745,7 +13935,13 @@ async def google_callback(
         )
         if token_resp.status_code != 200:
             raise HTTPException(status_code=400, detail="Google token exchange failed.")
-        access_token = token_resp.json().get("access_token")
+        try:
+            token_payload = token_resp.json()
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Google token exchange failed.") from exc
+        access_token = token_payload.get("access_token") if isinstance(token_payload, dict) else None
+        if not isinstance(access_token, str) or not access_token:
+            raise HTTPException(status_code=400, detail="Google token exchange failed.")
 
         userinfo_resp = await client.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -13753,42 +13949,42 @@ async def google_callback(
         )
         if userinfo_resp.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to fetch Google profile.")
-        userinfo = userinfo_resp.json()
+        try:
+            userinfo = userinfo_resp.json()
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Google identity response is invalid.") from exc
 
-    google_id = userinfo.get("sub", "")
-    name = userinfo.get("name", "")
-    email = userinfo.get("email", "")
-    picture = userinfo.get("picture", "")
-
-    candidate_id = None
-    needs_onboarding = False
-    async with SessionLocal() as db:
-        if email:
-            row = await db.execute(
-                text("SELECT id, name, phone, summary, parsing_status FROM candidates WHERE email = :email LIMIT 1"),
-                {"email": email},
-            )
-            existing = row.mappings().fetchone()
-            if existing:
-                candidate_id = str(existing["id"])
-                is_complete = bool(
-                    existing["name"]
-                    and existing["phone"]
-                    and existing["summary"]
-                    and existing["parsing_status"] == "completed"
-                )
-                needs_onboarding = not is_complete
+    profile = _google_profile_from_userinfo(userinfo)
+    candidate_id, account_linking_required = await _resolve_google_identity(profile)
+    registration_blocked = (
+        candidate_id is None
+        and not account_linking_required
+        and not profile.get("email")
+    )
+    needs_onboarding = (
+        candidate_id is None
+        and not account_linking_required
+        and not registration_blocked
+    )
 
     test_email = os.environ.get("TEST_CANDIDATE_EMAIL", "").strip()
-    if test_email and email.strip().lower() == test_email.lower():
+    if test_email and (profile.get("email") or "").strip().lower() == test_email.lower():
         needs_onboarding = True
 
     candidate_token = _issue_candidate_session_token(candidate_id) if candidate_id else ""
+    google_registration_token = ""
+    if needs_onboarding and profile.get("email"):
+        google_registration_token = _issue_google_registration_token(
+            profile["google_id"], profile["email"]
+        )
     exchange_code = await _create_oauth_exchange(transaction_id, {
         "candidate_id": candidate_id,
         "candidate_token": candidate_token,
-        "profile": {"name": name, "email": email, "picture": picture, "google_id": google_id},
+        "profile": profile,
         "needs_onboarding": needs_onboarding,
+        "google_registration_token": google_registration_token,
+        "account_linking_required": account_linking_required,
+        "google_registration_blocked": registration_blocked,
     })
     if candidate_id and not needs_onboarding:
         redirect_url = f"{FRONTEND_URL}/?exchange_code={urllib.parse.quote(exchange_code)}"

@@ -12,6 +12,7 @@ const DEFAULT_STATE = {
   parsedProfile: null, // full backend response
   candidateId: null, // UUID from the Dashboard candidate record
   candidateToken: null, // signed backend-issued candidate session token
+  googleRegistrationToken: null, // short-lived credential for atomic Google registration
   newlyOnboarded: false,
   transcription: false,
   muted: false,
@@ -46,6 +47,7 @@ export function saveOnboardingState(state) {
       parsedProfile: state.parsedProfile,
       candidateId: state.candidateId ?? null,
       candidateToken: state.candidateToken ?? null,
+      googleRegistrationToken: state.googleRegistrationToken ?? null,
       newlyOnboarded: state.newlyOnboarded ?? false,
       transcription: state.transcription,
       muted: state.muted,

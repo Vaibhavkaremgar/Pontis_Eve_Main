@@ -28,13 +28,22 @@ export default function GoogleAuth() {
         if (!response.ok) throw new Error("exchange_failed");
         return response.json();
       }).then((session) => {
+        if (session.google_registration_blocked) {
+          clearOnboardingState();
+          throw new Error("google_registration_blocked");
+        }
         const state = { ...loadOnboardingState(), authenticated: true,
           candidateId: session.candidate_id || null, candidateToken: session.candidate_token || null,
+          googleRegistrationToken: session.google_registration_token || null,
           profile: session.profile || session.linkedin_profile || null };
         if (session.needs_onboarding || !session.candidate_id) {
           clearOnboardingState(); saveOnboardingState(state); navigate("/onboarding", { replace: true });
         } else { saveOnboardingState(state); navigate("/dashboard", { replace: true }); }
-      }).catch(() => setError("Sign-in could not be completed. Please try again."));
+      }).catch((requestError) => setError(
+        requestError?.message === "google_registration_blocked"
+            ? "Google did not provide a verified email. Use a verified Google account or contact support."
+            : "Sign-in could not be completed. Please try again."
+      ));
       return;
     }
     const stored = loadOnboardingState();
