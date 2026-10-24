@@ -2,7 +2,7 @@ import React from "react";
 import axios from "axios";
 import { useSearchParams } from "react-router-dom";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const API = `${import.meta.env.VITE_BACKEND_URL}/api`;
 const plain = (value) => (value == null ? "" : String(value));
 const list = (value) => Array.isArray(value) ? value : [];
 const skillKey = (value) => plain(value).trim().toLowerCase();
