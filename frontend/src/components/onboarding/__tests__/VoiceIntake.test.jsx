@@ -12,6 +12,8 @@ import VoiceIntake from "../VoiceIntake";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
+let mockCallState = "listening";
+const mockStartCall = vi.fn();
 
 vi.mock("../../../hooks/useVapi", () => {
   const VAPI_STATES = {
@@ -27,15 +29,16 @@ vi.mock("../../../hooks/useVapi", () => {
     turns.map((t) => `${t.role === "assistant" ? "Assistant" : "Candidate"}: ${t.text}`).join("\n");
   function useVapi() {
     return {
-      callState: VAPI_STATES.LISTENING,
+      callState: mockCallState,
       transcript: mockTranscript,
       error: null,
       terminationReason: null,
-      startCall: () => {},
+      startCall: mockStartCall,
       stopCall: () => {},
       isMuted: false,
       toggleMute: () => {},
       callId: { current: null },
+      resetCall: vi.fn(),
     };
   }
   return { __esModule: true, default: useVapi, VAPI_STATES, buildTranscriptText };
@@ -51,6 +54,8 @@ describe("VoiceIntake transcript visibility", () => {
   let root;
 
   beforeEach(() => {
+    mockCallState = "listening";
+    mockStartCall.mockClear();
     mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -97,9 +102,51 @@ describe("VoiceIntake transcript visibility", () => {
   });
 });
 
+describe("VoiceIntake completion boundary", () => {
+  it("starts the VAPI call without completing onboarding", () => {
+    mockCallState = "idle";
+    const onComplete = vi.fn();
+    const container = document.createElement("div");
+    const root = ReactDOM.createRoot(container);
+    document.body.appendChild(container);
+
+    act(() => {
+      root.render(<VoiceIntake firstName="Alex" candidateId="cid-1" onComplete={onComplete} />);
+    });
+    act(() => {
+      container.querySelector('[data-testid="voice-start-call"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockStartCall).toHaveBeenCalledTimes(1);
+    expect(onComplete).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("does not complete onboarding for an error or interrupted call", async () => {
+    const onComplete = vi.fn();
+    const container = document.createElement("div");
+    const root = ReactDOM.createRoot(container);
+    document.body.appendChild(container);
+    mockCallState = "error";
+
+    act(() => {
+      root.render(<VoiceIntake firstName="Alex" candidateId="cid-1" onComplete={onComplete} />);
+    });
+    await act(async () => {});
+
+    expect(onComplete).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    container.remove();
+  });
+});
+
 describe("VoiceIntake progress terminal guard", () => {
   it("sends a distinct request ID with each regular progress snapshot", () => {
     jest.useFakeTimers();
+    mockCallState = "listening";
+    mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
     axios.post.mockClear();
     axios.post.mockResolvedValue({ data: {} });
     const container = document.createElement("div");

@@ -121,6 +121,12 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
     setCallState(VAPI_STATES.PROCESSING);
   }, []);
 
+  const resetCall = React.useCallback(() => {
+    setCallState(VAPI_STATES.IDLE);
+    setError(null);
+    setTerminationReason(null);
+  }, []);
+
   const [isMuted, setIsMuted] = React.useState(false);
   const isMutedRef = React.useRef(false);
 
@@ -156,6 +162,7 @@ export default function useVapi({ publicKey, assistantId, assistantOverrides }) 
     callId: callIdRef,
     startCall,
     stopCall,
+    resetCall,
     isMuted,
     toggleMute,
   };
