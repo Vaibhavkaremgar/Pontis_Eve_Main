@@ -192,7 +192,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     [firstName, resolvedCandidateId, candidateProfile]
   );
 
-  const { callState, transcript, error, terminationReason, startCall, stopCall, isMuted, toggleMute, callId } = useVapi({
+  const { callState, transcript, error, terminationReason, startCall, stopCall, resetCall, isMuted, toggleMute, callId } = useVapi({
     publicKey: PUBLIC_KEY,
     assistantId: ASSISTANT_ID,
     assistantOverrides,
@@ -271,7 +271,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         progressTimerRef.current = null;
       }
       if (!resolvedCandidateId || transcript.length === 0) {
-        onComplete({ status: "no_interaction" });
+        toast.info("Your voice intake was interrupted. You can resume it when you’re ready.");
+        if (callState !== VAPI_STATES.ERROR) resetCall?.();
         return;
       }
 
@@ -292,7 +293,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         console.warn("[voice-intake] interrupted-state save failed");
       }
 
-      onComplete({ status: "no_interaction" });
+      toast.info("Your voice intake was interrupted. You can resume it when you’re ready.");
+      if (callState !== VAPI_STATES.ERROR) resetCall?.();
     };
 
     const hasCandidateSpeech = transcript.some((t) => t.role === "user" && t.text?.trim());
@@ -310,8 +312,10 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
     const transcriptText = buildTranscriptText(transcript);
     if (!transcriptText.trim()) {
-      // Empty transcript — skip backend call, go to completed
-      onComplete({ status: "partial" });
+      // An empty transcript is not a successful intake. Keep the candidate on
+      // this step so they can retry instead of showing a misleading summary.
+      toast.info("We didn’t capture any responses. Please try the voice intake again.");
+      resetCall?.();
       return;
     }
 
@@ -331,26 +335,35 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       }, { headers: { "X-Request-ID": terminalRequestId } })
       .then((res) => {
         recordVoiceTiming({ response_at_ms: performance.now(), outcome: "success" });
-        onComplete(res.data);
+        if (isVoiceIntakeCompleteStatus(res.data?.status)) {
+          onComplete(res.data);
+        } else {
+          toast.info("Your intake is saved and can be resumed from here.");
+          resetCall?.();
+        }
       })
       .catch((err) => {
         recordVoiceTiming({ response_at_ms: performance.now(), outcome: "error" });
         console.error("Voice intake submission failed");
         toast.error("Couldn't save your voice intake — your profile is still intact.");
-        // Still advance — don't block onboarding
-        onComplete({ status: "partial" });
+        resetCall?.();
       })
       .finally(() => setSubmitting(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callState, terminationReason]);
 
   const handleStartCall = () => {
-    const vv = assistantOverrides?.variableValues || {};
+    terminalRef.current = false;
+    terminalRequestIdRef.current = null;
+    progressGenerationRef.current += 1;
     startCall();
   };
 
   const handleRetry = () => {
     setRetryCount((n) => n + 1);
+    terminalRef.current = false;
+    terminalRequestIdRef.current = null;
+    progressGenerationRef.current += 1;
     startCall();
   };
 
