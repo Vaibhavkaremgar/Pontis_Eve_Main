@@ -3,6 +3,7 @@ import axios from "axios";
 import { ChevronLeft, HelpCircle, Mail, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { getApiErrorMessage } from "../lib/apiError";
+import { API, BACKEND_URL } from "../lib/apiConfig";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
 import {
@@ -16,8 +17,6 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 const SUPPORT_EMAIL_TO = "info@pontis.one";
 
 const FAQ_ITEMS = [

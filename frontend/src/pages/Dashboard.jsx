@@ -23,11 +23,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import VoiceIntake from "../components/onboarding/VoiceIntake";
 import BillingPage from "../components/BillingPage";
 import { getVoiceIntakeCenterView } from "../lib/voiceIntakeRouting";
+import { API, BACKEND_URL } from "../lib/apiConfig";
 
 export { getVoiceIntakeCenterView };
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 
 // Use PDF.js rather than the browser's native PDF plugin so the preview is
 // just the document pages, without browser-controlled viewer chrome.
@@ -1219,23 +1218,26 @@ function Dashboard() {
                   firstName={(voiceIntakeProfile || userProfile).name?.split(" ")[0] || "there"}
               candidateId={candidateId}
               candidateProfile={voiceIntakeProfile || userProfile}
-              onComplete={(result) => {
+              onComplete={async (result) => {
                 if (result?.profile || result?.profile_updates) {
                   const updatePayload = result.profile || result.profile_updates || {};
                   setUserProfile((prev) => mergeProfileUpdatesForDisplay(prev, updatePayload));
                 }
-                // Always route to chat immediately; the voiceIntakeCenterView effect
-                // will override to "swipe" if the backend confirms completed.
+                // Keep the candidate in Chat while the backend confirms the
+                // outcome. A local Voice Intake result is not authoritative.
                 setCenterView("chat");
-                refreshProfile().then(() => {
-                  setUserProfile((latest) => {
-                    const backendStatus = latest.voice_intake_resume?.status;
-                    const completed = isVoiceIntakeCompleteStatus(backendStatus);
-                    const s = loadOnboardingState();
-                    saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
-                    return latest;
-                  });
-                });
+                const latest = await refreshProfile();
+                const completed = isVoiceIntakeCompleteStatus(latest?.voice_intake_resume?.status);
+                const s = loadOnboardingState();
+                saveOnboardingState({ ...s, voiceIntakeCompleted: completed });
+                if (completed && latest?.strengthPercent >= 90) {
+                  // Voice Intake is the completed navigation action. Release
+                  // its temporary view override only after the persisted
+                  // profile confirms completion, then restore Jobs.
+                  userChoseCenterViewRef.current = false;
+                  setRightPanelTab("profile");
+                  setCenterView("swipe");
+                }
               }}
             />
               </div>

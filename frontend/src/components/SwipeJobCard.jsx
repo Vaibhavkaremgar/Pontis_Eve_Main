@@ -5,9 +5,7 @@ import { MapPin, X, Heart, ExternalLink, ChevronLeft, Check } from "lucide-react
 import { toast } from "sonner";
 import { useApplicationFollowUp } from "./ApplicationFollowUp";
 import { normalizeJobDescription } from "../lib/jobDescription";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API } from "../lib/apiConfig";
 const SWIPE_THRESHOLD = 100;
 
 export const NOT_INTERESTED_REASONS = [
@@ -629,6 +627,12 @@ export default function SwipeJobDeck({ jobs, candidateId, onJobsChange, onDismis
   const pending = jobs.filter((j) => !j.locked && !actioned.has(j.id) && !j.tracked);
   const current = pending[index] ?? null;
   const total = pending.length;
+
+  // A refreshed recommendation list may replace the current array while the
+  // deck is still mounted. Keep the cursor valid for the new list.
+  React.useEffect(() => {
+    setIndex((currentIndex) => Math.min(currentIndex, Math.max(jobs.length - 1, 0)));
+  }, [jobs]);
 
   React.useEffect(() => {
     if (total > 0) exhaustionRequestedRef.current = false;
