@@ -1,12 +1,12 @@
 # Pontis Eve frontend
 
-The frontend is the candidate-facing React application for Pontis Eve. It provides sign-in and onboarding, the candidate dashboard and Living Profile, job recommendations and tracking, and resume editing. It is built with React 19, React Router, CRACO/Create React App, Tailwind CSS, and reusable Radix-based UI components.
+The frontend is the candidate-facing React application for Pontis Eve. It provides sign-in and onboarding, the candidate dashboard and Living Profile, job recommendations and tracking, and resume editing. It is built with React 19, React Router, Vite, Tailwind CSS, and reusable Radix-based UI components.
 
 The backend API lives in [`../backend`](../backend/README.md). For product context, see the repository-level [`README.md`](../README.md) and [`memory/PRD.md`](../memory/PRD.md).
 
 ## Requirements
 
-- Node.js and npm
+- Node.js and Yarn 1.22.22
 - The Pontis Eve backend running locally or reachable at a configured backend URL
 
 ## Local development
@@ -14,23 +14,23 @@ The backend API lives in [`../backend`](../backend/README.md). For product conte
 From this directory, install dependencies and start the development server:
 
 ```sh
-npm ci
-npm start
+yarn install --frozen-lockfile
+yarn start
 ```
 
-The application runs at [http://localhost:3000](http://localhost:3000). Configure the backend URL before starting the app. Create a `frontend/.env.local` file:
+The application runs at [http://localhost:5173](http://localhost:5173). Configure the backend URL before starting the app. Create a `frontend/.env.local` file:
 
 ```dotenv
-REACT_APP_BACKEND_URL=http://localhost:8000
+VITE_BACKEND_URL=http://localhost:8000
 ```
 
-The checked-in `frontend/.env.production` points to the production API. Create React App embeds variables beginning with `REACT_APP_` in the client bundle; do not put server secrets or OAuth client secrets in frontend environment files.
+The checked-in `frontend/.env.production` points to the production API. Vite exposes variables beginning with `VITE_` in the client bundle; do not put server secrets or OAuth client secrets in frontend environment files.
 
 Voice onboarding uses Vapi. To enable it in a local frontend, set the public Vapi key and assistant ID:
 
 ```dotenv
-REACT_APP_VAPI_PUBLIC_KEY=
-REACT_APP_EVE_VAPI_ASSISTANT_ID=
+VITE_VAPI_PUBLIC_KEY=
+VITE_EVE_VAPI_ASSISTANT_ID=
 ```
 
 These are browser-facing integration settings, not substitutes for backend webhook configuration. See the backend README for the corresponding server settings.
@@ -59,7 +59,7 @@ Candidate onboarding/session state is managed by `src/lib/onboardingStorage.js`.
 
 ## Current frontend architecture
 
-This repository currently uses React 19, Create React App through CRACO, JavaScript, and React Router. It is not a Next.js App Router application: it has no Next.js Server Components, `app/` directory, or TypeScript compilation pipeline. The Next.js-specific parts of [`../agents.md`](../agents.md) describe a future architectural target only if the project migrates frameworks; do not introduce Next.js conventions into the current application.
+This repository currently uses React 19, Vite, JavaScript, and React Router. It is not a Next.js App Router application: it has no Next.js Server Components, `app/` directory, or TypeScript compilation pipeline. The Next.js-specific parts of [`../agents.md`](../agents.md) describe a future architectural target only if the project migrates frameworks; do not introduce Next.js conventions into the current application.
 
 Application state is primarily implemented with component/page React hooks. `QueryClientProvider` is configured in `src/index.js` with TanStack Query, but current application data fetching is mostly manual Axios requests held in component state. When extending or refactoring server-data flows, use TanStack Query for cacheable backend state and keep transient UI state (dialogs, active tabs, drafts, and loading indicators) local to the owning component.
 
@@ -67,7 +67,7 @@ The current onboarding storage helper persists workflow data and the candidate b
 
 ## Frontend standards for new and refactored code
 
-Follow the frontend and shared boundary requirements in [`../agents.md`](../agents.md), while preserving the existing React/CRACO application architecture:
+Follow the frontend and shared boundary requirements in [`../agents.md`](../agents.md), while preserving the existing React/Vite application architecture:
 
 - **Separation of concerns:** Keep route/page composition in `src/pages/`, reusable product UI in `src/components/`, atomic presentation primitives in `src/components/ui/`, and shared business/data transformations in `src/lib/`. As features grow, co-locate feature-specific hooks and components rather than expanding global shared directories with feature-only code.
 - **State and network boundaries:** Use TanStack Query for server-owned state, scope query keys by candidate identity, and invalidate or update relevant data after mutations. Keep temporary interaction state local. Centralize API behavior through the shared Axios setup; avoid duplicating authentication and error handling in individual components.
@@ -80,39 +80,39 @@ Follow the frontend and shared boundary requirements in [`../agents.md`](../agen
 
 Run commands from `frontend/`.
 
-Run the Jest suite once (without watch mode):
+Run the Vitest suite once:
 
 ```sh
-npm test -- --watchAll=false
+yarn test
 ```
 
 Run a specific test file:
 
 ```sh
-npm test -- --watchAll=false --runTestsByPath src/lib/__tests__/profileNormalization.test.js
+yarn vitest run src/lib/__tests__/profileNormalization.test.js
 ```
 
 Run tests matching a name or substring:
 
 ```sh
-npm test -- --watchAll=false --runTestsByPath src/lib/__tests__/profileNormalization.test.js -t "test name"
+yarn vitest run src/lib/__tests__/profileNormalization.test.js -t "test name"
 ```
 
-Tests are colocated under `__tests__/` directories in `src/`. Jest runs through CRACO/React Scripts; use the `--watchAll=false` flag for a one-shot run.
+Tests are colocated under `__tests__/` directories in `src/` and run through Vitest.
 
-The current repository is configured for Jest through React Scripts/CRACO, not Vitest. [`../agents.md`](../agents.md) names Vitest/Testing Library as the target for frontend testing; do not assume Vitest commands work until the test tooling is deliberately migrated. Add tests using the configured Jest setup in the meantime.
+The current repository is configured for Vitest. [`../agents.md`](../agents.md) names Vitest/Testing Library as the target for frontend testing.
 
 Create a production build with:
 
 ```sh
-npm run build
+yarn build
 ```
 
 The generated static site is written to `build/`. `package.json` does not define a lint script; no frontend lint command is configured.
 
 ## Backend integration and authentication
 
-The API base URL is `REACT_APP_BACKEND_URL`, and application requests use the backend's `/api` routes. For local development, the frontend typically runs on port `3000` and the backend on port `8000`; the backend must allow the frontend origin through its `CORS_ORIGINS` setting.
+The API base URL is `VITE_BACKEND_URL`, and application requests use the backend's `/api` routes. For local development, the frontend typically runs on Vite's port `5173` and the backend on port `8000`; the backend must allow the frontend origin through its `CORS_ORIGINS` setting.
 
 Google and LinkedIn credentials and OAuth callbacks belong on the backend. The sign-in page redirects to backend authorization endpoints; after authentication, the backend redirects back with a short-lived exchange code, which the frontend exchanges for the candidate session. Do not handle OAuth client secrets or provider token exchange in frontend code.
 
@@ -122,4 +122,4 @@ The frontend currently stores the backend-issued candidate bearer token with onb
 
 ## Deployment
 
-Build with `npm run build` and deploy the contents of `build/` to the static hosting service. Set `REACT_APP_BACKEND_URL` to the intended API origin in the build environment; frontend environment variables are baked into the static assets at build time. Configure the hosting service to serve the SPA entry point for application routes such as `/dashboard` and `/resume-editor`.
+Build with `yarn build` and deploy the contents of `build/` to the static hosting service. Set the configured Vite backend URL to the intended API origin in the build environment; frontend environment variables are baked into the static assets at build time. Configure the hosting service to serve the SPA entry point for application routes such as `/dashboard` and `/resume-editor`.

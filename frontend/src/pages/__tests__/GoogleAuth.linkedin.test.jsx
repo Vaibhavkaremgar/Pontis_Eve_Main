@@ -5,8 +5,8 @@ import GoogleAuth from "../GoogleAuth";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-jest.mock("framer-motion", () => ({ motion: { div: ({ children, ...props }) => <div {...props}>{children}</div> } }));
-jest.mock("react-router-dom", () => ({
+vi.mock("framer-motion", () => ({ motion: { div: ({ children, ...props }) => <div {...props}>{children}</div> } }));
+vi.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
   useSearchParams: () => [new URLSearchParams(), jest.fn()],
 }), { virtual: true });
