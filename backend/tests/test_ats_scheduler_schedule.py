@@ -83,3 +83,54 @@ def test_scheduler_initialization_is_idempotent_and_does_not_sync(monkeypatch):
         assert calls == []
     finally:
         scheduler.stop_scheduler()
+
+
+def test_disabled_scheduler_has_no_instance_or_jobs(monkeypatch):
+    scheduler.stop_scheduler()
+    monkeypatch.setenv("JOB_SCHEDULER_ENABLED", "false")
+
+    scheduler.start_scheduler()
+
+    assert scheduler._scheduler is None
+    assert scheduler._sync_lock is None
+
+
+def test_disabled_startup_stops_an_existing_scheduler(monkeypatch):
+    scheduler.stop_scheduler()
+    monkeypatch.setenv("JOB_SCHEDULER_ENABLED", "true")
+    scheduler.start_scheduler()
+    assert scheduler._scheduler is not None and scheduler._scheduler.running
+
+    monkeypatch.setenv("JOB_SCHEDULER_ENABLED", "false")
+    scheduler.start_scheduler()
+
+    assert scheduler._scheduler is None
+
+
+def test_scheduler_flag_truthy_values_and_invalid_values(monkeypatch):
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("JOB_SCHEDULER_ENABLED", value)
+        assert scheduler._scheduler_enabled() is True
+
+    for value in ("0", "false", "", "invalid"):
+        monkeypatch.setenv("JOB_SCHEDULER_ENABLED", value)
+        assert scheduler._scheduler_enabled() is False
+
+    monkeypatch.delenv("JOB_SCHEDULER_ENABLED", raising=False)
+    assert scheduler._scheduler_enabled() is True
+
+
+def test_disabled_guarded_sync_does_not_call_ingestion(monkeypatch):
+    calls = []
+
+    async def sync_jobs():
+        calls.append("sync")
+
+    monkeypatch.setenv("JOB_SCHEDULER_ENABLED", "false")
+    monkeypatch.setattr(scheduler, "sync_jobs", sync_jobs)
+    monkeypatch.setattr(scheduler, "_sync_lock", __import__("asyncio").Lock())
+
+    import asyncio
+    asyncio.run(scheduler._sync_jobs_guarded())
+
+    assert calls == []

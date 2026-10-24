@@ -64,7 +64,7 @@ Run the frontend separately from `frontend/`, set `REACT_APP_BACKEND_URL=http://
 | `QDRANT_URL`, `QDRANT_API_KEY` | Qdrant vector search service. |
 | `VAPI_PUBLIC_KEY`, `EVE_VAPI_ASSISTANT_ID`, `VAPI_WEBHOOK_SECRET` | Voice-intake server configuration and webhook verification. Browser-safe key/assistant ID are also configured in the frontend. |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Payment order verification and webhook validation. |
-| `JOB_SCHEDULER_ENABLED` | Disable recurring job ingestion with `false`; enabled by default. |
+| `JOB_SCHEDULER_ENABLED` | Global automatic job-ingestion switch. Defaults to enabled; `1`, `true`, `yes`, and `on` enable it, while any other value (including `false`, empty, or invalid values) disables automatic scheduling. |
 | `FANTASTIC_ENABLED`, `FANTASTIC_JOBS_API_KEY`, `FANTASTIC_TIME_FRAME` | Fantastic job connector settings. |
 | `THEIRSTACK_ENABLED`, `THEIRSTACK_API_KEY` | TheirStack job connector settings. |
 | `GREENHOUSE_ENABLED`, `LEVER_ENABLED`, `ASHBY_ENABLED` | Provider-specific ATS ingestion flags; each defaults to `true` when absent or invalid. Set to `false` to skip fetching, normalization, metadata retries, and reconciliation without changing stored jobs. |
@@ -77,6 +77,7 @@ Optional settings also exist for email, internal-service authentication, telemet
 - Root-level modules contain domain services for profile strength, candidate/job matching, profile caching, LLM provider key rotation, and telemetry.
 - `app/job_ingestion/connectors/` fetches provider job-board data. `normalize.py` maps provider records into a shared shape; `job_ingestion_service.py` owns canonical job persistence; `job_skill_extraction.py` enriches incomplete records.
 - `app/job_ingestion/scheduler.py` coordinates recurring sync, metadata retries, and lifecycle reconciliation. `embedding_service.py` builds job vectors; `qdrant_service.py` stores and retrieves them.
+- `JOB_SCHEDULER_ENABLED` controls automatic scheduled ingestion. When enabled, the ATS and optional provider syncs run at 12:00 AM, 6:00 AM, 12:00 PM, and 6:00 PM IST; provider expiration cleanup runs at 12:30 PM IST. Provider-specific flags remain independent. Changing the Railway variable requires restarting or redeploying the backend process. Intentional manual/CLI maintenance commands remain independently usable.
 - Candidate document metadata is stored in PostgreSQL; document files live under `EVE_DOCS_DIR`. Deployments must mount durable storage at this path.
 - `migrations/` contains standalone SQL migrations. `railway.json` runs the listed migration commands sequentially before deployment.
 
