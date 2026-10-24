@@ -343,7 +343,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
             resetCall?.();
           })
           .finally(() => setSubmitting(false));
-      }, 350);
+      }, 1000);
       return () => {
         if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current);
         terminalTimerRef.current = null;
