@@ -8,6 +8,7 @@ from app.job_ingestion.normalize import (
     normalize_lever,
     normalize_workable,
 )
+from app.job_ingestion.feature_flags import ProviderDisabledError, provider_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,11 @@ class JobCollector:
         """
 
         ats_type = ats_type.lower().strip()
+
+        if ats_type in {"greenhouse", "lever", "ashby"} and not provider_enabled(ats_type):
+            raise ProviderDisabledError(
+                f"Provider {ats_type!r} is disabled by its feature flag"
+            )
 
         logger.info(
             "Collecting jobs: company=%s ats=%s identifier=%s",
