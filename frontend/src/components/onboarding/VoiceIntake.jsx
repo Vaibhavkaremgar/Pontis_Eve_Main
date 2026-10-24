@@ -176,8 +176,13 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
   const progressGenerationRef = React.useRef(0);
   const terminalRef = React.useRef(false);
   const terminalRequestIdRef = React.useRef(null);
+  const terminalTimerRef = React.useRef(null);
+  const transcriptRef = React.useRef([]);
   const resolvedCandidateId = resolveVoiceIntakeCandidateId(candidateId, candidateProfile);
 
+  // Vapi can deliver the final transcript message just after call-end. Keep
+  // the latest transcript available to terminal finalization instead of
+  // freezing the first processing render's snapshot.
   // Persist progress (number of candidate turns answered) so it survives refresh/logout
   const persistProgress = React.useCallback((turns) => {
     const candidateTurns = turns.filter((t) => t.role === "user" && t.final !== false).length;
@@ -197,6 +202,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     assistantId: ASSISTANT_ID,
     assistantOverrides,
   });
+
+  transcriptRef.current = transcript;
 
   // Persist progress whenever transcript grows
   React.useEffect(() => {
@@ -261,7 +268,8 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       call_end_at_ms: performance.now(),
     });
 
-    const persistInterruptedState = async () => {
+    const finalizeCall = async () => {
+      const finalTranscript = transcriptRef.current;
       // The transcript effect schedules a best-effort snapshot save.  Cancel
       // that snapshot before the terminal save so an older progress payload
       // cannot overwrite the answered/current-question state while we route
@@ -270,7 +278,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         clearTimeout(progressTimerRef.current);
         progressTimerRef.current = null;
       }
-      if (!resolvedCandidateId || transcript.length === 0) {
+      if (!resolvedCandidateId || finalTranscript.length === 0) {
         toast.info("Your voice intake was interrupted. You can resume it when you’re ready.");
         if (callState !== VAPI_STATES.ERROR) resetCall?.();
         return;
@@ -278,15 +286,15 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
 
       try {
         await axios.post(`${API}/voice/candidate-intake/progress`, {
-          transcript: buildTranscriptText(transcript),
-          voice_notes: transcript.map((turn) => ({
+          transcript: buildTranscriptText(finalTranscript),
+          voice_notes: finalTranscript.map((turn) => ({
             role: turn.role,
             text: turn.text,
             final: turn.final !== false,
           })),
           candidate_id: resolvedCandidateId,
           vapi_call_id: callId.current || null,
-          transcript_revision: String(transcript.length),
+          transcript_revision: String(finalTranscript.length),
           termination_reason: terminationReason || "disconnect",
         }, { headers: { "X-Request-ID": terminalRequestId } });
       } catch (err) {
@@ -297,20 +305,66 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
       if (callState !== VAPI_STATES.ERROR) resetCall?.();
     };
 
-    const hasCandidateSpeech = transcript.some((t) => t.role === "user" && t.text?.trim());
+    if (callState === VAPI_STATES.PROCESSING) {
+      terminalTimerRef.current = setTimeout(() => {
+        const settledTranscript = transcriptRef.current;
+        const hasCandidateSpeech = settledTranscript.some((t) => t.role === "user" && t.text?.trim());
+        if (!hasCandidateSpeech) {
+          finalizeCall();
+          return;
+        }
+        // Re-enter this effect's terminal path with the settled transcript.
+        // The ref is authoritative because Vapi may emit the final message
+        // after call-end without changing callState.
+        const transcriptText = buildTranscriptText(settledTranscript);
+        if (!transcriptText.trim()) {
+          toast.info("We didn’t capture any responses. Please try the voice intake again.");
+          resetCall?.();
+          return;
+        }
+        setSubmitting(true);
+        if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+        axios.post(`${API}/voice/candidate-intake`, {
+          transcript: transcriptText,
+          voice_notes: settledTranscript.map((t) => ({ role: t.role, text: t.text })),
+          candidate_id: resolvedCandidateId,
+          vapi_call_id: callId.current || null,
+          termination_reason: terminationReason || "disconnect",
+          transcript_revision: String(settledTranscript.length),
+        }, { headers: { "X-Request-ID": terminalRequestId } })
+          .then((res) => {
+            recordVoiceTiming({ response_at_ms: performance.now(), outcome: "success" });
+            if (isVoiceIntakeCompleteStatus(res.data?.status)) onComplete(res.data);
+            else { toast.info("Your intake is saved and can be resumed from here."); resetCall?.(); }
+          })
+          .catch(() => {
+            recordVoiceTiming({ response_at_ms: performance.now(), outcome: "error" });
+            toast.error("Couldn't save your voice intake — your profile is still intact.");
+            resetCall?.();
+          })
+          .finally(() => setSubmitting(false));
+      }, 350);
+      return () => {
+        if (terminalTimerRef.current) clearTimeout(terminalTimerRef.current);
+        terminalTimerRef.current = null;
+      };
+    }
+
+    const finalTranscript = transcriptRef.current;
+    const hasCandidateSpeech = finalTranscript.some((t) => t.role === "user" && t.text?.trim());
     if (callState === VAPI_STATES.ERROR) {
       // Errors are always resumable; never send them through the completion path.
-      persistInterruptedState();
+      finalizeCall();
       return;
     }
     if (!hasCandidateSpeech) {
       // The candidate hung up before answering, so persist Eve's last question
       // and the interrupted state before we navigate back to chat.
-      persistInterruptedState();
+      finalizeCall();
       return;
     }
 
-    const transcriptText = buildTranscriptText(transcript);
+    const transcriptText = buildTranscriptText(finalTranscript);
     if (!transcriptText.trim()) {
       // An empty transcript is not a successful intake. Keep the candidate on
       // this step so they can retry instead of showing a misleading summary.
@@ -327,11 +381,11 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
     axios
       .post(`${API}/voice/candidate-intake`, {
         transcript: transcriptText,
-        voice_notes: transcript.map((t) => ({ role: t.role, text: t.text })),
+        voice_notes: finalTranscript.map((t) => ({ role: t.role, text: t.text })),
         candidate_id: resolvedCandidateId,
           vapi_call_id: callId.current || null,
           termination_reason: terminationReason || "disconnect",
-        transcript_revision: String(transcript.length),
+        transcript_revision: String(finalTranscript.length),
       }, { headers: { "X-Request-ID": terminalRequestId } })
       .then((res) => {
         recordVoiceTiming({ response_at_ms: performance.now(), outcome: "success" });
@@ -349,6 +403,7 @@ export default function VoiceIntake({ firstName, candidateId, onComplete, candid
         resetCall?.();
       })
       .finally(() => setSubmitting(false));
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callState, terminationReason]);
 
