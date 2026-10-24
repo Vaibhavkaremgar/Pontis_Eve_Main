@@ -67,6 +67,7 @@ Run the frontend separately from `frontend/`, set `REACT_APP_BACKEND_URL=http://
 | `JOB_SCHEDULER_ENABLED` | Disable recurring job ingestion with `false`; enabled by default. |
 | `FANTASTIC_ENABLED`, `FANTASTIC_JOBS_API_KEY`, `FANTASTIC_TIME_FRAME` | Fantastic job connector settings. |
 | `THEIRSTACK_ENABLED`, `THEIRSTACK_API_KEY` | TheirStack job connector settings. |
+| `GREENHOUSE_ENABLED`, `LEVER_ENABLED`, `ASHBY_ENABLED` | Provider-specific ATS ingestion flags; each defaults to `true` when absent or invalid. Set to `false` to skip fetching, normalization, metadata retries, and reconciliation without changing stored jobs. |
 
 Optional settings also exist for email, internal-service authentication, telemetry, and embeddings. Configure them only when enabling those integrations. Do not commit `.env` files, secrets, or production credentials.
 

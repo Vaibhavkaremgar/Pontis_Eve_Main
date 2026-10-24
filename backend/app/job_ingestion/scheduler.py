@@ -10,6 +10,7 @@ from sqlalchemy import text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.triggers.cron import CronTrigger
+from app.job_ingestion.feature_flags import provider_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
     # These collectors return the complete public board in one response.  Do
     # not add bounded/search-feed providers here: absence from those feeds is
     # not evidence that a stored job closed.
+    if ats_type in {"ashby", "lever", "greenhouse"} and not provider_enabled(ats_type):
+        logger.info("[job-lifecycle] provider=%s reconciliation skipped because provider is disabled", ats_type)
+        return []
     if ats_type not in {"ashby", "lever", "greenhouse", "workable"}:
         logger.info(
             "[job-lifecycle] provider=%s snapshot_status=unsupported_for_reconciliation "
@@ -236,6 +240,11 @@ async def sync_jobs() -> None:
         identifier = company["identifier"]
 
         logger.info("[job-scheduler] syncing company=%s ats=%s", company_name, ats_type)
+
+        normalized_ats_type = str(ats_type or "").strip().casefold()
+        if normalized_ats_type in {"greenhouse", "lever", "ashby"} and not provider_enabled(normalized_ats_type):
+            logger.info("[job-scheduler] skipping disabled provider company=%s ats=%s", company_name, normalized_ats_type)
+            continue
 
         try:
             jobs = collector.collect_company_jobs(ats_type, identifier, company_name)
@@ -440,6 +449,10 @@ async def retry_pending_metadata_extraction() -> int:
         rows = result.mappings().all()
 
         for row in rows:
+            ats_type = str(row.get("ats_type") or "").strip().casefold()
+            if ats_type in {"greenhouse", "lever", "ashby"} and not provider_enabled(ats_type):
+                logger.info("[job-scheduler] skipping metadata retry for disabled provider=%s job_id=%s", ats_type, row.get("id"))
+                continue
             job = dict(row)
             try:
                 job = await extract_missing_job_skills(job)
@@ -465,7 +478,7 @@ async def sync_fantastic_jobs() -> dict:
     from app.job_ingestion.connectors.fantastic import FantasticClient
     from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
-    if os.getenv("FANTASTIC_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+    if not provider_enabled("fantastic"):
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
     logger.info("[fantastic] starting sync")
     client = FantasticClient()
@@ -564,7 +577,7 @@ async def sync_theirstack_jobs() -> dict[str, int]:
     from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
     from app.job_ingestion.normalize import normalize_theirstack
-    if os.getenv("THEIRSTACK_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+    if not provider_enabled("theirstack"):
         return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
     try: raw_jobs = await TheirStackClient().fetch_jobs()
     except Exception as exc:
@@ -724,18 +737,18 @@ def start_scheduler() -> None:
         _scheduler = None
         _sync_lock = None
         raise
-    if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    if provider_enabled("fantastic"):
         fantastic_job = _scheduler.add_job(
             _sync_fantastic_guarded,
             trigger=_fantastic_sync_trigger(),
             id="fantastic_job_sync", replace_existing=True,
         )
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
-    if os.getenv("THEIRSTACK_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    if provider_enabled("theirstack"):
         _scheduler.add_job(_sync_theirstack_guarded, trigger=_fantastic_sync_trigger(), id="theirstack_job_sync", replace_existing=True)
-    if os.getenv("FANTASTIC_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    if provider_enabled("fantastic"):
         _scheduler.add_job(cleanup_fantastic_expired_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="fantastic_expiration_cleanup", replace_existing=True)
-    if os.getenv("THEIRSTACK_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    if provider_enabled("theirstack"):
         _scheduler.add_job(cleanup_theirstack_closed_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="theirstack_expiration_cleanup", replace_existing=True)
     next_run = job.next_run_time
     if next_run is not None:
