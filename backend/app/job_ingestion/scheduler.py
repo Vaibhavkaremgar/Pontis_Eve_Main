@@ -405,6 +405,9 @@ def _same_ats_identity(job: dict, existing: dict | None) -> bool:
 
 async def _sync_jobs_guarded() -> None:
     """Wrapper that prevents overlapping runs."""
+    if not _scheduler_enabled():
+        logger.info("[job-scheduler] job_id=job_sync skipped because JOB_SCHEDULER_ENABLED=false")
+        return
     if _sync_lock is None:
         logger.warning("[job-scheduler] sync called before scheduler was started — skipping")
         return
@@ -616,6 +619,9 @@ async def sync_theirstack_jobs() -> dict[str, int]:
     logger.info("[theirstack] sync completed %s", stats); return stats
 
 async def _sync_theirstack_guarded() -> None:
+    if not _scheduler_enabled():
+        logger.info("[job-scheduler] job_id=theirstack_job_sync skipped because JOB_SCHEDULER_ENABLED=false")
+        return
     logger.info("[job-scheduler] job_id=theirstack_job_sync started")
     try:
         await sync_theirstack_jobs()
@@ -660,6 +666,9 @@ def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
 
 
 async def _sync_fantastic_guarded() -> None:
+    if not _scheduler_enabled():
+        logger.info("[job-scheduler] job_id=fantastic_job_sync skipped because JOB_SCHEDULER_ENABLED=false")
+        return
     logger.info("[job-scheduler] job_id=fantastic_job_sync started")
     try:
         await sync_fantastic_jobs()
@@ -670,6 +679,9 @@ async def _sync_fantastic_guarded() -> None:
 
 
 async def _cleanup_fantastic_expired_jobs_guarded() -> None:
+    if not _scheduler_enabled():
+        logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup skipped because JOB_SCHEDULER_ENABLED=false")
+        return
     logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup started")
     try:
         await cleanup_fantastic_expired_jobs()
@@ -680,6 +692,9 @@ async def _cleanup_fantastic_expired_jobs_guarded() -> None:
 
 
 async def _cleanup_theirstack_closed_jobs_guarded() -> None:
+    if not _scheduler_enabled():
+        logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup skipped because JOB_SCHEDULER_ENABLED=false")
+        return
     logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup started")
     try:
         await cleanup_theirstack_closed_jobs()
@@ -711,6 +726,9 @@ def start_scheduler() -> None:
     global _scheduler, _sync_lock
 
     if not _scheduler_enabled():
+        # A lifecycle restart can reuse this module in-process. Ensure a
+        # previously started instance cannot survive a disabled startup.
+        stop_scheduler()
         logger.info("[job-scheduler] scheduler skipped because JOB_SCHEDULER_ENABLED=false")
         return
 
@@ -747,9 +765,9 @@ def start_scheduler() -> None:
     if provider_enabled("theirstack"):
         _scheduler.add_job(_sync_theirstack_guarded, trigger=_fantastic_sync_trigger(), id="theirstack_job_sync", replace_existing=True)
     if provider_enabled("fantastic"):
-        _scheduler.add_job(cleanup_fantastic_expired_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="fantastic_expiration_cleanup", replace_existing=True)
+        _scheduler.add_job(_cleanup_fantastic_expired_jobs_guarded, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="fantastic_expiration_cleanup", replace_existing=True)
     if provider_enabled("theirstack"):
-        _scheduler.add_job(cleanup_theirstack_closed_jobs, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="theirstack_expiration_cleanup", replace_existing=True)
+        _scheduler.add_job(_cleanup_theirstack_closed_jobs_guarded, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="theirstack_expiration_cleanup", replace_existing=True)
     next_run = job.next_run_time
     if next_run is not None:
         logger.info(
@@ -770,7 +788,9 @@ def stop_scheduler() -> None:
     """Shut down the APScheduler gracefully."""
     global _scheduler, _sync_lock
     if _scheduler and _scheduler.running:
-        _scheduler.shutdown(wait=False)
+        # Let an in-flight database operation finish; shutdown prevents any
+        # future APScheduler jobs from being dispatched.
+        _scheduler.shutdown(wait=True)
         logger.info("[job-scheduler] scheduler shut down")
     _scheduler = None
     _sync_lock = None
