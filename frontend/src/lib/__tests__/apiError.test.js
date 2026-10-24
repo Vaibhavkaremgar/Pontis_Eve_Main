@@ -1,4 +1,7 @@
-jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
+vi.mock("sonner", () => {
+  const error = vi.fn();
+  return { __esModule: true, toast: { error } };
+});
 
 import { toast } from "sonner";
 import { getApiErrorMessage, notifyApiError } from "../apiError";

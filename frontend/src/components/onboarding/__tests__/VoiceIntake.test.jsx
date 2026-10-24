@@ -13,7 +13,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockTranscript = [{ role: "assistant", text: "Hello, tell me about yourself.", final: true }];
 
-jest.mock("../../../hooks/useVapi", () => {
+vi.mock("../../../hooks/useVapi", () => {
   const VAPI_STATES = {
     IDLE: "idle",
     CONNECTING: "connecting",
@@ -41,7 +41,10 @@ jest.mock("../../../hooks/useVapi", () => {
   return { __esModule: true, default: useVapi, VAPI_STATES, buildTranscriptText };
 });
 
-jest.mock("axios", () => ({ post: jest.fn(() => Promise.resolve({ data: {} })) }));
+vi.mock("axios", () => {
+  const post = jest.fn(() => Promise.resolve({ data: {} }));
+  return { __esModule: true, default: { post }, post };
+});
 
 describe("VoiceIntake transcript visibility", () => {
   let container;
