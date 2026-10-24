@@ -10,11 +10,12 @@ import { toast } from "sonner";
 import useVapi, { VAPI_STATES, buildTranscriptText } from "../../hooks/useVapi";
 import { loadOnboardingState, saveOnboardingState, isVoiceIntakeCompleteStatus } from "../../lib/onboardingStorage";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const PUBLIC_KEY = process.env.REACT_APP_VAPI_PUBLIC_KEY;
-const ASSISTANT_ID = process.env.REACT_APP_EVE_VAPI_ASSISTANT_ID;
+const PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_KEY;
+const ASSISTANT_ID =
+  import.meta.env.VITE_EVE_VAPI_ASSISTANT_ID;
 
 // Resume parsing creates the candidate before this step and returns its ID in
 // the parsed profile.  During the first onboarding render, React state can

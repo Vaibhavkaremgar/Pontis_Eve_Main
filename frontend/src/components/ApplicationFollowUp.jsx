@@ -3,7 +3,7 @@ import axios from "axios";
 import { BriefcaseBusiness, CheckCircle2, X } from "lucide-react";
 import { toast } from "sonner";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const API = `${import.meta.env.VITE_BACKEND_URL}/api`;
 
 const storageKey = (candidateId) => `eve:application-follow-up:${candidateId}`;
 
