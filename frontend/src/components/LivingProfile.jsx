@@ -7,9 +7,8 @@ import { useApplicationFollowUp } from "./ApplicationFollowUp";
 import { formatEducationDateRange, formatEducationScore, formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
 import { buildProfileBio } from "../lib/profileBio";
 import { normalizeJobDescription } from "../lib/jobDescription";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { loadOnboardingState } from "../lib/onboardingStorage";
+import { API, BACKEND_URL } from "../lib/apiConfig";
 
 function sanitizeHtml(str) {
   if (!str || typeof str !== "string") return "";
@@ -274,6 +273,7 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const inputRef = React.useRef(null);
   const [uploading, setUploading] = React.useState(false);
   const [photoUrl, setPhotoUrl] = React.useState(user.avatar || null);
+  const [renderedPhotoSrc, setRenderedPhotoSrc] = React.useState(null);
   const [deleting, setDeleting] = React.useState(false);
   const resolvedPhotoSrc = React.useMemo(() => resolvePhotoSrc(photoUrl), [photoUrl]);
   const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
@@ -281,9 +281,36 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
 
   React.useEffect(() => {
-    if (!resolvedPhotoSrc) return;
-    console.debug("[ProfilePhotoUpload] resolved image src:", resolvedPhotoSrc);
-  }, [resolvedPhotoSrc]);
+    if (!resolvedPhotoSrc) {
+      setRenderedPhotoSrc(null);
+      return undefined;
+    }
+
+    if (/^https?:\/\//i.test(photoUrl)) {
+      setRenderedPhotoSrc(resolvedPhotoSrc);
+      return undefined;
+    }
+
+    let active = true;
+    let objectUrl = null;
+    const candidateToken = loadOnboardingState().candidateToken;
+
+    axios.get(photoUrl, {
+      responseType: "blob",
+      headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
+    }).then((response) => {
+      if (!active) return;
+      objectUrl = window.URL.createObjectURL(response.data);
+      setRenderedPhotoSrc(objectUrl);
+    }).catch(() => {
+      if (active) setRenderedPhotoSrc(null);
+    });
+
+    return () => {
+      active = false;
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [photoUrl, resolvedPhotoSrc]);
 
   const clearInput = () => {
     if (inputRef.current) inputRef.current.value = "";
@@ -334,9 +361,9 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
 
   return (
     <div className="relative w-14 h-14 shrink-0 group" data-testid="candidate-photo">
-      {photoUrl ? (
+      {photoUrl && renderedPhotoSrc ? (
         <img
-          src={resolvedPhotoSrc}
+          src={renderedPhotoSrc}
           alt={user.name || "Candidate profile photo"}
           className="w-14 h-14 rounded-full object-cover"
         />
@@ -385,13 +412,17 @@ const editorInput = "w-full rounded-lg border border-black/10 bg-white px-3 py-2
 function csv(values) { return (values || []).join(", "); }
 function parseCsv(value) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
 
-function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
+export function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
   const [draft, setDraft] = React.useState(() => ({
     name: profile.name || "", headline: profile.headline || profile.current_role || "", location: profile.location || "",
     experience_years: profile.experience_years ?? "", availability: profile.availability || "", salary_expectation: profile.salary_expectation || "", bio: profile.bio || generateBio(profile),
     work_experience: (profile.experience || []).map((item) => ({ title: item.title || "", company: item.company || "", dates: item.dates || "", description: item.description || item.summary || "" })),
     education: (profile.education || []).map((item) => ({ degree: item.degree || "", institution: item.institution || "", dates: item.dates || "" })),
-    skills: csv(profile.keySkills), certifications: csv(profile.certifications), preferred_roles: csv(profile.preferred_roles),
+    skills: csv(profile.keySkills),
+    certifications: Array.isArray(profile.certifications)
+      ? profile.certifications.map((certification) => String(certification ?? ""))
+      : parseCsv(String(profile.certifications ?? "")),
+    preferred_roles: csv(profile.preferred_roles),
     additional_information: profile.additional_information || "", hobbies: csv(profile.hobbies || profile.interests || profile.raw_data?.hobbies),
   }));
   const [saving, setSaving] = React.useState(false);
@@ -404,7 +435,9 @@ function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
     try {
       await axios.put(`${API}/candidate/${candidateId}/profile`, {
         ...draft, experience_years: draft.experience_years === "" ? 0 : Number(draft.experience_years),
-        skills: parseCsv(draft.skills), certifications: parseCsv(draft.certifications), preferred_roles: parseCsv(draft.preferred_roles), hobbies: parseCsv(draft.hobbies),
+        skills: parseCsv(draft.skills),
+        certifications: draft.certifications.map((certification) => certification.trim()).filter(Boolean),
+        preferred_roles: parseCsv(draft.preferred_roles), hobbies: parseCsv(draft.hobbies),
       });
       await onSaved?.(); onClose();
     } catch (err) { setError(err?.response?.data?.detail || "Could not save the profile. Please try again."); }
@@ -420,7 +453,49 @@ function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
         <label className="block text-xs font-medium text-[#4A4A48]">Summary<textarea rows="4" value={draft.bio} onChange={(e) => field('bio',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
         <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Work experience</h3><button type="button" onClick={() => field('work_experience',[...draft.work_experience,{title:'',company:'',dates:'',description:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add experience</button></div>{draft.work_experience.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-2"><button onClick={() => removeRecord('work_experience',index)} className="absolute right-2 top-2" aria-label="Remove experience"><X className="h-4 w-4"/></button>{[['title','Job title'],['company','Company'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('work_experience',index,key,e.target.value)} className={editorInput}/>)}<textarea aria-label="Description" placeholder="Description" value={item.description} onChange={(e) => recordField('work_experience',index,'description',e.target.value)} className={`${editorInput} sm:col-span-2`} rows="3"/></div>)}</div>
         <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Education</h3><button type="button" onClick={() => field('education',[...draft.education,{degree:'',institution:'',dates:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add education</button></div>{draft.education.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-3"><button onClick={() => removeRecord('education',index)} className="absolute right-2 top-2" aria-label="Remove education"><X className="h-4 w-4"/></button>{[['degree','Degree'],['institution','Institution'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('education',index,key,e.target.value)} className={editorInput}/>)}</div>)}</div>
-        {[['skills','Skills'],['certifications','Certifications'],['preferred_roles','Preferred roles'],['hobbies','Hobbies & interests']].map(([key,label]) => <label key={key} className="block text-xs font-medium text-[#4A4A48]">{label}<input value={draft[key]} onChange={(e) => field(key,e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>)}
+        <label className="block text-xs font-medium text-[#4A4A48]">Skills<input value={draft.skills} onChange={(e) => field('skills',e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Certifications</h3>
+            <button
+              type="button"
+              onClick={() => field('certifications', [...draft.certifications, ""])}
+              className="flex items-center gap-1 text-xs text-[#62578F]"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add certificate
+            </button>
+          </div>
+          <div className="space-y-2">
+            {draft.certifications.map((certification, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <input
+                  aria-label="Certificate name"
+                  value={certification}
+                  onChange={(event) => field(
+                    'certifications',
+                    draft.certifications.map((current, currentIndex) => (
+                      currentIndex === index ? event.target.value : current
+                    )),
+                  )}
+                  className={editorInput}
+                />
+                <button
+                  type="button"
+                  aria-label="Remove certificate"
+                  onClick={() => field(
+                    'certifications',
+                    draft.certifications.filter((_, currentIndex) => currentIndex !== index),
+                  )}
+                  className="shrink-0 text-[#777774] hover:text-[#1F1F1F]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+        {[['preferred_roles','Preferred roles'],['hobbies','Hobbies & interests']].map(([key,label]) => <label key={key} className="block text-xs font-medium text-[#4A4A48]">{label}<input value={draft[key]} onChange={(e) => field(key,e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>)}
         <label className="block text-xs font-medium text-[#4A4A48]">Additional information<textarea rows="3" value={draft.additional_information} onChange={(e) => field('additional_information',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
         {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
       </div>
@@ -802,6 +877,7 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
             const workMode = rawWorkMode || (job.remote === true ? "Remote" : job.remote === false ? "On-site" : "");
             const experience = job.experience_required || job.experience_level || job.seniority || job.experience_required_text || job.experience;
             const salary = job.salary || job.salary_range || job.compensation || job.minimum_salary || job.salary_min;
+            const postedAgo = job.posted_ago || job.postedAgo || job.posted;
             return (
               <div
                 key={job.id}
@@ -850,12 +926,13 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                       )}
                     </div>
                     </div>
-                    <div data-testid={`job-metadata-${job.id}`} className="mt-3 grid grid-cols-1 gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48] sm:grid-cols-2">
+                    <div data-testid={`job-metadata-${job.id}`} className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48]">
                       {location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{location}</span></span>}
                       {workMode && <span className="flex min-w-0 items-center gap-1.5"><Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{workMode}</span></span>}
                       {jobType && <span className="flex min-w-0 items-center gap-1.5"><BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{jobType}</span></span>}
                       {experience && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{experience}</span></span>}
                       {salary != null && salary !== "" && <span className="flex min-w-0 items-center gap-1.5 font-medium text-[#1F1F1F]"><CircleDollarSign className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{salary}</span></span>}
+                      {postedAgo && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{postedAgo}</span></span>}
                     </div>
                   </div>
                   {matchValue != null && <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-2.5 py-2 text-white sm:w-[104px] sm:flex-col sm:justify-center sm:gap-0.5" aria-label={`${matchValue}% match`}><div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#67C77B] text-[13px] font-semibold">{matchValue}%</div><span className="text-[10px] font-semibold uppercase tracking-wide text-[#BBDCC0]" aria-hidden="true">&nbsp;</span></div>}
@@ -1116,14 +1193,17 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
     }
   };
 
-  const handleCertUpload = async (file) => {
-    if (!file || !candidateId) return;
+  const handleCertUpload = async (files) => {
+    const selectedFiles = Array.from(files || []).filter(Boolean);
+    if (!selectedFiles.length || !candidateId) return;
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await postDocument(`/candidate/${candidateId}/certificates/upload`, fd);
-      onCertUploaded(res.data);
+      await Promise.all(selectedFiles.map(async (file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await postDocument(`/candidate/${candidateId}/certificates/upload`, fd);
+        onCertUploaded(res.data);
+      }));
     } catch {
       // silent
     } finally {
@@ -1354,11 +1434,14 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
         <input
           ref={certInputRef}
           type="file"
-          accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+          accept=".pdf,.png,.jpg,.jpeg"
+          multiple
+          data-testid="certificate-file-input"
           className="hidden"
-          onChange={(e) => e.target.files?.[0] && handleCertUpload(e.target.files[0])}
+          onChange={(e) => handleCertUpload(e.target.files)}
         />
         <button
+          data-testid="add-certificate-btn"
           onClick={() => certInputRef.current?.click()}
           disabled={busy || !candidateId}
           className="mt-3 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
@@ -1819,7 +1902,8 @@ export default function LivingProfile({
 
       {/* Scrollable content */}
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
-        <div className="max-w-2xl mx-auto">
+
+        <div className="w-full">
 
           {activeTab === "profile" && <ProfileTab user={userProfile} candidateId={candidateId} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} onProfileUpdated={onProfileUpdated} />}
           {activeTab === "jobs" && (

@@ -1,8 +1,7 @@
 import React from "react";
 import axios from "axios";
 import { useSearchParams } from "react-router-dom";
-
-const API = `${import.meta.env.VITE_BACKEND_URL}/api`;
+import { API } from "../lib/apiConfig";
 const plain = (value) => (value == null ? "" : String(value));
 const list = (value) => Array.isArray(value) ? value : [];
 const skillKey = (value) => plain(value).trim().toLowerCase();

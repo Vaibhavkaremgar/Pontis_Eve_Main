@@ -1,7 +1,6 @@
 import React from "react";
 import axios from "axios";
-
-const API = `${import.meta.env.VITE_BACKEND_URL}/api`;
+import { API } from "../lib/apiConfig";
 
 function formatDate(value) {
   return value ? new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(value)) : "—";

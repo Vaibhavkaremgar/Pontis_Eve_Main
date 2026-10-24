@@ -2,8 +2,7 @@ import React from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { loadOnboardingState, saveOnboardingState, clearOnboardingState } from "../lib/onboardingStorage";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+import { API } from "../lib/apiConfig";
 
 export default function GoogleAuth() {
   const navigate = useNavigate();
@@ -20,7 +19,7 @@ export default function GoogleAuth() {
       return;
     }
     if (exchangeCode) {
-      fetch(`${BACKEND_URL}/api/auth/session/exchange`, {
+      fetch(`${API}/auth/session/exchange`, {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ exchange_code: exchangeCode }),
@@ -51,8 +50,8 @@ export default function GoogleAuth() {
     else if (stored.authenticated) navigate("/onboarding", { replace: true });
   }, [navigate, searchParams]);
 
-  const handleGoogle = () => { setLoading(true); setError(null); window.location.assign(`${BACKEND_URL}/api/auth/google/init?redirect=true`); };
-  const handleLinkedIn = () => { setLoading(true); setError(null); window.location.assign(`${BACKEND_URL}/api/auth/linkedin/login`); };
+  const handleGoogle = () => { setLoading(true); setError(null); window.location.assign(`${API}/auth/google/init?redirect=true`); };
+  const handleLinkedIn = () => { setLoading(true); setError(null); window.location.assign(`${API}/auth/linkedin/login`); };
 
   return (
     <div className="min-h-screen bg-[#FBFBF9] text-[#242424] flex flex-col items-center justify-center px-6">

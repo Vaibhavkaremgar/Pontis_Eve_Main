@@ -23,9 +23,7 @@ import {
   isVoiceIntakeCompleteStatus,
 } from "../lib/onboardingStorage";
 import { mergeProfilesForDisplay, normalizeProfileForDisplay } from "../lib/profileNormalization";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API, buildResumeParseUrl } from "../lib/apiConfig";
 
 const TYPEWRITER_LINES = [
   "Your resume is just the baseline.",
@@ -894,8 +892,6 @@ export default function Onboarding() {
       // Preserve auth fields — never let the persist effect wipe them
       authenticated: current.authenticated,
       profile: current.profile,
-      candidateToken: current.candidateToken,
-      googleRegistrationToken: current.googleRegistrationToken,
       isOpenToMatches: current.isOpenToMatches,
       step,
       countryCode: phone.country.code,
@@ -944,9 +940,7 @@ export default function Onboarding() {
       // If we already have a candidateId (e.g. test candidate re-onboarding),
       // pass it so the backend updates the existing record instead of creating a duplicate.
       const existingId = candidateId || loadOnboardingState().candidateId;
-      const url = existingId
-        ? `${API}/onboarding/parse-resume?existing_id=${existingId}`
-        : `${API}/onboarding/parse-resume`;
+      const url = buildResumeParseUrl(existingId);
       const existingToken = loadOnboardingState().candidateToken;
       const googleRegistrationToken = loadOnboardingState().googleRegistrationToken;
       const res = await axios.post(url, fd, {
