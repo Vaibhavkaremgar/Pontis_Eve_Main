@@ -8,6 +8,12 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.job_ingestion import scheduler
+
+
+@pytest.fixture(autouse=True)
+def enable_ats_providers_for_scheduler_tests(monkeypatch):
+    for provider in ("greenhouse", "lever", "ashby", "workable"):
+        monkeypatch.setenv(f"{provider.upper()}_ENABLED", "true")
 from app.job_ingestion.job_ingestion_service import upsert_ats_job
 
 
