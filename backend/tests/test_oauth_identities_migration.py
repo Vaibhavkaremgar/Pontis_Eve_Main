@@ -27,7 +27,9 @@ def test_oauth_identities_migration_has_safe_identity_constraints():
     assert "candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE" in sql
     assert "UNIQUE (provider, provider_subject)" in sql
     assert "UNIQUE (candidate_id, provider)" in sql
-    assert "CHECK (provider IN ('linkedin'))" in sql
+    assert "CHECK (provider IN ('google', 'linkedin'))" in sql
+    assert "DROP CONSTRAINT IF EXISTS oauth_identities_provider_check" in sql
+    assert "ADD CONSTRAINT oauth_identities_provider_check" in sql
     assert "CREATE INDEX IF NOT EXISTS idx_oauth_identities_candidate" in sql
 
 
