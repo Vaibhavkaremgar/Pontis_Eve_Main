@@ -1,43 +1,94 @@
-import React from "react";
-import axios from "axios";
+﻿import axios from "axios";
 import DOMPurify from "dompurify";
-import { Info, MapPin, Bookmark, BookmarkCheck, Bell, Download, Camera, Trash2, UserCircle2, LockKeyhole, BriefcaseBusiness, CircleDollarSign, Clock3, Monitor, Sparkles, UsersRound, Pencil, Plus, X } from "lucide-react";
-import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
-import { useApplicationFollowUp } from "./ApplicationFollowUp";
-import { formatEducationDateRange, formatEducationScore, formatExperienceDuration, normalizeProfileForDisplay } from "../lib/profileNormalization";
-import { buildProfileBio } from "../lib/profileBio";
+import {
+  Bookmark,
+  BookmarkCheck,
+  BriefcaseBusiness,
+  Camera,
+  CircleDollarSign,
+  Clock3,
+  Download,
+  Info,
+  LockKeyhole,
+  MapPin,
+  Monitor,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+  UserCircle2,
+  X,
+} from "lucide-react";
+import React from "react";
+import { API, BACKEND_URL } from "../lib/apiConfig";
 import { normalizeJobDescription } from "../lib/jobDescription";
 import { loadOnboardingState } from "../lib/onboardingStorage";
-import { API, BACKEND_URL } from "../lib/apiConfig";
+import { buildProfileBio } from "../lib/profileBio";
+import {
+  formatEducationDateRange,
+  formatEducationScore,
+  formatExperienceDuration,
+  normalizeProfileForDisplay,
+} from "../lib/profileNormalization";
+import { useApplicationFollowUp } from "./ApplicationFollowUp";
+import { ImproveMatchModal, JobDetailModal, NotInterestedReasonModal } from "./SwipeJobCard";
 
-function sanitizeHtml(str) {
+function _sanitizeHtml(str) {
   if (!str || typeof str !== "string") return "";
   return DOMPurify.sanitize(str, { USE_PROFILES: { html: true } });
 }
 
 function JobDescriptionContent({ source }) {
-  return <div className="space-y-3">{normalizeJobDescription(source).map((block, index) => {
-    if (block.type === "heading") return <h4 key={index} className="font-medium text-[#1F1F1F]">{block.text}</h4>;
-    if (block.type === "ul") return <ul key={index} className="list-disc space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>;
-    if (block.type === "ol") return <ol key={index} className="list-decimal space-y-1 pl-5">{block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ol>;
-    return <p key={index}>{block.text}</p>;
-  })}</div>;
+  return (
+    <div className="space-y-3">
+      {normalizeJobDescription(source).map((block) => {
+        const blockKey = `${block.type}-${block.text || block.items?.join("|") || ""}`;
+        if (block.type === "heading")
+          return (
+            <h4 key={blockKey} className="font-medium text-[#1F1F1F]">
+              {block.text}
+            </h4>
+          );
+        if (block.type === "ul")
+          return (
+            <ul key={blockKey} className="list-disc space-y-1 pl-5">
+              {block.items.map((item) => (
+                <li key={`${blockKey}-${item}`}>{item}</li>
+              ))}
+            </ul>
+          );
+        if (block.type === "ol")
+          return (
+            <ol key={blockKey} className="list-decimal space-y-1 pl-5">
+              {block.items.map((item) => (
+                <li key={`${blockKey}-${item}`}>{item}</li>
+              ))}
+            </ol>
+          );
+        return <p key={blockKey}>{block.text}</p>;
+      })}
+    </div>
+  );
 }
 
-function relativePostedTime(value) {
+function _relativePostedTime(value) {
   if (!value) return "";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
   if (seconds < 60) return "Just now";
-  const units = [[86400, "day"], [3600, "hour"], [60, "minute"]];
+  const units = [
+    [86400, "day"],
+    [3600, "hour"],
+    [60, "minute"],
+  ];
   const unit = units.find(([size]) => seconds >= size);
   if (!unit) return "Just now";
   const count = Math.floor(seconds / unit[0]);
   return `${count} ${unit[1]}${count === 1 ? "" : "s"} ago`;
 }
 
-function matchReasonText(reason) {
+function _matchReasonText(reason) {
   if (!reason) return "";
   if (typeof reason === "string") return reason;
   const explanation = reason.match_explanation || reason;
@@ -45,7 +96,9 @@ function matchReasonText(reason) {
     ...(explanation.strong || []),
     ...(explanation.partial || []),
     ...(explanation.constraints || []),
-  ].filter(Boolean).join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" ┬╖ ");
 }
 
 function ProfileStrengthBar({ label, percent }) {
@@ -68,9 +121,14 @@ function ProfileStrengthBar({ label, percent }) {
       data-testid="profile-strength-bar"
       className={`profile-strength-meter flex items-center gap-2.5 ${isImproving ? "profile-strength-meter--improving" : ""}`}
     >
-      <span aria-live="polite" className="profile-strength-meter__label text-[11.5px] text-[#62578F] font-medium">
+      <span
+        aria-live="polite"
+        className="profile-strength-meter__label text-[11.5px] text-[#62578F] font-medium"
+      >
         Profile Meter:{" "}
-        <span className="text-[#1F1F1F] font-medium">{label} {percent}%</span>
+        <span className="text-[#1F1F1F] font-medium">
+          {label} {percent}%
+        </span>
       </span>
       <div
         role="progressbar"
@@ -94,6 +152,7 @@ function OpenToMatchesBadge({ isOpen, onToggle }) {
     <div className="inline-flex items-center gap-2">
       <span className="text-[12px] font-medium text-[#4A4A48]">Open to opportunities</span>
       <button
+        type="button"
         role="switch"
         aria-checked={isOpen}
         aria-label="Open to opportunities"
@@ -119,11 +178,15 @@ function OpenToMatchesBadge({ isOpen, onToggle }) {
 function SectionLabel({ children }) {
   return (
     <div className="flex items-center gap-3 mb-4">
-      <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#4A4A48]">{children}</h3>
+      <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#4A4A48]">
+        {children}
+      </h3>
       <div className="h-px flex-1 bg-black/[0.08]" />
     </div>
   );
 }
+
+const profileSectionId = (name) => ["profile", name].join("-");
 
 export function generateBio(profile) {
   return buildProfileBio(profile);
@@ -131,19 +194,14 @@ export function generateBio(profile) {
 
 /* --- Hover-only rows (no card background by default) --- */
 
-function ExperienceRow({ exp }) {
+function _ExperienceRow({ exp }) {
   return (
-    <div
-      data-testid={`experience-row-${exp.id}`}
-      className="eve-hover-row px-3 py-3 -mx-3"
-    >
+    <div data-testid={`experience-row-${exp.id}`} className="eve-hover-row px-3 py-3 -mx-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h4 className="text-[13.5px] font-medium text-[#1F1F1F]">
-            {exp.title}
-          </h4>
+          <h4 className="text-[13.5px] font-medium text-[#1F1F1F]">{exp.title}</h4>
           <p className="text-[12px] text-[#9A9A98] mt-0.5 font-normal">
-            {exp.company} · {exp.dates}
+            {exp.company} ┬╖ {exp.dates}
           </p>
         </div>
       </div>
@@ -154,15 +212,12 @@ function ExperienceRow({ exp }) {
   );
 }
 
-function EducationRow({ edu }) {
+function _EducationRow({ edu }) {
   return (
-    <div
-      data-testid={`education-row-${edu.id}`}
-      className="eve-hover-row px-3 py-3 -mx-3"
-    >
+    <div data-testid={`education-row-${edu.id}`} className="eve-hover-row px-3 py-3 -mx-3">
       <h4 className="text-[13px] font-medium text-[#1F1F1F]">{edu.degree}</h4>
       <p className="text-[12px] text-[#9A9A98] mt-0.5 font-normal">
-        {edu.institution} · {edu.dates}
+        {edu.institution} ┬╖ {edu.dates}
       </p>
     </div>
   );
@@ -178,17 +233,30 @@ function groupExperienceByEmployment(experience) {
     // records by employer so the employment context is rendered once, rather
     // than once for every project title.
     const key = company.trim().toLowerCase() || `unassigned-employment-${index}`;
-    const projects = Array.isArray(exp?.projects) && exp.projects.length
-      ? exp.projects.map((project, projectIndex) => ({
-          id: project?.id || `${exp?.id || index}-project-${projectIndex}`,
-          title: project?.title || project?.name || title,
-          description: project?.description || project?.summary || "",
-        }))
-      : [{
-          id: exp?.id || `project-${index}`,
-          title: exp?.project_title || exp?.projectTitle || exp?.project_name || exp?.projectName || title,
-          description: exp?.project_description || exp?.projectDescription || exp?.description || exp?.summary || "",
-        }];
+    const projects =
+      Array.isArray(exp?.projects) && exp.projects.length
+        ? exp.projects.map((project, projectIndex) => ({
+            id: project?.id || `${exp?.id || index}-project-${projectIndex}`,
+            title: project?.title || project?.name || title,
+            description: project?.description || project?.summary || "",
+          }))
+        : [
+            {
+              id: exp?.id || `project-${index}`,
+              title:
+                exp?.project_title ||
+                exp?.projectTitle ||
+                exp?.project_name ||
+                exp?.projectName ||
+                title,
+              description:
+                exp?.project_description ||
+                exp?.projectDescription ||
+                exp?.description ||
+                exp?.summary ||
+                "",
+            },
+          ];
 
     if (!groups.has(key)) groups.set(key, { ...exp, title, company, projects });
     else groups.get(key).projects.push(...projects);
@@ -197,29 +265,38 @@ function groupExperienceByEmployment(experience) {
   return [...groups.values()];
 }
 
-function formatEducationDates(education) {
+function _formatEducationDates(education) {
   const year = (value) => String(value ?? "").match(/(?:18|19|20|21)\d{2}/)?.[0];
   const startYear = year(education?.start_date ?? education?.startDate);
   const endYear = year(education?.end_date ?? education?.endDate);
 
-  if (startYear && endYear) return `${startYear} – ${endYear}`;
+  if (startYear && endYear) return `${startYear} ΓÇô ${endYear}`;
   return education?.dates || "";
 }
 
 function ResumeExperienceEntry({ exp }) {
-  const highlights = String(exp.description || exp.summary || "")
+  const _highlights = String(exp.description || exp.summary || "")
     .split(/\n+|(?<=\.)\s+(?=[A-Z])/)
-    .map((item) => item.replace(/^[-•]\s*/, "").trim())
+    .map((item) => item.replace(/^[-ΓÇó]\s*/, "").trim())
     .filter(Boolean);
 
   return (
-    <div data-testid={`experience-row-${exp.id}`} className="relative border-l border-[#D8D5E3] pl-5 pb-7 last:pb-0">
+    <div
+      data-testid={`experience-row-${exp.id}`}
+      className="relative border-l border-[#D8D5E3] pl-5 pb-7 last:pb-0"
+    >
       <span className="absolute -left-[4.5px] top-1.5 h-2 w-2 rounded-full border-2 border-[#7B6FB8] bg-[#FDFDFC]" />
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-        <h4 className="text-[14px] font-semibold leading-snug text-[#1F1F1F]">{exp.title || "Role not provided"}</h4>
-        {exp.dates && <p className="shrink-0 text-[11.5px] font-medium text-[#777774]">{exp.dates}</p>}
+        <h4 className="text-[14px] font-semibold leading-snug text-[#1F1F1F]">
+          {exp.title || "Role not provided"}
+        </h4>
+        {exp.dates && (
+          <p className="shrink-0 text-[11.5px] font-medium text-[#777774]">{exp.dates}</p>
+        )}
       </div>
-      {exp.company && <p className="mt-0.5 text-[12.5px] font-medium text-[#6A5E9D]">{exp.company}</p>}
+      {exp.company && (
+        <p className="mt-0.5 text-[12.5px] font-medium text-[#6A5E9D]">{exp.company}</p>
+      )}
       {exp.projects?.length > 0 && (
         <div className="mt-3 space-y-3">
           {exp.projects.map((project, projectIndex) => (
@@ -227,7 +304,11 @@ function ResumeExperienceEntry({ exp }) {
               {!(projectIndex === 0 && project.title === exp.title) && (
                 <h5 className="text-[12.5px] font-semibold text-[#1F1F1F]">{project.title}</h5>
               )}
-              {project.description && <p className="mt-1 text-[12.5px] leading-relaxed text-[#4A4A48]">{project.description}</p>}
+              {project.description && (
+                <p className="mt-1 text-[12.5px] leading-relaxed text-[#4A4A48]">
+                  {project.description}
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -241,13 +322,20 @@ function ResumeEducationEntry({ edu }) {
   const score = formatEducationScore(edu);
 
   return (
-    <div data-testid={`education-row-${edu.id}`} className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0">
+    <div
+      data-testid={`education-row-${edu.id}`}
+      className="border-b border-black/[0.06] py-3 first:pt-0 last:border-b-0 last:pb-0"
+    >
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-        <h4 className="text-[13px] font-semibold text-[#1F1F1F]">{edu.degree || "Education not provided"}</h4>
+        <h4 className="text-[13px] font-semibold text-[#1F1F1F]">
+          {edu.degree || "Education not provided"}
+        </h4>
       </div>
       {edu.institution && <p className="mt-0.5 text-[12px] text-[#4A4A48]">{edu.institution}</p>}
       {(dates || score) && (
-        <p className="mt-1 text-[11.5px] text-[#777774]">{[dates, score].filter(Boolean).join(" | ")}</p>
+        <p className="mt-1 text-[11.5px] text-[#777774]">
+          {[dates, score].filter(Boolean).join(" | ")}
+        </p>
       )}
     </div>
   );
@@ -276,9 +364,12 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   const [renderedPhotoSrc, setRenderedPhotoSrc] = React.useState(null);
   const [deleting, setDeleting] = React.useState(false);
   const resolvedPhotoSrc = React.useMemo(() => resolvePhotoSrc(photoUrl), [photoUrl]);
-  const resolvedCandidateId = candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
+  const resolvedCandidateId =
+    candidateId ?? user.candidate_id ?? user.candidateId ?? user.id ?? null;
 
-  React.useEffect(() => { setPhotoUrl(user.avatar || null); }, [user.avatar]);
+  React.useEffect(() => {
+    setPhotoUrl(user.avatar || null);
+  }, [user.avatar]);
 
   React.useEffect(() => {
     if (!resolvedPhotoSrc) {
@@ -295,16 +386,19 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
     let objectUrl = null;
     const candidateToken = loadOnboardingState().candidateToken;
 
-    axios.get(photoUrl, {
-      responseType: "blob",
-      headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
-    }).then((response) => {
-      if (!active) return;
-      objectUrl = window.URL.createObjectURL(response.data);
-      setRenderedPhotoSrc(objectUrl);
-    }).catch(() => {
-      if (active) setRenderedPhotoSrc(null);
-    });
+    axios
+      .get(photoUrl, {
+        responseType: "blob",
+        headers: candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {},
+      })
+      .then((response) => {
+        if (!active) return;
+        objectUrl = window.URL.createObjectURL(response.data);
+        setRenderedPhotoSrc(objectUrl);
+      })
+      .catch(() => {
+        if (active) setRenderedPhotoSrc(null);
+      });
 
     return () => {
       active = false;
@@ -382,10 +476,13 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
         aria-label="Upload profile photo"
         className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors disabled:opacity-50"
       >
-        <Camera className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" strokeWidth={1.75} />
+        <Camera
+          className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+          strokeWidth={1.75}
+        />
       </button>
       {photoUrl && (
-        <button 
+        <button
           type="button"
           onClick={handleDelete}
           disabled={uploading || deleting}
@@ -399,7 +496,6 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
         ref={inputRef}
         type="file"
         accept="image/jpeg,image/png,image/webp"
-        
         className="hidden"
         onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
       />
@@ -407,120 +503,372 @@ export function ProfilePhotoUpload({ user, candidateId, onPhotoChange }) {
   );
 }
 
-const editorInput = "w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-[13px] text-[#1F1F1F] outline-none focus:border-[#7B6FB8] focus:ring-2 focus:ring-[#7B6FB8]/10";
+const editorInput =
+  "w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-[13px] text-[#1F1F1F] outline-none focus:border-[#7B6FB8] focus:ring-2 focus:ring-[#7B6FB8]/10";
 
-function csv(values) { return (values || []).join(", "); }
-function parseCsv(value) { return value.split(",").map((item) => item.trim()).filter(Boolean); }
+function csv(values) {
+  return (values || []).join(", ");
+}
+function parseCsv(value) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 export function ProfileEditor({ profile, candidateId, onClose, onSaved }) {
   const [draft, setDraft] = React.useState(() => ({
-    name: profile.name || "", headline: profile.headline || profile.current_role || "", location: profile.location || "",
-    experience_years: profile.experience_years ?? "", availability: profile.availability || "", salary_expectation: profile.salary_expectation || "", bio: profile.bio || generateBio(profile),
-    work_experience: (profile.experience || []).map((item) => ({ title: item.title || "", company: item.company || "", dates: item.dates || "", description: item.description || item.summary || "" })),
-    education: (profile.education || []).map((item) => ({ degree: item.degree || "", institution: item.institution || "", dates: item.dates || "" })),
+    name: profile.name || "",
+    headline: profile.headline || profile.current_role || "",
+    location: profile.location || "",
+    experience_years: profile.experience_years ?? "",
+    availability: profile.availability || "",
+    salary_expectation: profile.salary_expectation || "",
+    bio: profile.bio || generateBio(profile),
+    work_experience: (profile.experience || []).map((item) => ({
+      title: item.title || "",
+      company: item.company || "",
+      dates: item.dates || "",
+      description: item.description || item.summary || "",
+    })),
+    education: (profile.education || []).map((item) => ({
+      degree: item.degree || "",
+      institution: item.institution || "",
+      dates: item.dates || "",
+    })),
     skills: csv(profile.keySkills),
     certifications: Array.isArray(profile.certifications)
       ? profile.certifications.map((certification) => String(certification ?? ""))
       : parseCsv(String(profile.certifications ?? "")),
     preferred_roles: csv(profile.preferred_roles),
-    additional_information: profile.additional_information || "", hobbies: csv(profile.hobbies || profile.interests || profile.raw_data?.hobbies),
+    additional_information: profile.additional_information || "",
+    hobbies: csv(profile.hobbies || profile.interests || profile.raw_data?.hobbies),
   }));
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
   const field = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
-  const recordField = (section, index, key, value) => setDraft((current) => ({ ...current, [section]: current[section].map((item, i) => i === index ? { ...item, [key]: value } : item) }));
-  const removeRecord = (section, index) => setDraft((current) => ({ ...current, [section]: current[section].filter((_, i) => i !== index) }));
+  const recordField = (section, index, key, value) =>
+    setDraft((current) => ({
+      ...current,
+      [section]: current[section].map((item, i) =>
+        i === index ? { ...item, [key]: value } : item,
+      ),
+    }));
+  const removeRecord = (section, index) =>
+    setDraft((current) => ({
+      ...current,
+      [section]: current[section].filter((_, i) => i !== index),
+    }));
   const save = async () => {
-    setSaving(true); setError("");
+    setSaving(true);
+    setError("");
     try {
       await axios.put(`${API}/candidate/${candidateId}/profile`, {
-        ...draft, experience_years: draft.experience_years === "" ? 0 : Number(draft.experience_years),
+        ...draft,
+        experience_years: draft.experience_years === "" ? 0 : Number(draft.experience_years),
         skills: parseCsv(draft.skills),
-        certifications: draft.certifications.map((certification) => certification.trim()).filter(Boolean),
-        preferred_roles: parseCsv(draft.preferred_roles), hobbies: parseCsv(draft.hobbies),
+        certifications: draft.certifications
+          .map((certification) => certification.trim())
+          .filter(Boolean),
+        preferred_roles: parseCsv(draft.preferred_roles),
+        hobbies: parseCsv(draft.hobbies),
       });
-      await onSaved?.(); onClose();
-    } catch (err) { setError(err?.response?.data?.detail || "Could not save the profile. Please try again."); }
-    finally { setSaving(false); }
+      await onSaved?.();
+      onClose();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Could not save the profile. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   };
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="Edit profile">
-    <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-[#FDFDFC] shadow-2xl">
-      <div className="flex items-center justify-between border-b px-6 py-4"><div><h2 className="text-lg font-semibold">Edit profile</h2><p className="text-xs text-[#777774]">Update any section of your candidate profile.</p></div><button onClick={onClose} aria-label="Close profile editor"><X className="h-5 w-5" /></button></div>
-      <div className="space-y-7 overflow-y-auto px-6 py-5">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {[['name','Full name'],['headline','Professional headline'],['location','Location'],['experience_years','Years of experience'],['availability','Availability'],['salary_expectation','Salary expectation']].map(([key,label]) => <label key={key} className="text-xs font-medium text-[#4A4A48]">{label}<input type={key === 'experience_years' ? 'number' : 'text'} min="0" step="0.1" value={draft[key]} onChange={(e) => field(key,e.target.value)} className={`${editorInput} mt-1`} /></label>)}
-        </div>
-        <label className="block text-xs font-medium text-[#4A4A48]">Summary<textarea rows="4" value={draft.bio} onChange={(e) => field('bio',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
-        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Work experience</h3><button type="button" onClick={() => field('work_experience',[...draft.work_experience,{title:'',company:'',dates:'',description:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add experience</button></div>{draft.work_experience.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-2"><button onClick={() => removeRecord('work_experience',index)} className="absolute right-2 top-2" aria-label="Remove experience"><X className="h-4 w-4"/></button>{[['title','Job title'],['company','Company'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('work_experience',index,key,e.target.value)} className={editorInput}/>)}<textarea aria-label="Description" placeholder="Description" value={item.description} onChange={(e) => recordField('work_experience',index,'description',e.target.value)} className={`${editorInput} sm:col-span-2`} rows="3"/></div>)}</div>
-        <div><div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-semibold">Education</h3><button type="button" onClick={() => field('education',[...draft.education,{degree:'',institution:'',dates:''}])} className="flex items-center gap-1 text-xs text-[#62578F]"><Plus className="h-3.5 w-3.5"/>Add education</button></div>{draft.education.map((item,index) => <div key={index} className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-3"><button onClick={() => removeRecord('education',index)} className="absolute right-2 top-2" aria-label="Remove education"><X className="h-4 w-4"/></button>{[['degree','Degree'],['institution','Institution'],['dates','Dates']].map(([key,label]) => <input key={key} aria-label={label} placeholder={label} value={item[key]} onChange={(e) => recordField('education',index,key,e.target.value)} className={editorInput}/>)}</div>)}</div>
-        <label className="block text-xs font-medium text-[#4A4A48]">Skills<input value={draft.skills} onChange={(e) => field('skills',e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>
-        <div>
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Certifications</h3>
-            <button
-              type="button"
-              onClick={() => field('certifications', [...draft.certifications, ""])}
-              className="flex items-center gap-1 text-xs text-[#62578F]"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add certificate
-            </button>
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Edit profile"
+    >
+      <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-[#FDFDFC] shadow-2xl">
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <div>
+            <h2 className="text-lg font-semibold">Edit profile</h2>
+            <p className="text-xs text-[#777774]">Update any section of your candidate profile.</p>
           </div>
-          <div className="space-y-2">
-            {draft.certifications.map((certification, index) => (
-              <div key={index} className="flex items-center gap-2">
+          <button type="button" onClick={onClose} aria-label="Close profile editor">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="space-y-7 overflow-y-auto px-6 py-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {[
+              ["name", "Full name"],
+              ["headline", "Professional headline"],
+              ["location", "Location"],
+              ["experience_years", "Years of experience"],
+              ["availability", "Availability"],
+              ["salary_expectation", "Salary expectation"],
+            ].map(([key, label]) => (
+              <label key={key} className="text-xs font-medium text-[#4A4A48]">
+                {label}
                 <input
-                  aria-label="Certificate name"
-                  value={certification}
-                  onChange={(event) => field(
-                    'certifications',
-                    draft.certifications.map((current, currentIndex) => (
-                      currentIndex === index ? event.target.value : current
-                    )),
-                  )}
-                  className={editorInput}
+                  type={key === "experience_years" ? "number" : "text"}
+                  min="0"
+                  step="0.1"
+                  value={draft[key]}
+                  onChange={(e) => field(key, e.target.value)}
+                  className={`${editorInput} mt-1`}
                 />
+              </label>
+            ))}
+          </div>
+          <label className="block text-xs font-medium text-[#4A4A48]">
+            Summary
+            <textarea
+              rows="4"
+              value={draft.bio}
+              onChange={(e) => field("bio", e.target.value)}
+              className={`${editorInput} mt-1 resize-y`}
+            />
+          </label>
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Work experience</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  field("work_experience", [
+                    ...draft.work_experience,
+                    { title: "", company: "", dates: "", description: "" },
+                  ])
+                }
+                className="flex items-center gap-1 text-xs text-[#62578F]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add experience
+              </button>
+            </div>
+            {draft.work_experience.map((item, index) => (
+              <div
+                key={`${item.title}-${item.company}-${item.dates}`}
+                className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-2"
+              >
                 <button
                   type="button"
-                  aria-label="Remove certificate"
-                  onClick={() => field(
-                    'certifications',
-                    draft.certifications.filter((_, currentIndex) => currentIndex !== index),
-                  )}
-                  className="shrink-0 text-[#777774] hover:text-[#1F1F1F]"
+                  onClick={() => removeRecord("work_experience", index)}
+                  className="absolute right-2 top-2"
+                  aria-label="Remove experience"
                 >
                   <X className="h-4 w-4" />
                 </button>
+                {[
+                  ["title", "Job title"],
+                  ["company", "Company"],
+                  ["dates", "Dates"],
+                ].map(([key, label]) => (
+                  <input
+                    key={key}
+                    aria-label={label}
+                    placeholder={label}
+                    value={item[key]}
+                    onChange={(e) => recordField("work_experience", index, key, e.target.value)}
+                    className={editorInput}
+                  />
+                ))}
+                <textarea
+                  aria-label="Description"
+                  placeholder="Description"
+                  value={item.description}
+                  onChange={(e) =>
+                    recordField("work_experience", index, "description", e.target.value)
+                  }
+                  className={`${editorInput} sm:col-span-2`}
+                  rows="3"
+                />
               </div>
             ))}
           </div>
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Education</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  field("education", [
+                    ...draft.education,
+                    { degree: "", institution: "", dates: "" },
+                  ])
+                }
+                className="flex items-center gap-1 text-xs text-[#62578F]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add education
+              </button>
+            </div>
+            {draft.education.map((item, index) => (
+              <div
+                key={`${item.degree}-${item.institution}-${item.dates}`}
+                className="relative mb-3 grid gap-2 rounded-xl border p-3 sm:grid-cols-3"
+              >
+                <button
+                  type="button"
+                  onClick={() => removeRecord("education", index)}
+                  className="absolute right-2 top-2"
+                  aria-label="Remove education"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+                {[
+                  ["degree", "Degree"],
+                  ["institution", "Institution"],
+                  ["dates", "Dates"],
+                ].map(([key, label]) => (
+                  <input
+                    key={key}
+                    aria-label={label}
+                    placeholder={label}
+                    value={item[key]}
+                    onChange={(e) => recordField("education", index, key, e.target.value)}
+                    className={editorInput}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+          <label className="block text-xs font-medium text-[#4A4A48]">
+            Skills
+            <input
+              value={draft.skills}
+              onChange={(e) => field("skills", e.target.value)}
+              placeholder="Separate entries with commas"
+              className={`${editorInput} mt-1`}
+            />
+          </label>
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Certifications</h3>
+              <button
+                type="button"
+                onClick={() => field("certifications", [...draft.certifications, ""])}
+                className="flex items-center gap-1 text-xs text-[#62578F]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add certificate
+              </button>
+            </div>
+            <div className="space-y-2">
+              {draft.certifications.map((certification, index) => (
+                <div key={certification} className="flex items-center gap-2">
+                  <input
+                    aria-label="Certificate name"
+                    value={certification}
+                    onChange={(event) =>
+                      field(
+                        "certifications",
+                        draft.certifications.map((current, currentIndex) =>
+                          currentIndex === index ? event.target.value : current,
+                        ),
+                      )
+                    }
+                    className={editorInput}
+                  />
+                  <button
+                    type="button"
+                    aria-label="Remove certificate"
+                    onClick={() =>
+                      field(
+                        "certifications",
+                        draft.certifications.filter((_, currentIndex) => currentIndex !== index),
+                      )
+                    }
+                    className="shrink-0 text-[#777774] hover:text-[#1F1F1F]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+          {[
+            ["preferred_roles", "Preferred roles"],
+            ["hobbies", "Hobbies & interests"],
+          ].map(([key, label]) => (
+            <label key={key} className="block text-xs font-medium text-[#4A4A48]">
+              {label}
+              <input
+                value={draft[key]}
+                onChange={(e) => field(key, e.target.value)}
+                placeholder="Separate entries with commas"
+                className={`${editorInput} mt-1`}
+              />
+            </label>
+          ))}
+          <label className="block text-xs font-medium text-[#4A4A48]">
+            Additional information
+            <textarea
+              rows="3"
+              value={draft.additional_information}
+              onChange={(e) => field("additional_information", e.target.value)}
+              className={`${editorInput} mt-1 resize-y`}
+            />
+          </label>
+          {error && (
+            <p className="text-sm text-red-700" role="alert">
+              {error}
+            </p>
+          )}
         </div>
-        {[['preferred_roles','Preferred roles'],['hobbies','Hobbies & interests']].map(([key,label]) => <label key={key} className="block text-xs font-medium text-[#4A4A48]">{label}<input value={draft[key]} onChange={(e) => field(key,e.target.value)} placeholder="Separate entries with commas" className={`${editorInput} mt-1`}/></label>)}
-        <label className="block text-xs font-medium text-[#4A4A48]">Additional information<textarea rows="3" value={draft.additional_information} onChange={(e) => field('additional_information',e.target.value)} className={`${editorInput} mt-1 resize-y`} /></label>
-        {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
+        <div className="flex justify-end gap-2 border-t px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-full border px-4 py-2 text-sm"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !candidateId}
+            className="rounded-full bg-[#1F1F1F] px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {saving ? "SavingΓÇª" : "Save profile"}
+          </button>
+        </div>
       </div>
-      <div className="flex justify-end gap-2 border-t px-6 py-4"><button onClick={onClose} disabled={saving} className="rounded-full border px-4 py-2 text-sm">Cancel</button><button onClick={save} disabled={saving || !candidateId} className="rounded-full bg-[#1F1F1F] px-5 py-2 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Save profile"}</button></div>
     </div>
-  </div>;
+  );
 }
 
-export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoChange, onProfileUpdated }) {
+export function ProfileTab({
+  user,
+  candidateId,
+  onToggleOpenToMatches,
+  onPhotoChange,
+  onProfileUpdated,
+}) {
   const profile = normalizeProfileForDisplay(user);
   // The active dashboard candidate is authoritative. Profile data can be a
   // stale snapshot while the initial profile request is resolving.
-  const profileCandidateId = candidateId ?? profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
+  const profileCandidateId =
+    candidateId ?? profile.candidate_id ?? profile.candidateId ?? profile.id ?? null;
   const [showAllExperiences, setShowAllExperiences] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
   const groupedExperience = React.useMemo(
     () => groupExperienceByEmployment(profile.experience),
-    [profile.experience]
+    [profile.experience],
   );
   const experienceCount = groupedExperience.length;
   const visibleExperiences = showAllExperiences
     ? groupedExperience
     : groupedExperience.slice(0, DEFAULT_VISIBLE_EXPERIENCES);
-  const hobbies = [profile.hobbies, profile.interests, profile.raw_data?.hobbies, profile.raw_data?.interests]
-    .find((value) => Array.isArray(value) && value.length > 0) || [];
+  const hobbies =
+    [
+      profile.hobbies,
+      profile.interests,
+      profile.raw_data?.hobbies,
+      profile.raw_data?.interests,
+    ].find((value) => Array.isArray(value) && value.length > 0) || [];
 
   return (
     <div className="space-y-8" data-testid="living-profile-content">
@@ -536,7 +884,15 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
             : "linear-gradient(180deg, #E8E8E8 0%, #EFEFEF 45%, #F5F5F5 100%)",
         }}
       >
-        <button type="button" onClick={() => setEditing(true)} data-testid="edit-profile-btn" className="absolute right-5 top-5 z-10 inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white/90 px-3 py-1.5 text-[12px] font-medium text-[#343432] shadow-sm hover:bg-white"><Pencil className="h-3.5 w-3.5" />Edit profile</button>
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          data-testid="edit-profile-btn"
+          className="absolute right-5 top-5 z-10 inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white/90 px-3 py-1.5 text-[12px] font-medium text-[#343432] shadow-sm hover:bg-white"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          Edit profile
+        </button>
         <div className="flex items-start justify-between gap-5">
           <div className="flex-1 min-w-0">
             <h2 className="text-[19px] font-semibold text-[#1F1F1F] leading-tight tracking-tight">
@@ -559,7 +915,10 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
                   {formatExperienceDuration(profile.experience_years)} exp
                 </span>
               )}
-              <OpenToMatchesBadge isOpen={profile.isOpenToMatches} onToggle={onToggleOpenToMatches} />
+              <OpenToMatchesBadge
+                isOpen={profile.isOpenToMatches}
+                onToggle={onToggleOpenToMatches}
+              />
             </div>
             {profile.availability && (
               <p className="mt-2 text-[12px] text-[#2E7538] font-normal">
@@ -572,12 +931,18 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
               </p>
             )}
           </div>
-          <div className="mt-10"><ProfilePhotoUpload user={profile} candidateId={profileCandidateId} onPhotoChange={onPhotoChange} /></div>
+          <div className="mt-10">
+            <ProfilePhotoUpload
+              user={profile}
+              candidateId={profileCandidateId}
+              onPhotoChange={onPhotoChange}
+            />
+          </div>
         </div>
       </div>
 
       {/* Resume content */}
-      <section id="profile-summary">
+      <section id={profileSectionId("summary")}>
         <SectionLabel>Summary</SectionLabel>
         {(() => {
           // Bio is derived from the latest saved profile so chat and voice
@@ -591,11 +956,9 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
         })()}
       </section>
 
-      <section id="profile-work-experience">
+      <section id={profileSectionId("work-experience")}>
         <div className="flex items-start justify-between gap-4">
-          <SectionLabel>
-            Work Experience
-          </SectionLabel>
+          <SectionLabel>Work Experience</SectionLabel>
           {experienceCount > DEFAULT_VISIBLE_EXPERIENCES && (
             <button
               type="button"
@@ -619,7 +982,7 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
         )}
       </section>
 
-      <section id="profile-education">
+      <section id={profileSectionId("education")}>
         <SectionLabel>Education</SectionLabel>
         {profile.education?.length > 0 ? (
           <div>
@@ -632,12 +995,15 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
         )}
       </section>
 
-      <section id="profile-skills">
+      <section id={profileSectionId("skills")}>
         <SectionLabel>Skills</SectionLabel>
         {profile.keySkills?.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {profile.keySkills.map((sk) => (
-              <span key={sk} className="border border-black/[0.07] bg-[#F6F6F4] text-[#343432] text-[12px] px-3 py-1.5 rounded-full font-medium">
+              <span
+                key={sk}
+                className="border border-black/[0.07] bg-[#F6F6F4] text-[#343432] text-[12px] px-3 py-1.5 rounded-full font-medium"
+              >
                 {sk}
               </span>
             ))}
@@ -647,58 +1013,122 @@ export function ProfileTab({ user, candidateId, onToggleOpenToMatches, onPhotoCh
         )}
       </section>
 
-      <section id="profile-certifications">
-          <SectionLabel>Certifications</SectionLabel>
-          {profile.certifications?.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {profile.certifications.map((c) => (
-                <span key={c} className="border border-[#DDD8EF] bg-[#F1EFF8] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium">{c}</span>
-              ))}
-            </div>
-          ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+      <section id={profileSectionId("certifications")}>
+        <SectionLabel>Certifications</SectionLabel>
+        {profile.certifications?.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {profile.certifications.map((c) => (
+              <span
+                key={c}
+                className="border border-[#DDD8EF] bg-[#F1EFF8] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+        )}
       </section>
 
-      <section id="profile-preferred-roles">
-          <SectionLabel>Preferred Roles</SectionLabel>
-          {profile.preferred_roles?.length > 0 ? (
+      <section id={profileSectionId("preferred-roles")}>
+        <SectionLabel>Preferred Roles</SectionLabel>
+        {profile.preferred_roles?.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {profile.preferred_roles.map((r) => (
-              <span key={r} className="bg-[#E7E3F0] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium">
+              <span
+                key={r}
+                className="bg-[#E7E3F0] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium"
+              >
                 {r}
               </span>
             ))}
           </div>
-          ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+        )}
       </section>
 
-      <section id="profile-additional-information">
+      <section id={profileSectionId("employment-types")}>
+        <SectionLabel>Employment Types</SectionLabel>
+        {profile.employment_types?.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {profile.employment_types.map((type) => (
+              <span
+                key={type}
+                className="bg-[#E7E3F0] text-[#62578F] text-[12px] px-3 py-1.5 rounded-full font-medium"
+              >
+                {type}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+        )}
+      </section>
+
+      <section id={profileSectionId("additional-information")}>
         <SectionLabel>Additional Information</SectionLabel>
-        {profile.additional_information
-          ? <p className="text-[13px] text-[#4A4A48] leading-[1.75] font-normal">{profile.additional_information}</p>
-          : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+        {profile.additional_information ? (
+          <p className="text-[13px] text-[#4A4A48] leading-[1.75] font-normal">
+            {profile.additional_information}
+          </p>
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+        )}
       </section>
 
       <section>
         <SectionLabel>Hobbies &amp; Interests</SectionLabel>
         {hobbies.length > 0 ? (
           <div className="flex flex-wrap gap-2">
-            {hobbies.map((hobby) => <span key={hobby} className="bg-black/[0.03] text-[#4A4A48] text-[12px] px-3 py-1.5 rounded-full">{hobby}</span>)}
+            {hobbies.map((hobby) => (
+              <span
+                key={hobby}
+                className="bg-black/[0.03] text-[#4A4A48] text-[12px] px-3 py-1.5 rounded-full"
+              >
+                {hobby}
+              </span>
+            ))}
           </div>
-        ) : <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>}
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">Not provided yet</p>
+        )}
       </section>
-      {editing && <ProfileEditor profile={{ ...profile, hobbies }} candidateId={profileCandidateId} onClose={() => setEditing(false)} onSaved={onProfileUpdated} />}
+      {editing && (
+        <ProfileEditor
+          profile={{ ...profile, hobbies }}
+          candidateId={profileCandidateId}
+          onClose={() => setEditing(false)}
+          onSaved={onProfileUpdated}
+        />
+      )}
     </div>
   );
 }
 
-export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJob, setSelectedJob, candidateId, onJobViewed, onLockedJobClick, onApplied }) {
+export function JobsTab({
+  jobs,
+  matchingJobsTotal,
+  onTrack,
+  onDismiss,
+  selectedJob,
+  setSelectedJob,
+  candidateId,
+  onJobViewed,
+  onLockedJobClick,
+  onApplied,
+}) {
   const [detailJob, setDetailJob] = React.useState(null);
   const [pendingDismissJob, setPendingDismissJob] = React.useState(null);
-  const [applying, setApplying] = React.useState(false);
+  const [applying, _setApplying] = React.useState(false);
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
-  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(candidateId, onApplied);
+  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(
+    candidateId,
+    onApplied,
+  );
   // Keep backend ranking intact within each access group, while presenting the
   // jobs a candidate can open before the subscription-locked placeholders.
   // Confirmed applications belong in Tracked Jobs. Regularly tracked jobs
@@ -707,57 +1137,90 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
   const lockedJobs = jobs.filter((job) => job.locked);
   const orderedJobs = [...accessibleJobs, ...lockedJobs];
 
-  const openDetail = React.useCallback(async (job) => {
-    setDetailJob(job);
-    if (!job.viewed && candidateId) {
-      try {
-        await axios.post(`${API}/candidate/${candidateId}/jobs/${job.id}/view`);
-        onJobViewed?.(job.id);
-      } catch {
-        // silent
+  const openDetail = React.useCallback(
+    async (job) => {
+      setDetailJob(job);
+      if (!job.viewed && candidateId) {
+        try {
+          await axios.post(`${API}/candidate/${candidateId}/jobs/${job.id}/view`);
+          onJobViewed?.(job.id);
+        } catch {
+          // silent
+        }
       }
-    }
-  }, [candidateId, onJobViewed]);
+    },
+    [candidateId, onJobViewed],
+  );
 
-  const handleApply = React.useCallback(async (jobToApply = detailJob) => {
-    if (!jobToApply?.job_url) return;
-    setImprovementJob(jobToApply);
-    setImprovementData(null);
-    try {
-      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${jobToApply.id}/match-improvement`);
-      setImprovementData(response.data);
-    } catch {
-      // Keep the modal open with the recommendation's current score.
-    }
-  }, [candidateId, detailJob]);
-  const openResumeEditor = React.useCallback(async (options = {}) => {
-    if (!improvementJob) return;
-    let credit;
-    try {
-      ({ data: credit } = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/resume-fix-credit-claim`));
-    } catch (error) {
-      const remainingCredits = error?.response?.data?.detail?.remaining_credits;
-      if (remainingCredits != null) {
-        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits } }));
+  const handleApply = React.useCallback(
+    async (jobToApply = detailJob) => {
+      if (!jobToApply?.job_url) return;
+      setImprovementJob(jobToApply);
+      setImprovementData(null);
+      try {
+        const response = await axios.get(
+          `${API}/candidate/${candidateId}/jobs/${jobToApply.id}/match-improvement`,
+        );
+        setImprovementData(response.data);
+      } catch {
+        // Keep the modal open with the recommendation's current score.
       }
-      if (error?.response?.status === 403 && error.response.data?.detail?.code === "resume_fix_credits_insufficient") {
-        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-insufficient"));
+    },
+    [candidateId, detailJob],
+  );
+  const openResumeEditor = React.useCallback(
+    async (options = {}) => {
+      if (!improvementJob) return;
+      let credit;
+      try {
+        ({ data: credit } = await axios.post(
+          `${API}/candidate/${candidateId}/jobs/${improvementJob.id}/resume-fix-credit-claim`,
+        ));
+      } catch (error) {
+        const remainingCredits = error?.response?.data?.detail?.remaining_credits;
+        if (remainingCredits != null) {
+          window.dispatchEvent(
+            new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits } }),
+          );
+        }
+        if (
+          error?.response?.status === 403 &&
+          error.response.data?.detail?.code === "resume_fix_credits_insufficient"
+        ) {
+          window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-insufficient"));
+        }
+        return;
       }
-      return;
-    }
-    if (credit.remaining_credits != null) {
-      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits, creditPhase: credit.credit_phase } }));
-    }
-    const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
-    if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
-    if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
-    if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
-    if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
-    if (options.selectedSkills?.length) params.set("selected_skills", JSON.stringify(options.selectedSkills));
-    if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
-    window.location.assign(`/resume-editor?${params.toString()}`);
-    setImprovementJob(null);
-  }, [candidateId, improvementData?.match_score, improvementJob]);
+      if (credit.remaining_credits != null) {
+        window.dispatchEvent(
+          new CustomEvent("eve:resume-fix-credits-updated", {
+            detail: {
+              remainingCredits: credit.remaining_credits,
+              creditPhase: credit.credit_phase,
+            },
+          }),
+        );
+      }
+      const params = new URLSearchParams({
+        candidate_id: candidateId,
+        recommendation_id: improvementJob.id,
+        previous_match_score: String(
+          improvementData?.match_score ?? improvementJob.match_score ?? "",
+        ),
+      });
+      if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
+      if (credit.remaining_credits != null)
+        params.set("remaining_credits", String(credit.remaining_credits));
+      if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
+      if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
+      if (options.selectedSkills?.length)
+        params.set("selected_skills", JSON.stringify(options.selectedSkills));
+      if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
+      window.location.assign(`/resume-editor?${params.toString()}`);
+      setImprovementJob(null);
+    },
+    [candidateId, improvementData?.match_score, improvementJob],
+  );
 
   const handleNotInterested = React.useCallback(async () => {
     if (!detailJob) return;
@@ -765,19 +1228,22 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
     setPendingDismissJob(detailJob);
   }, [detailJob]);
 
-  const handleConfirmDismiss = React.useCallback(async (reason) => {
-    if (!pendingDismissJob || dismissing) return;
-    const id = pendingDismissJob.id;
-    setDismissing(true);
-    try {
-      await onDismiss(id, reason);
-      setPendingDismissJob(null);
-    } catch {
-      // parent handles refresh / fallback
-    } finally {
-      setDismissing(false);
-    }
-  }, [pendingDismissJob, dismissing, onDismiss]);
+  const handleConfirmDismiss = React.useCallback(
+    async (reason) => {
+      if (!pendingDismissJob || dismissing) return;
+      const id = pendingDismissJob.id;
+      setDismissing(true);
+      try {
+        await onDismiss(id, reason);
+        setPendingDismissJob(null);
+      } catch {
+        // parent handles refresh / fallback
+      } finally {
+        setDismissing(false);
+      }
+    },
+    [pendingDismissJob, dismissing, onDismiss],
+  );
 
   return (
     <div className="relative">
@@ -789,13 +1255,28 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         onConfirm={handleConfirmDismiss}
       />
       {applicationFollowUpModal}
-      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openApplication(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
+      <ImproveMatchModal
+        job={improvementJob}
+        data={improvementData}
+        onClose={() => setImprovementJob(null)}
+        onApplyCurrent={() => {
+          openApplication(improvementJob);
+          setImprovementJob(null);
+        }}
+        onFixResume={openResumeEditor}
+      />
       {detailJob && (
         <div
+          role="dialog"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
           data-testid="jobs-detail-backdrop"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setDetailJob(null); }}
         >
+          <button
+            type="button"
+            aria-label="Close job details"
+            className="absolute inset-0"
+            onClick={() => setDetailJob(null)}
+          />
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
             <JobDetailModal
               job={detailJob}
@@ -823,9 +1304,10 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
         <div className="flex flex-col gap-2.5" data-testid="jobs-vertical-list">
           {orderedJobs.map((job) => {
             if (job.locked) {
-              const lockedMatchValue = job.match_score != null
-                ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
-                : null;
+              const lockedMatchValue =
+                job.match_score != null
+                  ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
+                  : null;
               const lockedRingValue = Math.min(Math.max(lockedMatchValue ?? 0, 0), 100);
               return (
                 <button
@@ -836,54 +1318,115 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                   onClick={onLockedJobClick}
                   className="relative min-h-[104px] w-full overflow-hidden rounded-xl border border-black/[0.06] bg-white text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62578F]"
                 >
-                  <div className="pointer-events-none select-none p-2.5 blur-[7px]" aria-hidden="true">
+                  <div
+                    className="pointer-events-none select-none p-2.5 blur-[7px]"
+                    aria-hidden="true"
+                  >
                     <div className="h-8 w-8 rounded-lg bg-[#E7E3F0]" />
                     <div className="mt-2 h-3 w-36 rounded bg-black/[0.12]" />
                     <div className="mt-2 h-3 w-24 rounded bg-black/[0.08]" />
                     <div className="mt-3 h-3 w-full rounded bg-black/[0.07]" />
                     <div className="mt-2 h-3 w-5/6 rounded bg-black/[0.07]" />
-                    <div className="mt-3 flex gap-2"><span className="h-6 w-20 rounded-full bg-black/[0.08]" /><span className="h-6 w-20 rounded-full bg-black/[0.08]" /></div>
+                    <div className="mt-3 flex gap-2">
+                      <span className="h-6 w-20 rounded-full bg-black/[0.08]" />
+                      <span className="h-6 w-20 rounded-full bg-black/[0.08]" />
+                    </div>
                   </div>
                   <span className="absolute inset-0 flex items-center justify-between gap-3 bg-white/25 p-2.5 text-left">
                     <span className="flex min-w-0 flex-1 flex-col justify-center">
-                      <span className="truncate text-[13px] font-semibold text-[#3E394E]">{job.title}</span>
+                      <span className="truncate text-[13px] font-semibold text-[#3E394E]">
+                        {job.title}
+                      </span>
                       <span className="mt-2 flex items-center gap-2">
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/95 text-[#62578F] shadow-sm"><LockKeyhole className="h-3.5 w-3.5" /></span>
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/95 text-[#62578F] shadow-sm">
+                          <LockKeyhole className="h-3.5 w-3.5" />
+                        </span>
                         <span className="flex flex-col">
-                          <span className="text-[12px] font-semibold text-[#3E394E]">Unlock this match</span>
+                          <span className="text-[12px] font-semibold text-[#3E394E]">
+                            Unlock this match
+                          </span>
                           <span className="text-[11px] text-[#62578F]">View plans</span>
                         </span>
                       </span>
                     </span>
-                    {lockedMatchValue != null && <span className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#1F2621] shadow-sm" aria-label={`${lockedMatchValue}% match`}>
-                      <svg className="absolute inset-1.5 h-[calc(100%-0.75rem)] w-[calc(100%-0.75rem)] -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
-                        <circle className="text-white/20" cx="18" cy="18" r="15.5" fill="none" stroke="currentColor" strokeWidth="3" />
-                        <circle className="text-[#67C77B]" cx="18" cy="18" r="15.5" fill="none" pathLength="100" stroke="currentColor" strokeWidth="3" strokeDasharray={`${lockedRingValue} 100`} strokeLinecap="round" />
-                      </svg>
-                      <span className="relative text-[13px] font-semibold text-white">{lockedMatchValue}%</span>
-                    </span>}
+                    {lockedMatchValue != null && (
+                      <span className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#1F2621] shadow-sm">
+                        <svg
+                          className="absolute inset-1.5 h-[calc(100%-0.75rem)] w-[calc(100%-0.75rem)] -rotate-90"
+                          viewBox="0 0 36 36"
+                          aria-hidden="true"
+                        >
+                          <circle
+                            className="text-white/20"
+                            cx="18"
+                            cy="18"
+                            r="15.5"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                          />
+                          <circle
+                            className="text-[#67C77B]"
+                            cx="18"
+                            cy="18"
+                            r="15.5"
+                            fill="none"
+                            pathLength="100"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeDasharray={`${lockedRingValue} 100`}
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                        <span className="relative text-[13px] font-semibold text-white">
+                          {lockedMatchValue}%
+                        </span>
+                      </span>
+                    )}
                   </span>
                 </button>
               );
             }
             const isSelected = selectedJob?.id === job.id;
-            const matchValue = job.match_score != null
-              ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
-              : null;
+            const matchValue =
+              job.match_score != null
+                ? Math.round(job.match_score * (job.match_score <= 1 ? 100 : 1))
+                : null;
             const companyName = job.company || job.company_name || job.employer || "";
-            const location = job.location || [job.city, job.state, job.country].filter(Boolean).join(", ");
+            const location =
+              job.location || [job.city, job.state, job.country].filter(Boolean).join(", ");
             const jobType = job.employment_type || job.job_type || job.employmentType || job.type;
-            const rawWorkMode = job.work_mode || job.workplace_type || job.workplace || job.remote_type || job.remote_policy || job.workplaceType;
-            const workMode = rawWorkMode || (job.remote === true ? "Remote" : job.remote === false ? "On-site" : "");
-            const experience = job.experience_required || job.experience_level || job.seniority || job.experience_required_text || job.experience;
-            const salary = job.salary || job.salary_range || job.compensation || job.minimum_salary || job.salary_min;
+            const rawWorkMode =
+              job.work_mode ||
+              job.workplace_type ||
+              job.workplace ||
+              job.remote_type ||
+              job.remote_policy ||
+              job.workplaceType;
+            const workMode =
+              rawWorkMode ||
+              (job.remote === true ? "Remote" : job.remote === false ? "On-site" : "");
+            const experience =
+              job.experience_required ||
+              job.experience_level ||
+              job.seniority ||
+              job.experience_required_text ||
+              job.experience;
+            const salary =
+              job.salary ||
+              job.salary_range ||
+              job.compensation ||
+              job.minimum_salary ||
+              job.salary_min;
             const postedAgo = job.posted_ago || job.postedAgo || job.posted;
             return (
-              <div
+              <button
+                type="button"
                 key={job.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => { setSelectedJob(job); openDetail(job); }}
+                onClick={() => {
+                  setSelectedJob(job);
+                  openDetail(job);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
@@ -899,46 +1442,95 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start gap-2.5">
-                    {job.logo ? (
-                      <img
-                        src={job.logo}
-                        alt={companyName}
-                        className="h-10 w-10 shrink-0 rounded-lg border border-black/[0.06] object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#E7E3F0]">
-                        <span className="text-[14px] font-semibold text-[#7B6FB8]">
-                          {(companyName || "?")[0].toUpperCase()}
-                        </span>
+                      {job.logo ? (
+                        <img
+                          src={job.logo}
+                          alt={companyName}
+                          className="h-10 w-10 shrink-0 rounded-lg border border-black/[0.06] object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#E7E3F0]">
+                          <span className="text-[14px] font-semibold text-[#7B6FB8]">
+                            {(companyName || "?")[0].toUpperCase()}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <h4 className="truncate text-[15px] font-semibold leading-tight text-[#1F1F1F]">
+                          {job.title || job.job_title}
+                        </h4>
+                        <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
+                          {job.company} ┬╖ {job.location}
+                        </p>
+                        {job.opportunity_type === "intern" && (
+                          <span
+                            data-testid={`internship-label-${job.id}`}
+                            className="mt-1 inline-block text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]"
+                          >
+                            Internship
+                          </span>
+                        )}
                       </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <h4 className="truncate text-[15px] font-semibold leading-tight text-[#1F1F1F]">
-                        {job.title || job.job_title}
-                      </h4>
-                      <p className="text-[11.5px] text-[#9A9A98] mt-0.5 truncate font-normal">
-                        {job.company} · {job.location}
-                      </p>
-                      {job.opportunity_type === "intern" && (
-                        <span data-testid={`internship-label-${job.id}`} className="mt-1 inline-block text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7B6FB8]">
-                          Internship
+                    </div>
+                    <div
+                      data-testid={`job-metadata-${job.id}`}
+                      className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48]"
+                    >
+                      {location && (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{location}</span>
+                        </span>
+                      )}
+                      {workMode && (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{workMode}</span>
+                        </span>
+                      )}
+                      {jobType && (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{jobType}</span>
+                        </span>
+                      )}
+                      {experience && (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{experience}</span>
+                        </span>
+                      )}
+                      {salary != null && salary !== "" && (
+                        <span className="flex min-w-0 items-center gap-1.5 font-medium text-[#1F1F1F]">
+                          <CircleDollarSign className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{salary}</span>
+                        </span>
+                      )}
+                      {postedAgo && (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" />{" "}
+                          <span className="truncate">{postedAgo}</span>
                         </span>
                       )}
                     </div>
-                    </div>
-                    <div data-testid={`job-metadata-${job.id}`} className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[11.5px] text-[#4A4A48]">
-                      {location && <span className="flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{location}</span></span>}
-                      {workMode && <span className="flex min-w-0 items-center gap-1.5"><Monitor className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{workMode}</span></span>}
-                      {jobType && <span className="flex min-w-0 items-center gap-1.5"><BriefcaseBusiness className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{jobType}</span></span>}
-                      {experience && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{experience}</span></span>}
-                      {salary != null && salary !== "" && <span className="flex min-w-0 items-center gap-1.5 font-medium text-[#1F1F1F]"><CircleDollarSign className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{salary}</span></span>}
-                      {postedAgo && <span className="flex min-w-0 items-center gap-1.5"><Clock3 className="h-3.5 w-3.5 shrink-0 text-[#8D8B88]" /> <span className="truncate">{postedAgo}</span></span>}
-                    </div>
                   </div>
-                  {matchValue != null && <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-2.5 py-2 text-white sm:w-[104px] sm:flex-col sm:justify-center sm:gap-0.5" aria-label={`${matchValue}% match`}><div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#67C77B] text-[13px] font-semibold">{matchValue}%</div><span className="text-[10px] font-semibold uppercase tracking-wide text-[#BBDCC0]" aria-hidden="true">&nbsp;</span></div>}
+                  {matchValue != null && (
+                    <div className="flex shrink-0 items-center gap-2 rounded-xl bg-[#1F2621] px-2.5 py-2 text-white sm:w-[104px] sm:flex-col sm:justify-center sm:gap-0.5">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#67C77B] text-[13px] font-semibold">
+                        {matchValue}%
+                      </div>
+                      <span
+                        className="text-[10px] font-semibold uppercase tracking-wide text-[#BBDCC0]"
+                        aria-hidden="true"
+                      >
+                        &nbsp;
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-black/[0.06] pt-2">
-                <button
+                  <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setDetailJob(null);
@@ -950,7 +1542,11 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                     Not for me
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTrack(job.id);
+                    }}
                     data-testid={`job-track-${job.id}`}
                     className={`flex items-center justify-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
                       job.tracked
@@ -959,18 +1555,33 @@ export function JobsTab({ jobs, matchingJobsTotal, onTrack, onDismiss, selectedJ
                     }`}
                   >
                     {job.tracked ? (
-                      <><BookmarkCheck className="w-3.5 h-3.5" strokeWidth={2} />Tracked</>
+                      <>
+                        <BookmarkCheck className="w-3.5 h-3.5" strokeWidth={2} />
+                        Tracked
+                      </>
                     ) : (
-                      <><Bookmark className="w-3.5 h-3.5" strokeWidth={2} />Track</>
+                      <>
+                        <Bookmark className="w-3.5 h-3.5" strokeWidth={2} />
+                        Track
+                      </>
                     )}
                   </button>
-                  {job.job_url && <button
-                    onClick={(e) => { e.stopPropagation(); handleApply(job); }}
-                    data-testid={`job-apply-${job.id}`}
-                    className="ml-auto inline-flex items-center justify-center gap-1 rounded-full bg-[#62C878] px-3 py-1 text-[11.5px] font-semibold text-[#14351C] transition-colors hover:bg-[#55B96A]"
-                  ><Sparkles className="h-3.5 w-3.5" />{job.easy_apply ? "Easy Apply" : "Apply"}</button>}
+                  {job.job_url && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleApply(job);
+                      }}
+                      data-testid={`job-apply-${job.id}`}
+                      className="ml-auto inline-flex items-center justify-center gap-1 rounded-full bg-[#62C878] px-3 py-1 text-[11.5px] font-semibold text-[#14351C] transition-colors hover:bg-[#55B96A]"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {job.easy_apply ? "Easy Apply" : "Apply"}
+                    </button>
+                  )}
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -986,47 +1597,77 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
   const [dismissing, setDismissing] = React.useState(false);
   const [improvementJob, setImprovementJob] = React.useState(null);
   const [improvementData, setImprovementData] = React.useState(null);
-  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(candidateId, onApplied);
+  const { openApplication, applicationFollowUpModal } = useApplicationFollowUp(
+    candidateId,
+    onApplied,
+  );
 
   const handleApply = React.useCallback(async () => {
     if (!detailJob?.job_url) return;
     setImprovementJob(detailJob);
     setImprovementData(null);
     try {
-      const response = await axios.get(`${API}/candidate/${candidateId}/jobs/${detailJob.id}/match-improvement`);
+      const response = await axios.get(
+        `${API}/candidate/${candidateId}/jobs/${detailJob.id}/match-improvement`,
+      );
       setImprovementData(response.data);
     } catch {
       // Keep the modal open with the recommendation's current score.
     }
   }, [candidateId, detailJob]);
-  const openResumeEditor = React.useCallback(async (options = {}) => {
-    if (!improvementJob) return;
-    let credit;
-    try {
-      ({ data: credit } = await axios.post(`${API}/candidate/${candidateId}/jobs/${improvementJob.id}/resume-fix-credit-claim`));
-    } catch (error) {
-      const remainingCredits = error?.response?.data?.detail?.remaining_credits;
-      if (remainingCredits != null) {
-        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits } }));
+  const openResumeEditor = React.useCallback(
+    async (options = {}) => {
+      if (!improvementJob) return;
+      let credit;
+      try {
+        ({ data: credit } = await axios.post(
+          `${API}/candidate/${candidateId}/jobs/${improvementJob.id}/resume-fix-credit-claim`,
+        ));
+      } catch (error) {
+        const remainingCredits = error?.response?.data?.detail?.remaining_credits;
+        if (remainingCredits != null) {
+          window.dispatchEvent(
+            new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits } }),
+          );
+        }
+        if (
+          error?.response?.status === 403 &&
+          error.response.data?.detail?.code === "resume_fix_credits_insufficient"
+        ) {
+          window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-insufficient"));
+        }
+        return;
       }
-      if (error?.response?.status === 403 && error.response.data?.detail?.code === "resume_fix_credits_insufficient") {
-        window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-insufficient"));
+      if (credit.remaining_credits != null) {
+        window.dispatchEvent(
+          new CustomEvent("eve:resume-fix-credits-updated", {
+            detail: {
+              remainingCredits: credit.remaining_credits,
+              creditPhase: credit.credit_phase,
+            },
+          }),
+        );
       }
-      return;
-    }
-    if (credit.remaining_credits != null) {
-      window.dispatchEvent(new CustomEvent("eve:resume-fix-credits-updated", { detail: { remainingCredits: credit.remaining_credits, creditPhase: credit.credit_phase } }));
-    }
-    const params = new URLSearchParams({ candidate_id: candidateId, recommendation_id: improvementJob.id, previous_match_score: String(improvementData?.match_score ?? improvementJob.match_score ?? "") });
-    if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
-    if (credit.remaining_credits != null) params.set("remaining_credits", String(credit.remaining_credits));
-    if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
-    if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
-    if (options.selectedSkills?.length) params.set("selected_skills", JSON.stringify(options.selectedSkills));
-    if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
-    window.location.assign(`/resume-editor?${params.toString()}`);
-    setImprovementJob(null);
-  }, [candidateId, improvementData?.match_score, improvementJob]);
+      const params = new URLSearchParams({
+        candidate_id: candidateId,
+        recommendation_id: improvementJob.id,
+        previous_match_score: String(
+          improvementData?.match_score ?? improvementJob.match_score ?? "",
+        ),
+      });
+      if (credit.claim_id) params.set("fix_credit_claim_id", credit.claim_id);
+      if (credit.remaining_credits != null)
+        params.set("remaining_credits", String(credit.remaining_credits));
+      if (credit.credit_phase) params.set("credit_phase", credit.credit_phase);
+      if (improvementJob.job_id) params.set("job_id", improvementJob.job_id);
+      if (options.selectedSkills?.length)
+        params.set("selected_skills", JSON.stringify(options.selectedSkills));
+      if (options.sections) params.set("selected_sections", JSON.stringify(options.sections));
+      window.location.assign(`/resume-editor?${params.toString()}`);
+      setImprovementJob(null);
+    },
+    [candidateId, improvementData?.match_score, improvementJob],
+  );
 
   const handleNotInterested = React.useCallback(() => {
     if (!detailJob) return;
@@ -1034,18 +1675,21 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
     setPendingDismissJob(detailJob);
   }, [detailJob]);
 
-  const handleConfirmDismiss = React.useCallback(async (reason) => {
-    if (!pendingDismissJob || dismissing) return;
-    setDismissing(true);
-    try {
-      await onDismissJob?.(pendingDismissJob.id, reason);
-      setPendingDismissJob(null);
-    } catch {
-      // parent handles refresh
-    } finally {
-      setDismissing(false);
-    }
-  }, [pendingDismissJob, dismissing, onDismissJob]);
+  const handleConfirmDismiss = React.useCallback(
+    async (reason) => {
+      if (!pendingDismissJob || dismissing) return;
+      setDismissing(true);
+      try {
+        await onDismissJob?.(pendingDismissJob.id, reason);
+        setPendingDismissJob(null);
+      } catch {
+        // parent handles refresh
+      } finally {
+        setDismissing(false);
+      }
+    },
+    [pendingDismissJob, dismissing, onDismissJob],
+  );
 
   return (
     <div className="space-y-2" data-testid="tracked-tab-content">
@@ -1057,13 +1701,31 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
         onConfirm={handleConfirmDismiss}
       />
       {applicationFollowUpModal}
-      <ImproveMatchModal job={improvementJob} data={improvementData} onClose={() => setImprovementJob(null)} onApplyCurrent={() => { openApplication(improvementJob); setImprovementJob(null); }} onFixResume={openResumeEditor} />
+      <ImproveMatchModal
+        job={improvementJob}
+        data={improvementData}
+        onClose={() => setImprovementJob(null)}
+        onApplyCurrent={() => {
+          openApplication(improvementJob);
+          setImprovementJob(null);
+        }}
+        onFixResume={openResumeEditor}
+      />
       {detailJob && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          role="dialog"
           data-testid="tracked-detail-backdrop"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setDetailJob(null); }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setDetailJob(null);
+          }}
         >
+          <button
+            type="button"
+            aria-label="Close tracked job details"
+            className="absolute inset-0"
+            onClick={() => setDetailJob(null)}
+          />
           <div className="relative w-full max-w-lg h-[80vh] bg-[#FBFBF9] rounded-2xl overflow-hidden shadow-2xl">
             <JobDetailModal
               job={detailJob}
@@ -1084,6 +1746,7 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
       ) : (
         tracked.map((job) => (
           <button
+            type="button"
             key={job.id}
             data-testid={`tracked-job-card-${job.id}`}
             onClick={() => setDetailJob(job)}
@@ -1102,7 +1765,7 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
               <div className="min-w-0">
                 <p className="text-[13px] font-medium text-[#1F1F1F] truncate">{job.title}</p>
                 <p className="text-[11.5px] text-[#9A9A98] truncate font-normal">
-                  {job.company} · {job.location}
+                  {job.company} ┬╖ {job.location}
                 </p>
               </div>
             </div>
@@ -1112,15 +1775,22 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
                   Applied
                 </span>
               )}
-              <span
-                onClick={(e) => { e.stopPropagation(); onTrack(job.id); }}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && (e.stopPropagation(), onTrack(job.id))}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTrack(job.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.stopPropagation();
+                    onTrack(job.id);
+                  }
+                }}
                 className="text-[11.5px] font-normal text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2"
               >
                 Untrack
-              </span>
+              </button>
             </div>
           </button>
         ))
@@ -1129,7 +1799,17 @@ function TrackedTab({ jobs, onTrack, onDismissJob, candidateId, onApplied }) {
   );
 }
 
-function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onResumeReplaced, onCertUploaded, onCertReplaced, onResumeDeleted, onCertDeleted }) {
+function DocumentsTab({
+  documents,
+  docsLoading,
+  candidateId,
+  candidateToken,
+  onResumeReplaced,
+  onCertUploaded,
+  onCertReplaced,
+  onResumeDeleted,
+  onCertDeleted,
+}) {
   const resumeInputRef = React.useRef(null);
   const certInputRef = React.useRef(null);
   const certReplaceRefs = React.useRef({});
@@ -1138,11 +1818,10 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
   const [confirmDelete, setConfirmDelete] = React.useState(null); // { type: 'resume' } | { type: 'cert', id, filename }
 
   const authHeaders = candidateToken ? { Authorization: `Bearer ${candidateToken}` } : {};
-  const postDocument = (path, formData) => (
+  const postDocument = (path, formData) =>
     candidateToken
       ? axios.post(`${API}${path}`, formData, { headers: authHeaders })
-      : axios.post(`${API}${path}`, formData)
-  );
+      : axios.post(`${API}${path}`, formData);
 
   const openDocument = (event, path) => {
     event.preventDefault();
@@ -1177,7 +1856,9 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
     try {
       const arrayBuffer = await file.arrayBuffer();
       const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
-      const fingerprint = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const fingerprint = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
       if (documents.resume?.fingerprint && documents.resume.fingerprint === fingerprint) {
         setDeleteError("Duplicate Upload");
         return;
@@ -1198,12 +1879,14 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
     if (!selectedFiles.length || !candidateId) return;
     setBusy(true);
     try {
-      await Promise.all(selectedFiles.map(async (file) => {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await postDocument(`/candidate/${candidateId}/certificates/upload`, fd);
-        onCertUploaded(res.data);
-      }));
+      await Promise.all(
+        selectedFiles.map(async (file) => {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await postDocument(`/candidate/${candidateId}/certificates/upload`, fd);
+          onCertUploaded(res.data);
+        }),
+      );
     } catch {
       // silent
     } finally {
@@ -1236,7 +1919,9 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
         setConfirmDelete(null);
         onResumeDeleted();
       } else {
-        await axios.delete(`${API}/candidate/${candidateId}/certificates/${confirmDelete.id}`, { headers: authHeaders });
+        await axios.delete(`${API}/candidate/${candidateId}/certificates/${confirmDelete.id}`, {
+          headers: authHeaders,
+        });
         setConfirmDelete(null);
         onCertDeleted(confirmDelete.id);
       }
@@ -1248,7 +1933,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
   };
 
   if (docsLoading) {
-    return <p className="text-[13px] text-[#9A9A98] font-normal">Loading documents…</p>;
+    return <p className="text-[13px] text-[#9A9A98] font-normal">Loading documentsΓÇª</p>;
   }
 
   return (
@@ -1261,26 +1946,32 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
             <p className="text-[13px] text-[#4A4A48] mb-4">
               Are you sure you want to delete{" "}
               <span className="font-medium">
-                {confirmDelete.type === "resume" ? documents.resume?.filename : confirmDelete.filename}
-              </span>?
+                {confirmDelete.type === "resume"
+                  ? documents.resume?.filename
+                  : confirmDelete.filename}
+              </span>
+              ?
             </p>
-            {deleteError && (
-              <p className="text-[12px] text-red-500 mb-3">{deleteError}</p>
-            )}
+            {deleteError && <p className="text-[12px] text-red-500 mb-3">{deleteError}</p>}
             <div className="flex gap-3">
               <button
-                onClick={() => { setConfirmDelete(null); setDeleteError(null); }}
+                type="button"
+                onClick={() => {
+                  setConfirmDelete(null);
+                  setDeleteError(null);
+                }}
                 disabled={busy}
                 className="flex-1 py-2 rounded-xl bg-black/[0.05] text-[#4A4A48] text-[13px] font-normal hover:bg-black/[0.09] transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleConfirmDelete}
                 disabled={busy}
                 className="flex-1 py-2 rounded-xl bg-red-500 text-white text-[13px] font-medium hover:bg-red-600 transition-colors disabled:opacity-50"
               >
-                {busy ? "Deleting…" : "Delete"}
+                {busy ? "DeletingΓÇª" : "Delete"}
               </button>
             </div>
           </div>
@@ -1319,6 +2010,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
                 onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
               />
               <button
+                type="button"
                 onClick={() => resumeInputRef.current?.click()}
                 disabled={busy}
                 className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
@@ -1326,6 +2018,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
                 Replace
               </button>
               <button
+                type="button"
                 onClick={() => setConfirmDelete({ type: "resume" })}
                 disabled={busy}
                 className="text-[12px] font-normal text-red-500 bg-red-50 hover:bg-red-100 rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
@@ -1345,6 +2038,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
               onChange={(e) => e.target.files?.[0] && handleResumeReplace(e.target.files[0])}
             />
             <button
+              type="button"
               data-testid="add-resume-btn"
               onClick={() => resumeInputRef.current?.click()}
               disabled={busy || !candidateId}
@@ -1358,20 +2052,41 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
 
       {/* Application-specific resumes are generated by Fix My Resume. */}
       <div>
-        <h3 className="text-[13px] font-medium text-[#1F1F1F] mb-3">Application-specific resumes</h3>
+        <h3 className="text-[13px] font-medium text-[#1F1F1F] mb-3">
+          Application-specific resumes
+        </h3>
         {documents.application_resumes?.length > 0 ? (
           <div className="space-y-1">
             {documents.application_resumes.map((resume) => (
-              <div key={resume.id} className="eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3">
-                <span className="text-[13px] font-medium text-[#1F1F1F] truncate min-w-0">{resume.filename}</span>
-                <a href={`${API}/candidate/${candidateId}/application-resumes/${resume.id}/view`}
-                  onClick={(event) => openDocument(event, `/candidate/${candidateId}/application-resumes/${resume.id}/view`)}
-                  target="_blank" rel="noreferrer"
-                  className="shrink-0 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors">View</a>
+              <div
+                key={resume.id}
+                className="eve-hover-row flex items-center justify-between gap-3 px-3 py-3 -mx-3"
+              >
+                <span className="text-[13px] font-medium text-[#1F1F1F] truncate min-w-0">
+                  {resume.filename}
+                </span>
+                <a
+                  href={`${API}/candidate/${candidateId}/application-resumes/${resume.id}/view`}
+                  onClick={(event) =>
+                    openDocument(
+                      event,
+                      `/candidate/${candidateId}/application-resumes/${resume.id}/view`,
+                    )
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors"
+                >
+                  View
+                </a>
               </div>
             ))}
           </div>
-        ) : <p className="text-[13px] text-[#9A9A98] font-normal">No application-specific resumes yet.</p>}
+        ) : (
+          <p className="text-[13px] text-[#9A9A98] font-normal">
+            No application-specific resumes yet.
+          </p>
+        )}
       </div>
 
       {/* Certificates */}
@@ -1386,7 +2101,9 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
               >
                 <a
                   href={`${API}/candidate/${candidateId}/certificates/${cert.id}/view`}
-                  onClick={(event) => openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)}
+                  onClick={(event) =>
+                    openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)
+                  }
                   target="_blank"
                   rel="noreferrer"
                   className="text-[13px] font-medium text-[#1F1F1F] truncate hover:underline min-w-0"
@@ -1396,7 +2113,9 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
                 <div className="flex items-center gap-2 shrink-0">
                   <a
                     href={`${API}/candidate/${candidateId}/certificates/${cert.id}/view`}
-                    onClick={(event) => openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)}
+                    onClick={(event) =>
+                      openDocument(event, `/candidate/${candidateId}/certificates/${cert.id}/view`)
+                    }
                     target="_blank"
                     rel="noreferrer"
                     className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors"
@@ -1404,13 +2123,18 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
                     View
                   </a>
                   <input
-                    ref={(el) => { certReplaceRefs.current[cert.id] = el; }}
+                    ref={(el) => {
+                      certReplaceRefs.current[cert.id] = el;
+                    }}
                     type="file"
                     accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
                     className="hidden"
-                    onChange={(e) => e.target.files?.[0] && handleCertReplace(cert.id, e.target.files[0])}
+                    onChange={(e) =>
+                      e.target.files?.[0] && handleCertReplace(cert.id, e.target.files[0])
+                    }
                   />
                   <button
+                    type="button"
                     onClick={() => certReplaceRefs.current[cert.id]?.click()}
                     disabled={busy}
                     className="text-[12px] font-normal text-[#4A4A48] bg-black/[0.03] hover:bg-black/[0.06] rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
@@ -1418,7 +2142,10 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
                     Replace
                   </button>
                   <button
-                    onClick={() => setConfirmDelete({ type: "cert", id: cert.id, filename: cert.filename })}
+                    type="button"
+                    onClick={() =>
+                      setConfirmDelete({ type: "cert", id: cert.id, filename: cert.filename })
+                    }
                     disabled={busy}
                     className="text-[12px] font-normal text-red-500 bg-red-50 hover:bg-red-100 rounded-full px-3 py-1.5 transition-colors disabled:opacity-50"
                   >
@@ -1441,6 +2168,7 @@ function DocumentsTab({ documents, docsLoading, candidateId, candidateToken, onR
           onChange={(e) => handleCertUpload(e.target.files)}
         />
         <button
+          type="button"
           data-testid="add-certificate-btn"
           onClick={() => certInputRef.current?.click()}
           disabled={busy || !candidateId}
@@ -1515,7 +2243,8 @@ function ActivityNotificationCard({ notif, onRead }) {
           )}
           {meta.scheduled_at && (
             <p className="text-[12px] text-[#4A4A48]">
-              <span className="font-medium">Scheduled:</span> {new Date(meta.scheduled_at).toLocaleString()}
+              <span className="font-medium">Scheduled:</span>{" "}
+              {new Date(meta.scheduled_at).toLocaleString()}
             </p>
           )}
           {meta.location && (
@@ -1541,6 +2270,7 @@ function ActivityNotificationCard({ notif, onRead }) {
       )}
       {!notif.is_read && (
         <button
+          type="button"
           onClick={() => onRead(notif.id)}
           className="mt-3 text-[11.5px] text-[#9A9A98] hover:text-[#4A4A48] underline underline-offset-2"
         >
@@ -1570,18 +2300,20 @@ function OpportunitiesTab({ candidateId, onInterested }) {
       .catch(() => {});
   }, [candidateId]);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   const respond = async (recId, response) => {
     setResponding(true);
     try {
       const res = await axios.post(
         `${API}/candidate/${candidateId}/opportunities/${recId}/respond`,
-        { response }
+        { response },
       );
       const updated = res.data.candidate_response ?? response;
       setOpps((prev) =>
-        prev.map((o) => o.id === recId ? { ...o, candidate_response: updated } : o)
+        prev.map((o) => (o.id === recId ? { ...o, candidate_response: updated } : o)),
       );
       if (selected?.id === recId) setSelected((s) => ({ ...s, candidate_response: updated }));
       if (response === "interested" && onInterested) onInterested();
@@ -1595,16 +2327,14 @@ function OpportunitiesTab({ candidateId, onInterested }) {
   const handleMarkRead = async (notifId) => {
     try {
       await axios.post(`${API}/candidate/${candidateId}/notifications/${notifId}/read`);
-      setNotifications((prev) =>
-        prev.map((n) => n.id === notifId ? { ...n, is_read: true } : n)
-      );
+      setNotifications((prev) => prev.map((n) => (n.id === notifId ? { ...n, is_read: true } : n)));
     } catch {
       // silent
     }
   };
 
   if (error) return <p className="text-[13px] text-red-500">{error}</p>;
-  if (opps === null) return <p className="text-[13px] text-[#9A9A98]">Loading…</p>;
+  if (opps === null) return <p className="text-[13px] text-[#9A9A98]">LoadingΓÇª</p>;
 
   const pending = opps.filter((o) => !o.candidate_response);
   const responded = opps.filter((o) => o.candidate_response);
@@ -1621,39 +2351,46 @@ function OpportunitiesTab({ candidateId, onInterested }) {
   if (selected) {
     const job = selected.job || {};
     const skills = Array.isArray(job.skills)
-      ? job.skills.map((s) => (typeof s === "string" ? s : s?.name ?? "")).filter(Boolean)
+      ? job.skills.map((s) => (typeof s === "string" ? s : (s?.name ?? ""))).filter(Boolean)
       : [];
     const responded_val = selected.candidate_response;
     return (
       <div className="space-y-5" data-testid="opportunity-detail">
         <button
+          type="button"
           onClick={() => setSelected(null)}
           className="text-[12px] text-[#4A4A48] hover:text-[#1F1F1F] underline underline-offset-2"
         >
-          ← Back
+          ΓåÉ Back
         </button>
         <div className="space-y-1">
           <h2 className="text-[16px] font-semibold text-[#1F1F1F]">{job.title || "Role"}</h2>
           <p className="text-[13px] text-[#4A4A48]">
             {job.company && <span className="font-medium">{job.company}</span>}
-            {job.location && <span> · {job.location}</span>}
+            {job.location && <span> ┬╖ {job.location}</span>}
           </p>
         </div>
         {selected.recruiter_message && (
           <div className="bg-[#F4F4F2] rounded-xl px-4 py-3">
-            <p className="text-[12px] text-[#4A4A48] font-normal italic">"{selected.recruiter_message}"</p>
+            <p className="text-[12px] text-[#4A4A48] font-normal italic">
+              "{selected.recruiter_message}"
+            </p>
           </div>
         )}
         {job.description && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">About the role</p>
-            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed"><JobDescriptionContent source={job.description} /></div>
+            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed">
+              <JobDescriptionContent source={job.description} />
+            </div>
           </div>
         )}
         {job.requirements && (
           <div>
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-1">Requirements</p>
-            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed"><JobDescriptionContent source={job.requirements} /></div>
+            <div className="text-[12.5px] text-[#4A4A48] leading-relaxed">
+              <JobDescriptionContent source={job.requirements} />
+            </div>
           </div>
         )}
         {skills.length > 0 && (
@@ -1661,14 +2398,21 @@ function OpportunitiesTab({ candidateId, onInterested }) {
             <p className="text-[12px] font-medium text-[#1F1F1F] mb-2">Skills</p>
             <div className="flex flex-wrap gap-1.5">
               {skills.map((sk) => (
-                <span key={sk} className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full">{sk}</span>
+                <span
+                  key={sk}
+                  className="bg-black/[0.03] text-[#1F1F1F] text-[12px] px-2.5 py-1 rounded-full"
+                >
+                  {sk}
+                </span>
               ))}
             </div>
           </div>
         )}
         <div className="pt-2">
           {responded_val === "interested" && (
-            <p className="text-[13px] font-medium text-[#2E7538]">✓ You expressed interest in this role.</p>
+            <p className="text-[13px] font-medium text-[#2E7538]">
+              Γ£ô You expressed interest in this role.
+            </p>
           )}
           {responded_val === "not_interested" && (
             <p className="text-[13px] text-[#9A9A98]">You passed on this opportunity.</p>
@@ -1676,6 +2420,7 @@ function OpportunitiesTab({ candidateId, onInterested }) {
           {!responded_val && (
             <div className="flex gap-3">
               <button
+                type="button"
                 onClick={() => respond(selected.id, "interested")}
                 disabled={responding}
                 data-testid="opp-interested-btn"
@@ -1684,6 +2429,7 @@ function OpportunitiesTab({ candidateId, onInterested }) {
                 Interested
               </button>
               <button
+                type="button"
                 onClick={() => respond(selected.id, "not_interested")}
                 disabled={responding}
                 data-testid="opp-not-interested-btn"
@@ -1703,6 +2449,7 @@ function OpportunitiesTab({ candidateId, onInterested }) {
     const resp = opp.candidate_response;
     return (
       <button
+        type="button"
         key={opp.id}
         onClick={() => setSelected(opp)}
         data-testid={`opp-card-${opp.id}`}
@@ -1710,9 +2457,12 @@ function OpportunitiesTab({ candidateId, onInterested }) {
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <p className="text-[13.5px] font-medium text-[#1F1F1F] truncate">{job.title || "Role"}</p>
+            <p className="text-[13.5px] font-medium text-[#1F1F1F] truncate">
+              {job.title || "Role"}
+            </p>
             <p className="text-[12px] text-[#9A9A98] mt-0.5 truncate">
-              {job.company}{job.location ? ` · ${job.location}` : ""}
+              {job.company}
+              {job.location ? ` ┬╖ ${job.location}` : ""}
             </p>
           </div>
           {!resp && (
@@ -1778,7 +2528,10 @@ const TAB_TITLES = {
 };
 
 function _profileDownloadFilename(candidateName) {
-  const safeName = (candidateName || "").trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9._-]/g, "");
+  const safeName = (candidateName || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^A-Za-z0-9._-]/g, "");
   return `${safeName || "candidate_profile"}_profile.pdf`;
 }
 
@@ -1791,24 +2544,20 @@ function _extractFilenameFromContentDisposition(value) {
 }
 
 async function downloadProfilePdf(candidateId, candidateName) {
-  try {
-    const response = await axios.get(`${API}/candidate/${candidateId}/profile/download`, {
-      responseType: "blob",
-    });
-    const blob = new Blob([response.data], { type: "application/pdf" });
-    const downloadUrl = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    link.download =
-      _extractFilenameFromContentDisposition(response.headers?.["content-disposition"]) ||
-      _profileDownloadFilename(candidateName);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(downloadUrl);
-  } catch (error) {
-    throw error;
-  }
+  const response = await axios.get(`${API}/candidate/${candidateId}/profile/download`, {
+    responseType: "blob",
+  });
+  const blob = new Blob([response.data], { type: "application/pdf" });
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download =
+    _extractFilenameFromContentDisposition(response.headers?.["content-disposition"]) ||
+    _profileDownloadFilename(candidateName);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(downloadUrl);
 }
 
 export default function LivingProfile({
@@ -1843,7 +2592,10 @@ export default function LivingProfile({
     if (pdfGenerating) return;
     setPdfGenerating(true);
     try {
-      await downloadProfilePdf(candidateId || userProfile.candidate_id || userProfile.candidateId || userProfile.id, userProfile.name);
+      await downloadProfilePdf(
+        candidateId || userProfile.candidate_id || userProfile.candidateId || userProfile.id,
+        userProfile.name,
+      );
     } finally {
       setPdfGenerating(false);
     }
@@ -1865,6 +2617,7 @@ export default function LivingProfile({
         <div className="flex items-center gap-3">
           {activeTab === "profile" && (
             <button
+              type="button"
               onClick={handleDownloadPdf}
               disabled={pdfGenerating}
               data-testid="download-profile-pdf-btn"
@@ -1872,13 +2625,10 @@ export default function LivingProfile({
               title="Download profile as PDF"
             >
               <Download className="w-3.5 h-3.5" strokeWidth={1.75} />
-              {pdfGenerating ? "Generating…" : "Download PDF"}
+              {pdfGenerating ? "GeneratingΓÇª" : "Download PDF"}
             </button>
           )}
-          <ProfileStrengthBar
-            label={userProfile.strength}
-            percent={userProfile.strengthPercent}
-          />
+          <ProfileStrengthBar label={userProfile.strength} percent={userProfile.strengthPercent} />
           {userProfile.recommendation_readiness && (
             <span
               data-testid="recommendation-readiness-badge"
@@ -1886,15 +2636,15 @@ export default function LivingProfile({
                 userProfile.recommendation_readiness.level === "high"
                   ? "bg-[#D4EDDA] text-[#2E7538]"
                   : userProfile.recommendation_readiness.level === "medium"
-                  ? "bg-[#FFF3CD] text-[#856404]"
-                  : "bg-[#F8D7DA] text-[#721C24]"
+                    ? "bg-[#FFF3CD] text-[#856404]"
+                    : "bg-[#F8D7DA] text-[#721C24]"
               }`}
             >
               {userProfile.recommendation_readiness.level === "high"
                 ? "Ready for recommendations"
                 : userProfile.recommendation_readiness.level === "medium"
-                ? "Partial match confidence"
-                : "Building match confidence"}
+                  ? "Partial match confidence"
+                  : "Building match confidence"}
             </span>
           )}
         </div>
@@ -1902,10 +2652,16 @@ export default function LivingProfile({
 
       {/* Scrollable content */}
       <div ref={profileContentRef} className="flex-1 overflow-y-auto eve-scroll px-8 pb-10">
-
         <div className="w-full">
-
-          {activeTab === "profile" && <ProfileTab user={userProfile} candidateId={candidateId} onToggleOpenToMatches={onToggleOpenToMatches} onPhotoChange={onPhotoChange} onProfileUpdated={onProfileUpdated} />}
+          {activeTab === "profile" && (
+            <ProfileTab
+              user={userProfile}
+              candidateId={candidateId}
+              onToggleOpenToMatches={onToggleOpenToMatches}
+              onPhotoChange={onPhotoChange}
+              onProfileUpdated={onProfileUpdated}
+            />
+          )}
           {activeTab === "jobs" && (
             <JobsTab
               jobs={jobs}
@@ -1922,7 +2678,13 @@ export default function LivingProfile({
             />
           )}
           {activeTab === "tracked" && (
-            <TrackedTab jobs={jobs} onTrack={onTrackJob} onDismissJob={onDismissJob} candidateId={candidateId} onApplied={onInterested} />
+            <TrackedTab
+              jobs={jobs}
+              onTrack={onTrackJob}
+              onDismissJob={onDismissJob}
+              candidateId={candidateId}
+              onApplied={onInterested}
+            />
           )}
           {activeTab === "documents" && (
             <DocumentsTab
@@ -1946,9 +2708,13 @@ export default function LivingProfile({
   );
 }
 
-function ResumeContextTab({ resume, docsLoading }) {
+function _ResumeContextTab({ resume, docsLoading }) {
   if (docsLoading) {
-    return <p className="text-[13px] text-[#9A9A98]" data-testid="resume-context-loading">Loading resume…</p>;
+    return (
+      <p className="text-[13px] text-[#9A9A98]" data-testid="resume-context-loading">
+        Loading resumeΓÇª
+      </p>
+    );
   }
 
   if (!resume) {
