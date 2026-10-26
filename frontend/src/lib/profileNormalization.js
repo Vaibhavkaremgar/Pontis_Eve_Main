@@ -1,4 +1,4 @@
-const CERTIFICATION_BOILERPLATE_WORDS = new Set([
+﻿const CERTIFICATION_BOILERPLATE_WORDS = new Set([
   "cert",
   "certificate",
   "certificates",
@@ -12,31 +12,52 @@ const CERTIFICATION_BOILERPLATE_WORDS = new Set([
   "training",
 ]);
 
-const EXPERIENCE_OPEN_ENDED_MARKERS = new Set([
-  "present",
-  "current",
-  "ongoing",
-  "now",
-]);
+const EXPERIENCE_OPEN_ENDED_MARKERS = new Set(["present", "current", "ongoing", "now"]);
 
 const EXPERIENCE_MONTHS = new Map([
-  ["jan", 0], ["january", 0],
-  ["feb", 1], ["february", 1],
-  ["mar", 2], ["march", 2],
-  ["apr", 3], ["april", 3],
+  ["jan", 0],
+  ["january", 0],
+  ["feb", 1],
+  ["february", 1],
+  ["mar", 2],
+  ["march", 2],
+  ["apr", 3],
+  ["april", 3],
   ["may", 4],
-  ["jun", 5], ["june", 5],
-  ["jul", 6], ["july", 6],
-  ["aug", 7], ["august", 7],
-  ["sep", 8], ["sept", 8], ["september", 8],
-  ["oct", 9], ["october", 9],
-  ["nov", 10], ["november", 10],
-  ["dec", 11], ["december", 11],
+  ["jun", 5],
+  ["june", 5],
+  ["jul", 6],
+  ["july", 6],
+  ["aug", 7],
+  ["august", 7],
+  ["sep", 8],
+  ["sept", 8],
+  ["september", 8],
+  ["oct", 9],
+  ["october", 9],
+  ["nov", 10],
+  ["november", 10],
+  ["dec", 11],
+  ["december", 11],
 ]);
 
-const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_LABELS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
 
-const IMMEDIATE_JOINER_PATTERN = /\b(?:immediate\s+joiner|i(?:'m| am)?\s+an?\s+immediate\s+joiner)\b/i;
+const IMMEDIATE_JOINER_PATTERN =
+  /\b(?:immediate\s+joiner|i(?:'m| am)?\s+an?\s+immediate\s+joiner)\b/i;
 
 function normalizeText(value) {
   if (value === null || value === undefined) return "";
@@ -82,12 +103,17 @@ function normalizeAvailabilityValue(value) {
 
 function relaxedCertificationKey(value) {
   const stripped = normalizeKey(value).replace(/[^\w\s]+/g, " ");
-  const tokens = stripped.split(/\s+/).filter(Boolean).filter((token) => !CERTIFICATION_BOILERPLATE_WORDS.has(token));
+  const tokens = stripped
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => !CERTIFICATION_BOILERPLATE_WORDS.has(token));
   return tokens.join(" ") || stripped.trim();
 }
 
 function looksLikeCertification(value) {
-  return /\b(?:cert|certificate|certificates|certification|certifications|certified|course|courses|credential|credentials|training|license|licence)\b/i.test(normalizeKey(value));
+  return /\b(?:cert|certificate|certificates|certification|certifications|certified|course|courses|credential|credentials|training|license|licence)\b/i.test(
+    normalizeKey(value),
+  );
 }
 
 function isOpenEndedExperienceValue(value) {
@@ -105,9 +131,7 @@ function parseExperienceDate(value, role = "end") {
   const yearOnly = cleaned.match(/^(\d{4})$/);
   if (yearOnly) {
     const year = Number(yearOnly[1]);
-    return role === "end"
-      ? Date.UTC(year + 1, 0, 1)
-      : Date.UTC(year, 0, 1);
+    return role === "end" ? Date.UTC(year + 1, 0, 1) : Date.UTC(year, 0, 1);
   }
 
   const yearMonth = cleaned.match(/^(\d{4})[-/.](\d{1,2})$/);
@@ -115,9 +139,7 @@ function parseExperienceDate(value, role = "end") {
     const year = Number(yearMonth[1]);
     const month = Number(yearMonth[2]) - 1;
     if (role === "end") {
-      return month === 11
-        ? Date.UTC(year + 1, 0, 1)
-        : Date.UTC(year, month + 1, 1);
+      return month === 11 ? Date.UTC(year + 1, 0, 1) : Date.UTC(year, month + 1, 1);
     }
     return Date.UTC(year, month, 1);
   }
@@ -128,9 +150,7 @@ function parseExperienceDate(value, role = "end") {
     if (month != null) {
       const year = Number(monthYear[2]);
       if (role === "end") {
-        return month === 11
-          ? Date.UTC(year + 1, 0, 1)
-          : Date.UTC(year, month + 1, 1);
+        return month === 11 ? Date.UTC(year + 1, 0, 1) : Date.UTC(year, month + 1, 1);
       }
       return Date.UTC(year, month, 1);
     }
@@ -161,7 +181,7 @@ function parseExperienceDate(value, role = "end") {
 function splitExperienceDateRange(value) {
   const text = normalizeText(value);
   if (!text) return null;
-  const parts = text.split(/\s+(?:[\u2013\u2014-]|â€”)\s+/, 2).map(normalizeText);
+  const parts = text.split(/\s+(?:[\u2013\u2014-]|├óΓé¼ΓÇ¥)\s+/, 2).map(normalizeText);
   return parts.length === 2 ? parts : null;
 }
 
@@ -188,7 +208,7 @@ function formatExperienceDateLabel(value) {
   return text;
 }
 
-function formatExperienceDateRange(exp) {
+function _formatExperienceDateRange(exp) {
   if (!exp || typeof exp !== "object") return "";
 
   const rawStart = exp.start_date ?? exp.startDate ?? null;
@@ -209,25 +229,28 @@ function formatExperienceDateRange(exp) {
   }
 
   const startLabel = formatExperienceDateLabel(start);
-  // No valid start date — if end is open-ended show just "Present", else nothing
+  // No valid start date ΓÇö if end is open-ended show just "Present", else nothing
   if (!startLabel || startLabel === "Present") {
     const endLabel = formatExperienceDateLabel(end);
-    if (endLabel === "Present" || isOpenEndedExperienceValue(normalizeText(start))) return "Present";
+    if (endLabel === "Present" || isOpenEndedExperienceValue(normalizeText(start)))
+      return "Present";
     return rawDates;
   }
 
   const endLabel = formatExperienceDateLabel(end);
   if (!endLabel || endLabel === "Present") {
-    return `${startLabel} — Present`;
+    return `${startLabel} ΓÇö Present`;
   }
-  return `${startLabel} — ${endLabel}`;
+  return `${startLabel} ΓÇö ${endLabel}`;
 }
 
 // Education does not inherit the work-history rule that assumes a missing end
 // date means an active role. "Present" is shown only when explicitly supplied.
 function isValidEducationCalendarDate(year, month, day) {
   const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
 }
 
 function formatEducationDateLabel(value) {
@@ -241,7 +264,9 @@ function formatEducationDateLabel(value) {
   const yearMonth = text.match(/^(\d{4})[-/.](\d{1,2})$/);
   if (yearMonth) {
     const month = Number(yearMonth[2]);
-    return month >= 1 && month <= 12 ? `${String(month).padStart(2, "0")}-${yearMonth[1].slice(-2)}` : "";
+    return month >= 1 && month <= 12
+      ? `${String(month).padStart(2, "0")}-${yearMonth[1].slice(-2)}`
+      : "";
   }
 
   const monthYear = text.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
@@ -255,7 +280,9 @@ function formatEducationDateLabel(value) {
     const year = Number(iso[1]);
     const month = Number(iso[2]);
     const day = Number(iso[3]);
-    return isValidEducationCalendarDate(year, month, day) ? `${String(month).padStart(2, "0")}-${iso[1].slice(-2)}` : "";
+    return isValidEducationCalendarDate(year, month, day)
+      ? `${String(month).padStart(2, "0")}-${iso[1].slice(-2)}`
+      : "";
   }
 
   const dayFirst = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
@@ -263,7 +290,9 @@ function formatEducationDateLabel(value) {
     const day = Number(dayFirst[1]);
     const month = Number(dayFirst[2]);
     const year = Number(dayFirst[3]);
-    return isValidEducationCalendarDate(year, month, day) ? `${String(month).padStart(2, "0")}-${dayFirst[3].slice(-2)}` : "";
+    return isValidEducationCalendarDate(year, month, day)
+      ? `${String(month).padStart(2, "0")}-${dayFirst[3].slice(-2)}`
+      : "";
   }
 
   return "";
@@ -289,16 +318,17 @@ export function formatEducationDateRange(education) {
 
   const startLabel = formatEducationDateLabel(start);
   const endLabel = formatEducationDateLabel(end);
-  if (startLabel && endLabel) return `${startLabel} — ${endLabel}`;
+  if (startLabel && endLabel) return `${startLabel} ΓÇö ${endLabel}`;
   return endLabel || startLabel;
 }
 
 export function formatEducationScore(education) {
   if (!education || typeof education !== "object") return "";
 
-  const firstValue = (fields) => fields
-    .map((field) => education[field])
-    .find((value) => value !== null && value !== undefined && String(value).trim() !== "");
+  const firstValue = (fields) =>
+    fields
+      .map((field) => education[field])
+      .find((value) => value !== null && value !== undefined && String(value).trim() !== "");
   const formatted = (label, value) => `${label}: ${String(value).trim()}`;
 
   const cgpa = firstValue(["cgpa", "CGPA"]);
@@ -312,7 +342,8 @@ export function formatEducationScore(education) {
   const value = String(grade).trim();
   if (/\bcgpa\b/i.test(value)) return formatted("CGPA", value.replace(/\bcgpa\b/i, "").trim());
   if (/\bgpa\b/i.test(value)) return formatted("GPA", value.replace(/\bgpa\b/i, "").trim());
-  if (/%|\bpercentage\b/i.test(value)) return formatted("Percentage", value.replace(/\bpercentage\b/i, "").trim());
+  if (/%|\bpercentage\b/i.test(value))
+    return formatted("Percentage", value.replace(/\bpercentage\b/i, "").trim());
   return formatted("Grade", value);
 }
 
@@ -323,7 +354,7 @@ function extractExperienceSortValues(exp) {
 
   const rawStart = exp.start_date ?? exp.startDate ?? null;
   const rawEnd = exp.end_date ?? exp.endDate ?? null;
-  const hasExplicitEndField = Object.prototype.hasOwnProperty.call(exp, "end_date") || Object.prototype.hasOwnProperty.call(exp, "endDate");
+  const hasExplicitEndField = Object.hasOwn(exp, "end_date") || Object.hasOwn(exp, "endDate");
 
   let start = parseExperienceDate(rawStart, "start");
   let end = parseExperienceDate(rawEnd, "end");
@@ -390,8 +421,8 @@ const EXPERIENCE_TITLE_STOPWORDS = new Set(["and", "for", "in", "of", "on", "the
 function experienceTextTokens(value) {
   return new Set(
     (normalizeKey(value).match(/[a-z0-9+#.]+/g) || []).filter(
-      (token) => token && !EXPERIENCE_TITLE_STOPWORDS.has(token)
-    )
+      (token) => token && !EXPERIENCE_TITLE_STOPWORDS.has(token),
+    ),
   );
 }
 
@@ -483,17 +514,26 @@ function experienceEntriesCompatible(existing, next) {
 
   const existingWindow = parseExperienceWindow(existing);
   const nextWindow = parseExperienceWindow(next);
-  const existingHasDates = existingWindow.start !== null || existingWindow.end !== null || existingWindow.openEnded;
+  const existingHasDates =
+    existingWindow.start !== null || existingWindow.end !== null || existingWindow.openEnded;
   const nextHasDates = nextWindow.start !== null || nextWindow.end !== null || nextWindow.openEnded;
 
   if (!existingHasDates || !nextHasDates) {
     return true;
   }
 
-  if (existingWindow.start !== null && nextWindow.start !== null && existingWindow.start !== nextWindow.start) {
+  if (
+    existingWindow.start !== null &&
+    nextWindow.start !== null &&
+    existingWindow.start !== nextWindow.start
+  ) {
     return false;
   }
-  if (existingWindow.end !== null && nextWindow.end !== null && existingWindow.end !== nextWindow.end) {
+  if (
+    existingWindow.end !== null &&
+    nextWindow.end !== null &&
+    existingWindow.end !== nextWindow.end
+  ) {
     return false;
   }
   if (
@@ -615,7 +655,10 @@ function mergeExperienceFields(target, source) {
     const nextValue = normalizeText(source?.[field]);
     if (!nextValue) return;
     if (!existingValue) {
-      if (parseExperienceDate(source?.[field], "end") !== null || isOpenEndedExperienceValue(source?.[field])) {
+      if (
+        parseExperienceDate(source?.[field], "end") !== null ||
+        isOpenEndedExperienceValue(source?.[field])
+      ) {
         merged[field] = nextValue;
       }
       return;
@@ -645,7 +688,11 @@ function mergeExperienceFields(target, source) {
     const nextValue = normalizeText(source?.[field]);
     if (!existingValue && nextValue) {
       merged[field] = nextValue;
-    } else if (existingValue && nextValue && !existingValue.toLowerCase().includes(nextValue.toLowerCase())) {
+    } else if (
+      existingValue &&
+      nextValue &&
+      !existingValue.toLowerCase().includes(nextValue.toLowerCase())
+    ) {
       merged[field] = `${existingValue} ${nextValue}`.trim();
     }
   });
@@ -691,7 +738,7 @@ function formatWorkExperienceDateRange(exp) {
   const startLabel = formatWorkExperienceDateLabel(start);
   const endLabel = formatWorkExperienceDateLabel(end);
   if (!startLabel || startLabel === "Present") return endLabel === "Present" ? "Present" : "";
-  return `${startLabel} – ${endLabel || "Present"}`;
+  return `${startLabel} ΓÇô ${endLabel || "Present"}`;
 }
 
 function dedupeExperienceDescription(value) {
@@ -704,7 +751,10 @@ function dedupeExperienceDescription(value) {
     .map((fragment) => normalizeText(fragment).replace(/\s+([.!?])/g, "$1"))
     .filter((fragment) => {
       if (!fragment) return false;
-      const key = normalizeKey(fragment).replace(/[^\w\s]+/g, " ").replace(/\s+/g, " ").trim();
+      const key = normalizeKey(fragment)
+        .replace(/[^\w\s]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -719,7 +769,9 @@ function dedupeExperienceDescription(value) {
     const midpoint = words.length / 2;
     const left = words.slice(0, midpoint).join(" ");
     const right = words.slice(midpoint).join(" ");
-    if (normalizeKey(left).replace(/[^\w\s]+/g, "") === normalizeKey(right).replace(/[^\w\s]+/g, "")) {
+    if (
+      normalizeKey(left).replace(/[^\w\s]+/g, "") === normalizeKey(right).replace(/[^\w\s]+/g, "")
+    ) {
       return left;
     }
   }
@@ -730,13 +782,16 @@ function dedupeExperienceDescriptionForRecord(value, exp) {
   const text = dedupeExperienceDescription(value);
   if (!text) return "";
 
-  const identityKey = (item) => normalizeKey(item).replace(/[^\w\s]+/g, " ").replace(/\s+/g, " ").trim();
+  const identityKey = (item) =>
+    normalizeKey(item)
+      .replace(/[^\w\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   const title = identityKey(exp?.title ?? exp?.role ?? "");
   const company = identityKey(exp?.company ?? exp?.company_name ?? "");
-  const boilerplate = new Set([
-    title,
-    title && company ? `${title} at ${company}` : "",
-  ].filter(Boolean));
+  const boilerplate = new Set(
+    [title, title && company ? `${title} at ${company}` : ""].filter(Boolean),
+  );
 
   return text
     .split(/(?<=[.!?])\s+|\n+/)
@@ -762,7 +817,7 @@ export function calculateExperienceYears(experience) {
   if (intervals.length === 0) return 0;
 
   // Use calendar months rather than day counts.  The profile intentionally
-  // displays month-only dates, so a Jan 2024–Mar 2025 role is 15 months,
+  // displays month-only dates, so a Jan 2024ΓÇôMar 2025 role is 15 months,
   // irrespective of the number of days in the intervening calendar years.
   const asMonth = (timestamp) => {
     const date = new Date(timestamp);
@@ -771,7 +826,7 @@ export function calculateExperienceYears(experience) {
   const monthIntervals = intervals
     // Completed-role end dates are interval boundaries, while an active role
     // extends through the current month. This avoids counting an extra month
-    // for ranges such as Jan 1–Jan 1.
+    // for ranges such as Jan 1ΓÇôJan 1.
     .map(([start, end]) => [asMonth(start), asMonth(Math.max(start, end - 1))])
     .sort((a, b) => a[0] - b[0]);
 
@@ -830,7 +885,9 @@ function normalizeExperienceRecord(exp) {
   if (window.openEnded) {
     normalized.end_date = "Present";
   } else if (window.end !== null) {
-    normalized.end_date = formatWorkExperienceMonth(Math.max(window.start ?? window.end, window.end - 1));
+    normalized.end_date = formatWorkExperienceMonth(
+      Math.max(window.start ?? window.end, window.end - 1),
+    );
   }
   return normalized;
 }
@@ -938,13 +995,32 @@ function normalizeEducation(education) {
     const key = educationKey(entry);
     if (indexByKey.has(key)) {
       const target = merged[indexByKey.get(key)];
-      ["degree", "institution", "dates", "duration", "start_date", "startDate", "end_date", "endDate", "field_of_study", "location", "description", "cgpa", "CGPA", "gpa", "GPA", "percentage", "percent", "grade", "score", "marks"].forEach(
-        (field) => {
-          if (!normalizeText(target[field]) && normalizeText(entry[field])) {
-            target[field] = normalizeText(entry[field]);
-          }
+      [
+        "degree",
+        "institution",
+        "dates",
+        "duration",
+        "start_date",
+        "startDate",
+        "end_date",
+        "endDate",
+        "field_of_study",
+        "location",
+        "description",
+        "cgpa",
+        "CGPA",
+        "gpa",
+        "GPA",
+        "percentage",
+        "percent",
+        "grade",
+        "score",
+        "marks",
+      ].forEach((field) => {
+        if (!normalizeText(target[field]) && normalizeText(entry[field])) {
+          target[field] = normalizeText(entry[field]);
         }
-      );
+      });
       return;
     }
     indexByKey.set(key, merged.length);
@@ -988,7 +1064,7 @@ function normalizeSkills(skills, certifications = []) {
     const shouldFilter = normalizedCerts.some(
       (cert) =>
         skillShouldBeFiltered(cleaned, cert) &&
-        (looksLikeCertification(cleaned) || looksLikeCertification(cert))
+        (looksLikeCertification(cleaned) || looksLikeCertification(cert)),
     );
     if (shouldFilter) return;
 
@@ -1036,7 +1112,7 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
   mergedRaw.availability = normalizeAvailabilityValue(mergedRaw.availability);
   mergedRaw.salary_expectation = pickFirstNonEmptyValue(
     normalizeText(resumeRaw.salary_expectation) || normalizeText(resume.salary_expectation),
-    normalizeText(voiceRaw.salary_expectation) || normalizeText(voice.salary_expectation)
+    normalizeText(voiceRaw.salary_expectation) || normalizeText(voice.salary_expectation),
   );
 
   const certifications = normalizeCertifications([
@@ -1045,17 +1121,20 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
     ...toArray(mergedRaw.certifications),
   ]);
 
-  const keySkills = normalizeSkills([
-    ...collectProfileList(resume, ["keySkills", "skills"]),
-    ...collectProfileList(voice, ["keySkills", "skills"]),
-    ...toArray(mergedRaw.skills),
-  ], certifications);
+  const keySkills = normalizeSkills(
+    [
+      ...collectProfileList(resume, ["keySkills", "skills"]),
+      ...collectProfileList(voice, ["keySkills", "skills"]),
+      ...toArray(mergedRaw.skills),
+    ],
+    certifications,
+  );
 
   const experience = dedupeExperienceForDisplay(
     sortExperienceForDisplay([
       ...collectProfileList(resume, ["experience", "work_experience"]),
       ...collectProfileList(voice, ["experience", "work_experience"]),
-    ])
+    ]),
   );
   const education = normalizeEducation([
     ...collectProfileList(resume, ["education"]),
@@ -1068,8 +1147,18 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
         .concat(collectProfileList(voice, ["preferred_roles"]))
         .map((role) => normalizeText(role))
         .filter(Boolean)
-        .map((role) => [normalizeKey(role), role])
-    ).values()
+        .map((role) => [normalizeKey(role), role]),
+    ).values(),
+  );
+  const employmentTypes = Array.from(
+    new Map(
+      collectProfileList(resume, ["employment_types"])
+        .concat(collectProfileList(voice, ["employment_types"]))
+        .concat(toArray(mergedRaw.employment_types))
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+        .map((value) => [normalizeKey(value), value]),
+    ).values(),
   );
 
   const merged = {
@@ -1082,17 +1171,27 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
     work_experience: experience,
     education,
     preferred_roles: preferredRoles,
+    employment_types: employmentTypes,
   };
 
-  merged.candidate_id = pickFirstNonEmptyValue(resume.candidate_id ?? resume.candidateId, voice.candidate_id ?? voice.candidateId);
-  merged.candidateId = pickFirstNonEmptyValue(resume.candidateId ?? resume.candidate_id, voice.candidateId ?? voice.candidate_id);
-  merged.avatar = pickFirstNonEmptyValue(resume.avatar ?? resume.photo_url, voice.avatar ?? voice.photo_url);
+  merged.candidate_id = pickFirstNonEmptyValue(
+    resume.candidate_id ?? resume.candidateId,
+    voice.candidate_id ?? voice.candidateId,
+  );
+  merged.candidateId = pickFirstNonEmptyValue(
+    resume.candidateId ?? resume.candidate_id,
+    voice.candidateId ?? voice.candidate_id,
+  );
+  merged.avatar = pickFirstNonEmptyValue(
+    resume.avatar ?? resume.photo_url,
+    voice.avatar ?? voice.photo_url,
+  );
   merged.name = pickFirstNonEmptyValue(resume.name, voice.name);
   merged.email = pickFirstNonEmptyValue(resume.email, voice.email);
   merged.phone = pickFirstNonEmptyValue(resume.phone, voice.phone);
   merged.headline = pickFirstNonEmptyValue(
     resume.headline ?? resume.current_role,
-    voice.headline ?? voice.current_role
+    voice.headline ?? voice.current_role,
   );
   merged.current_role = pickFirstNonEmptyValue(resume.current_role, voice.current_role);
   merged.current_company = pickFirstNonEmptyValue(resume.current_company, voice.current_company);
@@ -1100,16 +1199,19 @@ export function mergeProfilesForDisplay(resumeProfile = {}, voiceProfile = {}) {
   merged.bio = pickFirstNonEmptyValue(resume.bio, voice.bio);
   merged.summary = pickFirstNonEmptyValue(resume.summary, voice.summary);
   merged.experience_years = pickFirstNonEmptyValue(resume.experience_years, voice.experience_years);
-  merged.availability = normalizeAvailabilityValue(pickFirstNonEmptyValue(resume.availability, voice.availability));
+  merged.availability = normalizeAvailabilityValue(
+    pickFirstNonEmptyValue(resume.availability, voice.availability),
+  );
   merged.salary_expectation = pickFirstNonEmptyValue(
     normalizeText(resume.salary_expectation) || normalizeText(resumeRaw.salary_expectation),
-    normalizeText(voice.salary_expectation) || normalizeText(voiceRaw.salary_expectation)
+    normalizeText(voice.salary_expectation) || normalizeText(voiceRaw.salary_expectation),
   );
   merged.additional_information = pickFirstNonEmptyValue(
     resume.additional_information,
-    voice.additional_information
+    voice.additional_information,
   );
-  merged.voice_intake_resume = voice.voice_intake_resume ?? resume.voice_intake_resume ?? mergedRaw.voice_intake ?? null;
+  merged.voice_intake_resume =
+    voice.voice_intake_resume ?? resume.voice_intake_resume ?? mergedRaw.voice_intake ?? null;
 
   return merged;
 }
@@ -1119,7 +1221,7 @@ export function normalizeProfileForDisplay(profile = {}) {
   const certifications = normalizeCertifications(profile.certifications ?? []);
   const keySkills = normalizeSkills(profile.keySkills ?? profile.skills ?? [], certifications);
   const experience = dedupeExperienceForDisplay(
-    sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? [])
+    sortExperienceForDisplay(profile.experience ?? profile.work_experience ?? []),
   );
   const education = normalizeEducation(profile.education ?? []);
   const calculatedExperienceYears = calculateExperienceYears(experience);

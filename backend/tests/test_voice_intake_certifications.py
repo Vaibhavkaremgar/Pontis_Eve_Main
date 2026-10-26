@@ -1,4 +1,4 @@
-"""
+﻿"""
 Regression tests for Voice Intake certification extraction fix.
 
 Covers:
@@ -16,6 +16,28 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import server
+
+
+def test_authoritative_certification_answer_cannot_become_work_experience():
+    topic = server._authoritative_chat_topic([
+        {"role": "assistant", "content": "Do you have any professional certifications?"},
+        {"role": "user", "content": "AWS Solutions Architect"},
+    ])
+    assert topic == "certifications"
+    assert server._route_authoritative_chat_answer(topic, "AWS Solutions Architect") == {
+        "certifications": ["AWS Solutions Architect"],
+    }
+
+
+def test_authoritative_relocation_answer_is_boolean_only():
+    topic = server._authoritative_chat_topic([
+        {"role": "assistant", "content": "Are you open to relocating for the right opportunity?"},
+        {"role": "user", "content": "Yes, I am."},
+    ])
+    assert topic == "willing_to_relocate"
+    assert server._route_authoritative_chat_answer(topic, "Yes, I am.") == {
+        "willing_to_relocate": True,
+    }
 
 
 # ---------------------------------------------------------------------------
