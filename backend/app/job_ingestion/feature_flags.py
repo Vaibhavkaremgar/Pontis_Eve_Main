@@ -1,49 +1,16 @@
-"""Provider feature flags for job ingestion.
-
-The ATS flags default to enabled so an absent variable preserves the legacy
-ingestion behavior. Values are intentionally parsed conservatively: only the
-standard true spellings enable a provider; invalid values use the documented
-default rather than accidentally disabling an existing integration.
-"""
+"""Provider feature flags for job ingestion."""
 
 import os
 
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-_DEFAULTS = {
-    "greenhouse": True,
-    "lever": True,
-    "ashby": True,
-    "fantastic": False,
-    "theirstack": False,
-}
-_ENV_NAMES = {
-    "greenhouse": "GREENHOUSE_ENABLED",
-    "lever": "LEVER_ENABLED",
-    "ashby": "ASHBY_ENABLED",
-    "fantastic": "FANTASTIC_ENABLED",
-    "theirstack": "THEIRSTACK_ENABLED",
-}
+_SUPPORTED_PROVIDERS = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "fantastic", "theirstack"}
+)
 
 
 def provider_enabled(provider: str) -> bool:
-    """Return a provider flag using its safe, documented default."""
+    """Return whether a supported provider is explicitly enabled."""
     key = provider.strip().casefold()
-    default = _DEFAULTS.get(key, False)
-    raw = os.getenv(_ENV_NAMES.get(key, f"{key.upper()}_ENABLED"))
-    if raw is None:
-        return default
-    value = raw.strip().casefold()
-    if value in _TRUE_VALUES:
-        return True
-    if value in {"0", "false", "no", "off"}:
+    if key not in _SUPPORTED_PROVIDERS:
         return False
-    return default
-
-
-def provider_flag_name(provider: str) -> str:
-    return _ENV_NAMES[provider.strip().casefold()]
-
-
-class ProviderDisabledError(RuntimeError):
-    """Raised when a direct collector call targets a disabled provider."""
+    return os.getenv(f"{key.upper()}_ENABLED", False) == "true"

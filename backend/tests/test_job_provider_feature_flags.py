@@ -4,25 +4,28 @@ from app.job_ingestion import collect_jobs, scheduler
 from app.job_ingestion.feature_flags import provider_enabled
 
 
-@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby"])
-def test_ats_flags_default_enabled_and_invalid_values_preserve_behavior(monkeypatch, provider):
+@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby", "workable"])
+def test_ats_flags_default_disabled_and_only_true_enables(monkeypatch, provider):
     monkeypatch.delenv(f"{provider.upper()}_ENABLED", raising=False)
-    assert provider_enabled(provider) is True
+    assert provider_enabled(provider) is False
     monkeypatch.setenv(f"{provider.upper()}_ENABLED", "not-a-boolean")
+    assert provider_enabled(provider) is False
+    monkeypatch.setenv(f"{provider.upper()}_ENABLED", "true")
     assert provider_enabled(provider) is True
 
 
-@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby"])
-def test_disabled_collector_rejects_before_provider_fetch(monkeypatch, provider):
+@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby", "workable"])
+def test_disabled_collector_returns_before_provider_fetch(monkeypatch, provider, caplog):
+    caplog.set_level("INFO")
     monkeypatch.setenv(f"{provider.upper()}_ENABLED", "false")
     connector = getattr(collect_jobs, provider)
     monkeypatch.setattr(connector, "collect_jobs", lambda _: pytest.fail("provider was fetched"))
 
-    with pytest.raises(collect_jobs.ProviderDisabledError):
-        collect_jobs.JobCollector().collect_company_jobs(provider, "board", "Acme")
+    assert collect_jobs.JobCollector().collect_company_jobs(provider, "board", "Acme") == []
+    assert provider in caplog.text
 
 
-@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby"])
+@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby", "workable"])
 def test_enabled_collector_keeps_normal_fetch_and_normalize_path(monkeypatch, provider):
     monkeypatch.setenv(f"{provider.upper()}_ENABLED", "true")
     connector = getattr(collect_jobs, provider)
@@ -39,7 +42,7 @@ def test_enabled_collector_keeps_normal_fetch_and_normalize_path(monkeypatch, pr
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby"])
+@pytest.mark.parametrize("provider", ["greenhouse", "lever", "ashby", "workable"])
 async def test_disabled_provider_reconciliation_does_not_touch_database(monkeypatch, provider):
     monkeypatch.setenv(f"{provider.upper()}_ENABLED", "false")
 
@@ -82,3 +85,8 @@ async def test_disabled_provider_pending_metadata_is_not_extracted(monkeypatch, 
     )
 
     assert await scheduler.retry_pending_metadata_extraction() == 0
+
+
+def test_unknown_provider_is_always_disabled(monkeypatch):
+    monkeypatch.setenv("UNKNOWN_ENABLED", "true")
+    assert provider_enabled("unknown") is False

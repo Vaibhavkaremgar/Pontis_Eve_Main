@@ -46,7 +46,7 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
     # These collectors return the complete public board in one response.  Do
     # not add bounded/search-feed providers here: absence from those feeds is
     # not evidence that a stored job closed.
-    if ats_type in {"ashby", "lever", "greenhouse"} and not provider_enabled(ats_type):
+    if ats_type in {"ashby", "lever", "greenhouse", "workable"} and not provider_enabled(ats_type):
         logger.info("[job-lifecycle] provider=%s reconciliation skipped because provider is disabled", ats_type)
         return []
     if ats_type not in {"ashby", "lever", "greenhouse", "workable"}:
@@ -242,7 +242,7 @@ async def sync_jobs() -> None:
         logger.info("[job-scheduler] syncing company=%s ats=%s", company_name, ats_type)
 
         normalized_ats_type = str(ats_type or "").strip().casefold()
-        if normalized_ats_type in {"greenhouse", "lever", "ashby"} and not provider_enabled(normalized_ats_type):
+        if not provider_enabled(normalized_ats_type):
             logger.info("[job-scheduler] skipping disabled provider company=%s ats=%s", company_name, normalized_ats_type)
             continue
 
@@ -453,7 +453,7 @@ async def retry_pending_metadata_extraction() -> int:
 
         for row in rows:
             ats_type = str(row.get("ats_type") or "").strip().casefold()
-            if ats_type in {"greenhouse", "lever", "ashby"} and not provider_enabled(ats_type):
+            if not provider_enabled(ats_type):
                 logger.info("[job-scheduler] skipping metadata retry for disabled provider=%s job_id=%s", ats_type, row.get("id"))
                 continue
             job = dict(row)
