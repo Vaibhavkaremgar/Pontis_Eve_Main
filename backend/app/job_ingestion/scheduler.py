@@ -22,14 +22,11 @@ SYNC_HOURS_IST = "0,6,12,18"
 
 
 def _scheduler_enabled() -> bool:
-    """Return whether automatic job pulling is enabled.
-
-    The production schedule is enabled by default. Set
-    ``JOB_SCHEDULER_ENABLED=false`` only when intentionally pausing ingestion.
-    """
+    """Check whether automatic job synchronization is enabled."""
     return os.getenv("JOB_SCHEDULER_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+
 METADATA_RETRY_BATCH_SIZE = 25
 
 _scheduler: AsyncIOScheduler | None = None
@@ -38,10 +35,8 @@ _sync_lock: asyncio.Lock | None = None
 
 
 async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, current_ats_ids: set[str]) -> list[str]:
-    """Close jobs absent from a *complete successful* current ATS board.
-
-    The registry foreign key scopes this to one configured board, avoiding
-    accidental cross-company deactivation where display names collide.
+    """
+    Compares existing database jobs with the latest provider response and marks jobs as closed if they are missing from the response. This function is applicable for ATS provides like Greenhouse , Lever , Ashbyq
     """
     # These collectors return the complete public board in one response.  Do
     # not add bounded/search-feed providers here: absence from those feeds is
@@ -93,7 +88,7 @@ async def reconcile_missing_ats_jobs(db, *, company_registry_id, ats_type: str, 
 
 
 async def _close_confirmed_jobs(db, *, ats_type: str, ats_job_ids: set[str]) -> list[str]:
-    """Close only provider-confirmed jobs and preserve their history."""
+    """Close provider-confirmed jobs and hide their candidate recommendations.This fucntion is for fantastic and theirstack only."""
     if not ats_job_ids:
         return []
     result = await db.execute(text("""
@@ -119,10 +114,28 @@ async def _close_confirmed_jobs(db, *, ats_type: str, ats_job_ids: set[str]) -> 
     return db_ids
 
 
+def _delete_job_embeddings(job_ids, *, log_context: str, log_message: str | None = None) -> None:
+    """It is used to delete embeddings for jobs removed ."""
+    for job_id in job_ids:
+        try:
+            from app.job_ingestion.qdrant_service import delete_job_embedding
+            delete_job_embedding(job_id)
+        except Exception as exc:
+            if log_message is not None:
+                logger.warning(log_message, job_id, exc)
+            else:
+                logger.warning(
+                    "%s qdrant_cleanup_failed job_id=%s error=%s",
+                    log_context,
+                    job_id,
+                    exc,
+                )
+
+
 async def cleanup_fantastic_expired_jobs() -> dict[str, int]:
-    """Apply only IDs explicitly returned by Fantastic's expiration feed."""
+    """Fetches expired job IDs from Fantastic's expiration feed, closes matching active jobs in the database, hides their recommendations, and attempts to delete their Qdrant embeddings."""
     from app.job_ingestion.connectors.fantastic import FantasticClient
-    checked = confirmed = already_closed = unresolved = 0
+    checked = confirmed = unresolved = 0
     try:
         expired_ids = await FantasticClient().fetch_expired_ats_ids("1d")
         checked = len(expired_ids)
@@ -132,21 +145,21 @@ async def cleanup_fantastic_expired_jobs() -> dict[str, int]:
             await db.commit()
             confirmed = len(closed_db_ids)
             unresolved = max(0, checked - confirmed)
-            for job_id in closed_db_ids:
-                try:
-                    from app.job_ingestion.qdrant_service import delete_job_embedding
-                    delete_job_embedding(job_id)
-                except Exception as exc:
-                    logger.warning("[job-lifecycle] provider=fantastic qdrant_cleanup_failed job_id=%s error=%s", job_id, exc)
+            _delete_job_embeddings(
+                closed_db_ids,
+                log_context="[job-lifecycle] provider=fantastic",
+            )
     except Exception as exc:
-        logger.error("[job-lifecycle] provider=fantastic checked_at=%s jobs_checked=%d jobs_confirmed_closed=0 jobs_already_closed=0 jobs_unresolved=0 errors=1 reason=%s", datetime.now(IST).isoformat(), checked, exc)
-        return {"jobs_checked": checked, "jobs_confirmed_closed": 0, "jobs_already_closed": 0, "jobs_unresolved": 0, "errors": 1}
-    logger.info("[job-lifecycle] provider=fantastic checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=0", datetime.now(IST).isoformat(), checked, confirmed, unresolved)
-    return {"jobs_checked": checked, "jobs_confirmed_closed": confirmed, "jobs_already_closed": already_closed, "jobs_unresolved": unresolved, "errors": 0}
+        stats = _cleanup_stats(checked, 0, 0, 1)
+        _log_cleanup_summary("fantastic", stats, error=exc)
+        return stats
+    stats = _cleanup_stats(checked, confirmed, unresolved)
+    _log_cleanup_summary("fantastic", stats)
+    return stats
 
 
 async def cleanup_theirstack_closed_jobs() -> dict[str, int]:
-    """Batch exact TheirStack ID lookups and close explicit closed_at rows only."""
+    """Fetches stored active TheirStack job IDs, checks them in batches  against the provider, and closes jobs whose response contains a non-null closed_at field."""
     from app.job_ingestion.connectors.theirstack import TheirStackClient
     SessionLocal = _get_session_local()
     async with SessionLocal() as db:
@@ -168,23 +181,23 @@ async def cleanup_theirstack_closed_jobs() -> dict[str, int]:
                     closed_db_ids = await _close_confirmed_jobs(db, ats_type="theirstack", ats_job_ids=closed_ids)
                     await db.commit()
                     confirmed += len(closed_db_ids)
-                    for job_id in closed_db_ids:
-                        try:
-                            from app.job_ingestion.qdrant_service import delete_job_embedding
-                            delete_job_embedding(job_id)
-                        except Exception as exc:
-                            logger.warning("[job-lifecycle] provider=theirstack qdrant_cleanup_failed job_id=%s error=%s", job_id, exc)
+                    _delete_job_embeddings(
+                        closed_db_ids,
+                        log_context="[job-lifecycle] provider=theirstack",
+                    )
             unresolved += len(set(batch) - closed_ids)
     except Exception as exc:
         errors = 1
-        logger.error("[job-lifecycle] provider=theirstack checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=1 reason=%s", datetime.now(IST).isoformat(), checked, confirmed, unresolved, exc)
+        stats = _cleanup_stats(checked, confirmed, unresolved, errors)
+        _log_cleanup_summary("theirstack", stats, error=exc)
     else:
-        logger.info("[job-lifecycle] provider=theirstack checked_at=%s jobs_checked=%d jobs_confirmed_closed=%d jobs_already_closed=0 jobs_unresolved=%d errors=0", datetime.now(IST).isoformat(), checked, confirmed, unresolved)
-    return {"jobs_checked": checked, "jobs_confirmed_closed": confirmed, "jobs_already_closed": 0, "jobs_unresolved": unresolved, "errors": errors}
+        stats = _cleanup_stats(checked, confirmed, unresolved)
+        _log_cleanup_summary("theirstack", stats)
+    return stats
 
 
 def _complete_board_payload(jobs) -> tuple[bool, set[str]]:
-    """Reject malformed/incomplete payloads; an empty valid list means no jobs."""
+    """It is used to check whether the response received from provider is valid and also checks whether the ats_job_id is present in the response or not ."""
     if not isinstance(jobs, list):
         return False, set()
     ids = set()
@@ -203,8 +216,14 @@ def _get_session_local():
     return SessionLocal
 
 
+
+def _empty_provider_sync_stats() -> dict[str, int]:
+    """Return the stable zero-value result for a disabled provider sync."""
+    return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+
+
 async def sync_jobs() -> None:
-    """Fetch and upsert jobs for every active company in company_registry."""
+    """It is used to synchronize the jobs for active companies and also enrich missing data and store the jobs in the database."""
     from app.job_ingestion.collect_jobs import JobCollector
     from app.job_ingestion.job_ingestion_service import find_existing_ats_job, upsert_ats_job
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata
@@ -317,13 +336,12 @@ async def sync_jobs() -> None:
                     )
                     await db.commit()
                     synced_at_updated = True
-                    for job_id in missing_ids:
-                        try:
-                            from app.job_ingestion.qdrant_service import delete_job_embedding
-                            delete_job_embedding(job_id)
-                        except Exception as exc:
-                            # DB eligibility and hidden recommendations remain the safety net.
-                            logger.warning("[job-scheduler] Qdrant delete failed for job_id=%s: %s", job_id, exc)
+                    # DB eligibility and hidden recommendations remain the safety net.
+                    _delete_job_embeddings(
+                        missing_ids,
+                        log_context="[job-scheduler]",
+                        log_message="[job-scheduler] Qdrant delete failed for job_id=%s: %s",
+                    )
                 except Exception as exc:
                     logger.error("[job-scheduler] failed to update last_synced_at for company=%s: %s", company_name, exc)
 
@@ -344,7 +362,7 @@ async def sync_jobs() -> None:
 def _existing_ats_job_needs_extraction(
     job: dict, existing: dict | None, sufficient_metadata, sufficient_global_provider_metadata=None
 ) -> bool:
-    """Keep semantic extraction for new, changed, incomplete, or queued jobs."""
+    """Determine whether a job requires metadata extraction or can skip it."""
     if existing is None:
         return True
     structured = existing.get("structured_data")
@@ -392,7 +410,7 @@ def _existing_ats_job_needs_extraction(
 
 
 def _same_ats_identity(job: dict, existing: dict | None) -> bool:
-    """Only a provider-scoped stable ID authorizes reuse of an ATS row."""
+    """Verify that an existing job matches the incoming provider and ATS job ID."""
     if existing is None:
         return False
     return (
@@ -404,7 +422,7 @@ def _same_ats_identity(job: dict, existing: dict | None) -> bool:
 
 
 async def _sync_jobs_guarded() -> None:
-    """Wrapper that prevents overlapping runs."""
+    """It acts as a gate keeper for the sync_jobs function to ensure that the scheduler is enabled and that no other sync is currently running."""
     if not _scheduler_enabled():
         logger.info("[job-scheduler] job_id=job_sync skipped because JOB_SCHEDULER_ENABLED=false")
         return
@@ -476,13 +494,83 @@ async def retry_pending_metadata_extraction() -> int:
     return completed
 
 
+async def _persist_provider_job(
+    db,
+    job: dict,
+    *,
+    lookup,
+    extract_missing_job_skills,
+    has_sufficient_deterministic_metadata,
+    has_sufficient_global_provider_metadata,
+    identity_validator=_same_ats_identity,
+) -> tuple[str, bool]:
+    """Lookup, validate, enrich, and persist one bounded-feed job.
+    This function is used by provider-specific sync functions such as Fantastic and TheirStack.
+    Handles the shared process for saving one job from a provider feed. It looks up an existing record, validates its identity, determines whether extraction is required, performs extraction if needed, and inserts or updates the job.
+    """
+    try:
+        existing_job = await lookup(db, job)
+        if existing_job and not identity_validator(job, existing_job):
+            return "identity_mismatch", False
+
+        needs_extraction = _existing_ats_job_needs_extraction(
+            job, existing_job, has_sufficient_deterministic_metadata,
+            has_sufficient_global_provider_metadata,
+        )
+        if needs_extraction:
+            job = await extract_missing_job_skills(job)
+        await _upsert_provider_job(db, job, existing_job=existing_job)
+        return ("updated" if existing_job else "inserted"), needs_extraction
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise
+
+
+async def _upsert_provider_job(db, job: dict, *, existing_job: dict | None):
+    """Late-import the service function so tests and callers can patch it."""
+    from app.job_ingestion.job_ingestion_service import upsert_ats_job
+
+    return await upsert_ats_job(db, job, existing_job=existing_job)
+
+
+def _cleanup_stats(checked: int, confirmed: int, unresolved: int, errors: int = 0) -> dict[str, int]:
+    """Build a standardized summary of provider job-cleanup statistics."""
+    return {
+        "jobs_checked": checked,
+        "jobs_confirmed_closed": confirmed,
+        "jobs_already_closed": 0,
+        "jobs_unresolved": unresolved,
+        "errors": errors,
+    }
+
+
+def _log_cleanup_summary(provider: str, stats: dict[str, int], *, error: Exception | None = None) -> None:
+    """Log provider job-cleanup statistics and any errors."""
+    logger.log(
+        logging.ERROR if error else logging.INFO,
+        "[job-lifecycle] provider=%s checked_at=%s jobs_checked=%d "
+        "jobs_confirmed_closed=%d jobs_already_closed=%d jobs_unresolved=%d errors=%d%s",
+        provider,
+        datetime.now(IST).isoformat(),
+        stats["jobs_checked"],
+        stats["jobs_confirmed_closed"],
+        stats["jobs_already_closed"],
+        stats["jobs_unresolved"],
+        stats["errors"],
+        f" reason={error}" if error else "",
+    )
+
+
 async def sync_fantastic_jobs() -> dict:
-    """Sync both bounded Fantastic active feeds through the shared persistence path."""
+    """It is used to synchronize the jobs from fantastic provider and also enrich missing data and store the jobs in the database."""
     from app.job_ingestion.connectors.fantastic import FantasticClient
-    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
+    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
     if not provider_enabled("fantastic"):
-        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+        return _empty_provider_sync_stats()
     logger.info("[fantastic] starting sync")
     client = FantasticClient()
     feeds = (("active-ats", client.fetch_active_ats), ("active-jb", client.fetch_active_job_boards))
@@ -543,26 +631,30 @@ async def sync_fantastic_jobs() -> dict:
             if not job["ats_job_id"] or not job["title"] or not job["job_url"]:
                 stats["skipped"] += 1; continue
             try:
-                existing_job = await find_existing_ats_job_by_id_or_url(
-                    db, "fantastic", job["ats_job_id"], job["job_url"]
+                async def lookup(session, candidate):
+                    return await find_existing_ats_job_by_id_or_url(
+                        session, "fantastic", candidate["ats_job_id"], candidate["job_url"]
+                    )
+
+                outcome, extracted = await _persist_provider_job(
+                    db, job, lookup=lookup,
+                    extract_missing_job_skills=extract_missing_job_skills,
+                    has_sufficient_deterministic_metadata=has_sufficient_deterministic_metadata,
+                    has_sufficient_global_provider_metadata=has_sufficient_global_provider_metadata,
                 )
-                if existing_job and not _same_ats_identity(job, existing_job):
+                if outcome == "identity_mismatch":
                     stats["duplicates"] += 1
                     per_feed[feed_name]["duplicates"] += 1
                     continue
-                if _existing_ats_job_needs_extraction(
-                    job, existing_job, has_sufficient_deterministic_metadata,
-                    has_sufficient_global_provider_metadata,
-                ):
-                    job = await extract_missing_job_skills(job)
-                else:
+                if outcome not in {"inserted", "updated"}:
                     stats["skipped"] += 1
-                await upsert_ats_job(db, job, existing_job=existing_job)
-                stats["updated" if existing_job else "inserted"] += 1
+                else:
+                    stats[outcome] += 1
+                    if not extracted:
+                        stats["skipped"] += 1
             except Exception as exc:
                 stats["failed"] += 1
                 _log_fantastic_upsert_error(exc, job)
-                await db.rollback()
     for feed_name, feed_stats in per_feed.items():
         logger.info("[fantastic] feed=%s stats=%s", feed_name, feed_stats)
     logger.info(
@@ -576,12 +668,13 @@ async def sync_fantastic_jobs() -> dict:
     return stats
 
 async def sync_theirstack_jobs() -> dict[str, int]:
+    """It is used to synchronize the jobs from TheirStack provider and also enrich missing data and store the jobs in the database."""
     from app.job_ingestion.connectors.theirstack import TheirStackClient
-    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url, upsert_ats_job
+    from app.job_ingestion.job_ingestion_service import find_existing_ats_job_by_id_or_url
     from app.job_ingestion.job_skill_extraction import extract_missing_job_skills, has_sufficient_deterministic_metadata, has_sufficient_global_provider_metadata
     from app.job_ingestion.normalize import normalize_theirstack
     if not provider_enabled("theirstack"):
-        return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+        return _empty_provider_sync_stats()
     try: raw_jobs = await TheirStackClient().fetch_jobs()
     except Exception as exc:
         logger.error("[theirstack] sync fetch failed: %s", exc); return {"fetched": 0, "inserted": 0, "updated": 0, "skipped": 0, "failed": 1}
@@ -593,23 +686,24 @@ async def sync_theirstack_jobs() -> dict[str, int]:
             if not job["ats_job_id"] or not job["title"] or not job["job_url"] or str(job.get("country") or "").casefold() not in {"india", "in"}:
                 stats["skipped"] += 1; continue
             try:
-                existing_job = await find_existing_ats_job_by_id_or_url(
-                    db, "theirstack", job["ats_job_id"], job["job_url"]
+                async def lookup(session, candidate):
+                    return await find_existing_ats_job_by_id_or_url(
+                        session, "theirstack", candidate["ats_job_id"], candidate["job_url"]
+                    )
+
+                outcome, extracted = await _persist_provider_job(
+                    db, job, lookup=lookup,
+                    extract_missing_job_skills=extract_missing_job_skills,
+                    has_sufficient_deterministic_metadata=has_sufficient_deterministic_metadata,
+                    has_sufficient_global_provider_metadata=has_sufficient_global_provider_metadata,
                 )
-                # A URL is only a collision guard.  It must never select a
-                # row for a different TheirStack stable ID (or provider).
-                if existing_job and not _same_ats_identity(job, existing_job):
+                if outcome == "identity_mismatch":
                     stats["skipped"] += 1; continue
-                if _existing_ats_job_needs_extraction(
-                    job, existing_job, has_sufficient_deterministic_metadata,
-                    has_sufficient_global_provider_metadata,
-                ):
-                    job = await extract_missing_job_skills(job)
-                else:
+                stats[outcome] += 1
+                if not extracted:
                     stats["skipped"] += 1
-                await upsert_ats_job(db, job, existing_job=existing_job); stats["updated" if existing_job else "inserted"] += 1
             except Exception as exc:
-                stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc); await db.rollback()
+                stats["failed"] += 1; logger.warning("[theirstack] job upsert failed id=%s title=%r: %s", job.get("ats_job_id"), job.get("title"), exc)
     logger.info(
         "[job-lifecycle] provider=theirstack snapshot_status=bounded_search_non_snapshot "
         "pages_fetched=unknown jobs_seen=%d jobs_closed=0 jobs_reactivated=0 jobs_skipped=%d "
@@ -618,17 +712,26 @@ async def sync_theirstack_jobs() -> dict[str, int]:
     )
     logger.info("[theirstack] sync completed %s", stats); return stats
 
-async def _sync_theirstack_guarded() -> None:
+async def _run_guarded_operation(operation, *, job_id: str) -> None:
+    """Checks whether the scheduler is enabled, logs the start and completion of an operation, and logs and re-raises any exception."""
     if not _scheduler_enabled():
-        logger.info("[job-scheduler] job_id=theirstack_job_sync skipped because JOB_SCHEDULER_ENABLED=false")
+        logger.info(
+            "[job-scheduler] job_id=%s skipped because JOB_SCHEDULER_ENABLED=false",
+            job_id,
+        )
         return
-    logger.info("[job-scheduler] job_id=theirstack_job_sync started")
+    logger.info("[job-scheduler] job_id=%s started", job_id)
     try:
-        await sync_theirstack_jobs()
+        await operation()
     except Exception:
-        logger.exception("[job-scheduler] job_id=theirstack_job_sync failed")
+        logger.exception("[job-scheduler] job_id=%s failed", job_id)
         raise
-    logger.info("[job-scheduler] job_id=theirstack_job_sync completed")
+    logger.info("[job-scheduler] job_id=%s completed", job_id)
+
+
+async def _sync_theirstack_guarded() -> None:
+    """Run TheirStack synchronization through the guarded execution wrapper."""
+    await _run_guarded_operation(sync_theirstack_jobs, job_id="theirstack_job_sync")
 
 
 def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
@@ -666,59 +769,82 @@ def _log_fantastic_upsert_error(exc: Exception, job: dict) -> None:
 
 
 async def _sync_fantastic_guarded() -> None:
-    if not _scheduler_enabled():
-        logger.info("[job-scheduler] job_id=fantastic_job_sync skipped because JOB_SCHEDULER_ENABLED=false")
-        return
-    logger.info("[job-scheduler] job_id=fantastic_job_sync started")
-    try:
-        await sync_fantastic_jobs()
-    except Exception:
-        logger.exception("[job-scheduler] job_id=fantastic_job_sync failed")
-        raise
-    logger.info("[job-scheduler] job_id=fantastic_job_sync completed")
+    """Run Fantastic synchronization through the guarded execution wrapper."""
+    await _run_guarded_operation(sync_fantastic_jobs, job_id="fantastic_job_sync")
 
 
 async def _cleanup_fantastic_expired_jobs_guarded() -> None:
-    if not _scheduler_enabled():
-        logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup skipped because JOB_SCHEDULER_ENABLED=false")
-        return
-    logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup started")
-    try:
-        await cleanup_fantastic_expired_jobs()
-    except Exception:
-        logger.exception("[job-scheduler] job_id=fantastic_expiration_cleanup failed")
-        raise
-    logger.info("[job-scheduler] job_id=fantastic_expiration_cleanup completed")
+    await _run_guarded_operation(
+        cleanup_fantastic_expired_jobs,
+        job_id="fantastic_expiration_cleanup",
+    )
 
 
 async def _cleanup_theirstack_closed_jobs_guarded() -> None:
-    if not _scheduler_enabled():
-        logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup skipped because JOB_SCHEDULER_ENABLED=false")
-        return
-    logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup started")
-    try:
-        await cleanup_theirstack_closed_jobs()
-    except Exception:
-        logger.exception("[job-scheduler] job_id=theirstack_expiration_cleanup failed")
-        raise
-    logger.info("[job-scheduler] job_id=theirstack_expiration_cleanup completed")
+    await _run_guarded_operation(
+        cleanup_theirstack_closed_jobs,
+        job_id="theirstack_expiration_cleanup",
+    )
 
 
 def _apscheduler_listener(event) -> None:
+    """Receives execution events from APScheduler and logs whether a scheduled job completed successfully or failed with an exception."""
     if event.exception:
         logger.error("[job-scheduler] job_id=%s execution failed: %s", event.job_id, event.exception)
     else:
         logger.info("[job-scheduler] job_id=%s execution completed", event.job_id)
 
 
-def _ats_sync_trigger() -> CronTrigger:
-    """Return the deployment-independent ATS sync schedule in IST."""
+def _sync_trigger() -> CronTrigger:
+    """Create the job synchronization schedule in Indian Standard Time."""
     return CronTrigger(hour=SYNC_HOURS_IST, minute=0, second=0, timezone=IST)
+
+
+def _ats_sync_trigger() -> CronTrigger:
+    """Return the scheduled trigger for ATS job synchronization."""
+    return _sync_trigger()
 
 
 def _fantastic_sync_trigger() -> CronTrigger:
     """Return the Fantastic sync schedule aligned with the ATS schedule in IST."""
-    return CronTrigger(hour=SYNC_HOURS_IST, minute=0, second=0, timezone=IST)
+    return _sync_trigger()
+
+
+def _register_provider_cleanup_job(
+    scheduler: AsyncIOScheduler,
+    *,
+    provider: str,
+    callback,
+    job_id: str,
+) -> None:
+    """Register a provider cleanup job when that provider is enabled."""
+    if not provider_enabled(provider):
+        return
+    scheduler.add_job(
+        callback,
+        trigger=CronTrigger(hour=12, minute=30, timezone=IST),
+        id=job_id,
+        replace_existing=True,
+    )
+
+
+def _register_provider_sync_job(
+    scheduler: AsyncIOScheduler,
+    *,
+    provider: str,
+    callback,
+    trigger: CronTrigger,
+    job_id: str,
+):
+    """Register a provider sync job when that provider is enabled."""
+    if not provider_enabled(provider):
+        return None
+    return scheduler.add_job(
+        callback,
+        trigger=trigger,
+        id=job_id,
+        replace_existing=True,
+    )
 
 
 def start_scheduler() -> None:
@@ -755,19 +881,34 @@ def start_scheduler() -> None:
         _scheduler = None
         _sync_lock = None
         raise
-    if provider_enabled("fantastic"):
-        fantastic_job = _scheduler.add_job(
-            _sync_fantastic_guarded,
-            trigger=_fantastic_sync_trigger(),
-            id="fantastic_job_sync", replace_existing=True,
-        )
+    fantastic_job = _register_provider_sync_job(
+        _scheduler,
+        provider="fantastic",
+        callback=_sync_fantastic_guarded,
+        trigger=_fantastic_sync_trigger(),
+        job_id="fantastic_job_sync",
+    )
+    if fantastic_job is not None:
         logger.info("[fantastic] next sync scheduled for %s", fantastic_job.next_run_time)
-    if provider_enabled("theirstack"):
-        _scheduler.add_job(_sync_theirstack_guarded, trigger=_fantastic_sync_trigger(), id="theirstack_job_sync", replace_existing=True)
-    if provider_enabled("fantastic"):
-        _scheduler.add_job(_cleanup_fantastic_expired_jobs_guarded, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="fantastic_expiration_cleanup", replace_existing=True)
-    if provider_enabled("theirstack"):
-        _scheduler.add_job(_cleanup_theirstack_closed_jobs_guarded, trigger=CronTrigger(hour=12, minute=30, timezone=IST), id="theirstack_expiration_cleanup", replace_existing=True)
+    _register_provider_sync_job(
+        _scheduler,
+        provider="theirstack",
+        callback=_sync_theirstack_guarded,
+        trigger=_fantastic_sync_trigger(),
+        job_id="theirstack_job_sync",
+    )
+    _register_provider_cleanup_job(
+        _scheduler,
+        provider="fantastic",
+        callback=_cleanup_fantastic_expired_jobs_guarded,
+        job_id="fantastic_expiration_cleanup",
+    )
+    _register_provider_cleanup_job(
+        _scheduler,
+        provider="theirstack",
+        callback=_cleanup_theirstack_closed_jobs_guarded,
+        job_id="theirstack_expiration_cleanup",
+    )
     next_run = job.next_run_time
     if next_run is not None:
         logger.info(

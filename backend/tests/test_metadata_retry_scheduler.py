@@ -38,6 +38,11 @@ class _Session:
         self.rollbacks += 1
 
 
+@pytest.fixture
+def greenhouse_enabled(monkeypatch):
+    monkeypatch.setenv("GREENHOUSE_ENABLED", "true")
+
+
 def _pending_row():
     return {
         "id": "existing-id", "ats_type": "greenhouse", "ats_job_id": "ats-1",
@@ -48,7 +53,7 @@ def _pending_row():
 
 
 @pytest.mark.asyncio
-async def test_pending_metadata_retry_updates_existing_job_after_success(monkeypatch):
+async def test_pending_metadata_retry_updates_existing_job_after_success(monkeypatch, greenhouse_enabled):
     session = _Session(_pending_row())
     upserted = []
 
@@ -93,7 +98,7 @@ async def test_pending_metadata_retry_does_not_update_when_still_unavailable(mon
 
 
 @pytest.mark.asyncio
-async def test_production_shaped_area_sales_manager_metadata_retry_is_in_place(monkeypatch):
+async def test_production_shaped_area_sales_manager_metadata_retry_is_in_place(monkeypatch, greenhouse_enabled):
     """Rate limiting queues the existing job; recovery enriches that same row."""
     job_id = "3833ab4b-9082-46c1-b68a-5013c239ebc7"
     original = {

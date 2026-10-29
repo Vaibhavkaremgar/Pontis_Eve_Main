@@ -3,6 +3,71 @@ import pytest
 from app.job_ingestion import scheduler
 
 
+def test_delete_job_embeddings_attempts_all_ids_after_failure(monkeypatch, caplog):
+    calls = []
+
+    def delete_job_embedding(job_id):
+        calls.append(job_id)
+        if job_id == "job-2":
+            raise RuntimeError("qdrant unavailable")
+
+    monkeypatch.setattr(
+        "app.job_ingestion.qdrant_service.delete_job_embedding",
+        delete_job_embedding,
+    )
+
+    scheduler._delete_job_embeddings(
+        ["job-1", "job-2", "job-3"],
+        log_context="[job-lifecycle] provider=fantastic",
+    )
+
+    assert calls == ["job-1", "job-2", "job-3"]
+    assert "job-2" in caplog.text
+    assert "provider=fantastic" in caplog.text
+
+
+def test_delete_job_embeddings_preserves_scheduler_reconciliation_log_format(monkeypatch, caplog):
+    def delete_job_embedding(_job_id):
+        raise RuntimeError("qdrant unavailable")
+
+    monkeypatch.setattr(
+        "app.job_ingestion.qdrant_service.delete_job_embedding",
+        delete_job_embedding,
+    )
+
+    scheduler._delete_job_embeddings(
+        ["job-1"],
+        log_context="[job-scheduler]",
+        log_message="[job-scheduler] Qdrant delete failed for job_id=%s: %s",
+    )
+
+    assert "[job-scheduler] Qdrant delete failed for job_id=job-1: qdrant unavailable" in caplog.text
+
+
+def test_delete_job_embeddings_handles_qdrant_import_failure_per_job(monkeypatch, caplog):
+    import builtins
+
+    import_calls = []
+    real_import = builtins.__import__
+
+    def failing_qdrant_import(name, *args, **kwargs):
+        if name == "app.job_ingestion.qdrant_service":
+            import_calls.append(name)
+            raise ImportError("qdrant unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_qdrant_import)
+
+    scheduler._delete_job_embeddings(
+        ["job-1", "job-2"],
+        log_context="[job-lifecycle] provider=fantastic",
+    )
+
+    assert len(import_calls) == 2
+    assert "job_id=job-1" in caplog.text
+    assert "job_id=job-2" in caplog.text
+
+
 class Result:
     def __init__(self, rows): self.rows = rows
     def fetchall(self): return self.rows
