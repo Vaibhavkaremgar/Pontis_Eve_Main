@@ -14,6 +14,21 @@ The candidate-facing React application lives in [`../frontend`](../frontend/READ
 
 The backend uses async FastAPI endpoints and SQLAlchemy with `asyncpg`. SQLite does not match the PostgreSQL types and behavior used by the application.
 
+## Tools and frameworks
+
+The following list is cross-checked against `requirements.txt` and backend source imports. It describes active application integrations separately from tools that are only declared in the dependency manifest.
+
+- **Language and API:** Python 3.11, FastAPI, Starlette, and Uvicorn.
+- **Validation and persistence:** Pydantic v2; SQLAlchemy 2 async sessions; PostgreSQL via the `asyncpg` driver.
+- **Authentication and HTTP:** Google OAuth and LinkedIn OpenID Connect flows are implemented in the backend; `httpx` handles outbound async HTTP, PyJWT and `python-jose` are imported for JWT operations, and `python-dotenv` loads environment configuration.
+- **AI and matching:** The OpenAI Python SDK is used through the project's Groq-compatible client pool; Sentence Transformers generate embeddings, NumPy supports vector operations, and Qdrant provides vector storage and search.
+- **Caching and scheduling:** Redis via `redis-py` is an optional profile cache; APScheduler runs recurring job-ingestion and lifecycle tasks.
+- **Documents and media:** Application code uses `pypdf`, ReportLab, `pdf2image` with Poppler, `pytesseract` with the Tesseract executable, and `python-docx` for resume/document workflows. Pillow is imported by resume-parsing test fixtures; PDF/OCR operations may require system executables in addition to Python packages.
+- **External services:** Resend is an optional email integration. Vapi, Razorpay, OAuth providers, and job providers are accessed through HTTP integrations.
+- **Testing and code-quality tools:** `requirements.txt` declares pytest, pytest-asyncio, pytest-xdist, Black, Flake8, isort, and mypy. Ruff is named as a target standard in `agents.md`, but is not declared in `requirements.txt` or configured as a backend command.
+
+The manifest also contains pins without an identified direct application import, including `boto3`, `stripe`, `psycopg2-binary`, and `transformers`; some may be transitive, test-only, or legacy dependencies. Their presence in `requirements.txt` alone does not establish active application use.
+
 ## Local development
 
 Run these commands from `backend/`:
@@ -58,8 +73,8 @@ Configure a PostgreSQL `DATABASE_URL`, at least one Groq API key, and a strong c
 DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@localhost:5432/pontis
 CANDIDATE_SESSION_SECRET=replace-with-a-random-secret-of-at-least-32-characters
 GROQ_API_KEY_1=
-FRONTEND_URL=http://localhost:3000
-CORS_ORIGINS=http://localhost:3000
+FRONTEND_URL=http://localhost:5173
+CORS_ORIGINS=http://localhost:5173
 ```
 
 The application loads `backend/.env` and requires `DATABASE_URL` during import. The Groq client pool accepts `GROQ_API_KEY_1` through `GROQ_API_KEY_7`; the legacy `GROQ_API_KEY` is accepted if no numbered keys are set. The candidate session secret must be non-placeholder and at least 32 characters.
@@ -72,7 +87,7 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 
 The API runs at `http://localhost:8000`; interactive FastAPI docs are available at `/docs` in development. In production, explicitly set `EVE_ENVIRONMENT`, `ENVIRONMENT`, or `RAILWAY_ENVIRONMENT` to `production`/`prod`; this disables docs endpoints and requires the candidate-session secret.
 
-Run the frontend separately from `frontend/`, set `REACT_APP_BACKEND_URL=http://localhost:8000`, and allow its origin in `CORS_ORIGINS`.
+Run the frontend separately from `frontend/`, set `VITE_BACKEND_URL=http://localhost:8000`, and allow its origin (normally `http://localhost:5173`) in `CORS_ORIGINS`.
 
 ## Configuration
 

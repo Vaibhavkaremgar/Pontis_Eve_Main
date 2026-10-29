@@ -6,8 +6,22 @@ The backend API lives in [`../backend`](../backend/README.md). For product conte
 
 ## Requirements
 
-- Node.js and Yarn 1.22.22
+- Node.js and Yarn 1.22.22 (the package metadata pins Yarn but does not pin a Node.js version)
 - The Pontis Eve backend running locally or reachable at a configured backend URL
+
+## Tools and frameworks
+
+This inventory is cross-checked against `package.json`, the frontend configuration, and imports in `src/`. A declared dependency is not necessarily used by the current application.
+
+- **Application and build:** React 19, React DOM, Vite 7, and `@vitejs/plugin-react`. The browser-rendered SPA uses React Router DOM v7. Vite treats `.js` files under `src/` as JSX, provides the `@` alias for `src/`, writes production output to `build/`, and disables source maps.
+- **Styling and UI:** Tailwind CSS, PostCSS, Autoprefixer, locally maintained shadcn/ui-style components built on Radix UI primitives, and `lucide-react` icons. Supporting utilities include `class-variance-authority`, `clsx`, `tailwind-merge`, and `tailwindcss-animate`.
+- **Server data and validation:** `src/index.js` mounts a TanStack Query `QueryClientProvider` with a 60-second default query stale time and window-focus refetch disabled. The current app source has no `useQuery` or `useMutation` calls; screens primarily make Axios requests and keep request state in React components. Zod currently validates `VITE_BACKEND_URL` in `src/lib/apiConfig.js`; it is not a general API-response validation layer.
+- **Forms and interaction:** The app uses Sonner notifications, Framer Motion, `react-resizable-panels`, and `lucide-react`. Shared UI components also import React Hook Form, Embla Carousel, `input-otp`, and `next-themes`; the latter is used by a reusable toast wrapper and does not mean the app uses Next.js.
+- **Product integrations:** Voice intake uses Vapi through the `useVapi` hook, which imports the Web SDK. `libphonenumber-js` supports phone input, and DOMPurify sanitizes job-description content. Although `pdfjs-dist` is declared in `package.json`, there are no direct imports of it in `src/`; the current source does not establish that PDF.js is used for document preview.
+- **Testing:** Vitest, JSDOM, and React Testing Library (`@testing-library/react`, `@testing-library/dom`, `@testing-library/user-event`, and `@testing-library/jest-dom`).
+- **Additional tooling:** ESLint and React/accessibility/hooks plugins are dependencies, but `package.json` does not currently define a lint script. There is no TypeScript compiler or configured TypeScript type-check command; application source is currently JavaScript/JSX. The intended quality-gate direction is to use `pre-commit` as the shared frontend/backend hook framework, with Biome for frontend formatting/linting, `tsc` for an explicitly scoped gradual JS/TS check, and Vitest for tests. This pipeline is planned, not configured yet.
+
+`package.json` also declares dependencies for which no direct imports were found in `src/`, including `@hookform/resolvers`, `date-fns`, `dayjs`, `html2canvas`, `jspdf`, `lodash`, `pdfjs-dist`, `recharts`, and `swr`. This does not rule out indirect use by dependencies.
 
 ## Local development
 
@@ -24,7 +38,7 @@ The application runs at [http://localhost:5173](http://localhost:5173). Configur
 VITE_BACKEND_URL=http://localhost:8000
 ```
 
-The checked-in `frontend/.env.production` points to the production API. Vite exposes variables beginning with `VITE_` in the client bundle; do not put server secrets or OAuth client secrets in frontend environment files.
+The checked-in `frontend/.env.production` supplies `VITE_BACKEND_URL` for production builds. `VITE_BACKEND_URL` is required and validated as an HTTP(S) URL when the API configuration module loads; the API client appends `/api`. Vite exposes variables beginning with `VITE_` in the client bundle, so do not put server secrets or OAuth client secrets in frontend environment files.
 
 Voice onboarding uses Vapi. To enable it in a local frontend, set the public Vapi key and assistant ID:
 
@@ -48,6 +62,8 @@ Routes are composed in `src/App.js`:
 
 The frontend falls back to the sign-in route for unknown paths.
 
+The route pages are currently imported directly by `src/App.js`; there is no `React.lazy`/`Suspense` route splitting in the current implementation.
+
 - `src/pages/` contains route-level screens and coordinates larger flows.
 - `src/components/` contains shared product components, including the dashboard panels, profile, job cards, billing, and onboarding voice UI.
 - `src/components/ui/` contains reusable UI primitives.
@@ -55,15 +71,15 @@ The frontend falls back to the sign-in route for unknown paths.
 - `src/hooks/` contains shared hooks, including Vapi call-state handling.
 - `src/constants/testIds/` contains stable test identifiers.
 
-Candidate onboarding/session state is managed by `src/lib/onboardingStorage.js`. The global Axios interceptors in `src/lib/candidateApiAuth.js` attach the current candidate token to candidate API calls, clear invalid candidate sessions, and provide consistent API error notifications. Keep authentication and error behavior consistent with these central helpers.
+Candidate onboarding/session state is managed by `src/lib/onboardingStorage.js`. The shared Axios interceptors in `src/lib/candidateApiAuth.js` attach the stored candidate token to `/api/` requests, clear the candidate session when a recognized candidate request receives a 401, and send request failures through the shared API error notification helper. Keep authentication and error behavior consistent with these central helpers.
 
 ## Current frontend architecture
 
-This repository currently uses React 19, Vite, JavaScript, and React Router. It is not a Next.js App Router application: it has no Next.js Server Components, `app/` directory, or TypeScript compilation pipeline. The Next.js-specific parts of [`../agents.md`](../agents.md) describe a future architectural target only if the project migrates frameworks; do not introduce Next.js conventions into the current application.
+This repository currently uses React 19, Vite, JavaScript, and React Router v7. It is a client-rendered SPA mounted with `ReactDOM.createRoot()` in `src/index.js`, not a Next.js App Router application: it has no Next.js Server Components, `app/` directory, or TypeScript compilation pipeline. Follow the Vite + React SPA guidance in [`../agents.md`](../agents.md); do not introduce Next.js conventions.
 
-Application state is primarily implemented with component/page React hooks. `QueryClientProvider` is configured in `src/index.js` with TanStack Query, but current application data fetching is mostly manual Axios requests held in component state. When extending or refactoring server-data flows, use TanStack Query for cacheable backend state and keep transient UI state (dialogs, active tabs, drafts, and loading indicators) local to the owning component.
+Application state is primarily implemented with component/page React hooks, and current application data fetching is mostly manual Axios requests held in component state. When extending or refactoring server-data flows, use TanStack Query for cacheable backend state and keep transient UI state (dialogs, active tabs, drafts, and loading indicators) local to the owning component.
 
-The current onboarding storage helper persists workflow data and the candidate bearer token in `localStorage`. Treat persisted browser data as untrusted and validate/reconcile it with the backend. `localStorage` is accessible to JavaScript; moving candidate authentication to an `HttpOnly; Secure` cookie requires coordinated backend/frontend changes and appropriate CSRF and credentialed-CORS protections. Do not change only one side of the session contract.
+The current onboarding storage helper persists workflow data and the candidate bearer token in `localStorage`. It parses stored JSON and merges it with defaults, but does not schema-validate the restored values; storage read/write errors are caught and can result in defaults or unsaved state without a notification. Treat persisted browser data as untrusted and validate/reconcile it with the backend before relying on it. `localStorage` is accessible to JavaScript; moving candidate authentication to an `HttpOnly; Secure` cookie requires coordinated backend/frontend changes and appropriate CSRF and credentialed-CORS protections. Do not change only one side of the session contract.
 
 ## Frontend standards for new and refactored code
 
@@ -98,9 +114,7 @@ Run tests matching a name or substring:
 yarn vitest run src/lib/__tests__/profileNormalization.test.js -t "test name"
 ```
 
-Tests are colocated under `__tests__/` directories in `src/` and run through Vitest.
-
-The current repository is configured for Vitest. [`../agents.md`](../agents.md) names Vitest/Testing Library as the target for frontend testing.
+`vitest.config.js` runs tests in JSDOM, loads `src/setupTests.js`, includes `src/**/*.{test,spec}.{js,jsx,ts,tsx}`, and enables CSS processing. Tests are colocated in source `__tests__` directories and use React Testing Library where component interaction is under test.
 
 Create a production build with:
 
@@ -108,7 +122,7 @@ Create a production build with:
 yarn build
 ```
 
-The generated static site is written to `build/`. `package.json` does not define a lint script; no frontend lint command is configured.
+The generated static site is written to `build/`. `package.json` defines `start`, `build`, and `test` scripts only. ESLint and its React-related plugins are installed, but there is no configured lint script or TypeScript type-check script. The planned shared `pre-commit` pipeline will add the frontend Biome and scoped `tsc` checks alongside Vitest; do not treat these as available commands until they are configured.
 
 ## Backend integration and authentication
 

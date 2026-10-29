@@ -6,20 +6,37 @@ Our core priority is **system robustness**. We operate on a zero-tolerance polic
 
 ---
 
-## 🚀 Special Directive: Migration to Vite + React SPA
+## 🚀 Frontend Stack Directive: Vite + React SPA
 
-You are instructed to systematically deprecate Create React App (CRA) / CRACO dependencies and migrate the frontend to a modern, high-performance **Vite + React SPA architecture**. 
+The frontend is a **Vite + React single-page application (SPA)**. Preserve this client-rendered architecture; do not introduce server-side rendering (SSR) frameworks like Next.js. Use the following stack as the standard for frontend work:
+
+- **Build Tool:** Vite.
+- **Styling & Primitive UI:** Tailwind CSS, shadcn/ui, and Lucide Icons.
+- **Server Data Management:** TanStack Query for server-owned state and Zod for runtime validation at data boundaries.
+- **Client Routing:** React Router v7.
+
+### Verified frontend baseline
+
+These are observations about the current implementation, not claims that every recommended pattern below is already in place. Re-check the source and configuration when these facts matter to a task.
+
+- The app uses React 19, JavaScript/JSX, Vite 7, and React Router DOM v7. `src/index.js` mounts with `ReactDOM.createRoot()`; `src/App.js` eagerly imports the four route pages and redirects unknown paths to `/`. There is currently no route-level `React.lazy`/`Suspense` splitting or app-level React error boundary.
+- `vite.config.js` aliases `@` to `src/`, transforms `.js` files in `src/` as JSX, writes builds to `build/`, and disables source maps. Vite configuration and `index.html` are the app entry/build path.
+- `package.json` defines only `start`, `build`, and `test` scripts. Source is JavaScript/JSX: there is no TypeScript compiler or type-check script. ESLint packages are installed, but no lint script is defined. The repository has not yet configured its chosen shared quality pipeline: `pre-commit` with Biome, `tsc`, and Vitest for frontend checks. This is the intended direction, not a claim that those hooks or commands are already installed.
+- The app makes backend requests with Axios and primarily manages request state in React components. TanStack Query is installed and its provider is mounted with default query options, but there are currently no app-level `useQuery` or `useMutation` calls.
+- Zod currently validates the configured backend URL in `src/lib/apiConfig.js`; it is not currently used as a general API-response, form, or browser-storage validation layer. The shared Axios response interceptor uses the helper in `src/lib/apiError.js` for notifications and handles candidate-session 401s; it does not parse a standard API error `code` field.
+- Onboarding workflow data and the candidate bearer token are stored in `localStorage`; some features also use `sessionStorage`. Restored onboarding JSON is merged with defaults without schema validation, and storage failures are caught by the storage helper.
+- Voice intake uses the Vapi browser SDK through `src/hooks/useVapi.js` and stops the SDK call during unmount cleanup. The frontend source does not directly acquire `MediaStream`s or create `AudioContext`s; if direct media/audio resources are added, their ownership and cleanup must be explicit.
+- Vitest is configured with JSDOM, React Testing Library, and `src/setupTests.js`; `yarn test` runs the suite. No frontend format, lint, type-check, or coverage command is currently defined in `package.json`.
 
 ### 1. Zero-Disruption Local SPA Patterns
-- Maintain the application's underlying SPA architecture completely. Do not introduce server-side rendering (SSR) frameworks like Next.js.
-- Keep the identical browser rendering layout lifecycle: mounting remains via `src/index.js` or a clean `src/main.jsx` entrypoint using `ReactDOM.createRoot()`.
-- Retain all client-side browser routing infrastructure (`BrowserRouter` and React Router definitions) inside `App.js`. 
+- Preserve the browser-rendered SPA architecture and mount through `src/index.js` or `src/main.jsx` using `ReactDOM.createRoot()`.
+- Keep client-side route definitions in `App.js` using React Router v7, with a deliberate fallback for unknown paths.
+- Keep browser-only APIs and initialization in browser-executed modules; do not add server-component or SSR assumptions.
 
-### 2. Dependency & Configuration Overhaul
-- **Remove:** `@craco/craco`, `react-scripts`, and related CRA plugins from `package.json`.
-- **Inject:** `vite`, `@vitejs/plugin-react` (or `@vitejs/plugin-react-swc`), and custom dev dependencies into the stack.
-- **Environment Variables:** Convert legacy `process.env.REACT_APP_` prefixes to Vite-native `import.meta.env.VITE_` variables. Ensure compile-time schema validation is injected via **Zod** at the frontend network boundary.
-- **HTML Relocation:** Move `public/index.html` into the root of the `frontend/` directory, inject a module script tag reference to the index entry point (`<script type="module" src="/src/index.js"></script>`), and remove raw `%PUBLIC_URL%` interpolation expressions.
+### 2. Vite Configuration & Environment
+- Manage compilation and bundling through `vite.config.js` and the Vite HTML entry point.
+- Use Vite-native `import.meta.env.VITE_*` variables for client-exposed configuration. Never put backend credentials, OAuth client secrets, or other server secrets in frontend environment variables.
+- Validate configuration and untrusted runtime data with Zod at the relevant boundary; do not treat compile-time configuration as a substitute for runtime validation.
 
 ---
 
@@ -32,17 +49,18 @@ You are instructed to systematically deprecate Create React App (CRA) / CRACO de
   - *Data Access Layer (SQLAlchemy)* strictly governs database interactions and data mapping.
 - **Frontend:** Maintain clear boundaries between UI layout, local state machines, and network layers.
   - *Layout & View Layer (React Components)* translates states into intuitive, accessible visual interfaces.
-  - *Routing Layer (React Router)* manages client-side page transitions and route definitions via `BrowserRouter`.
-  - *State & Query Layer (TanStack Query)* manages server-side cache and asynchronous states.
-  - *Client Layer (Network SDK)* acts as the strict typing engine for outbound API requests.
+  - *Routing Layer (React Router v7)* manages client-side page transitions and route definitions via `BrowserRouter`.
+  - *State & Query Layer (TanStack Query)* should manage server-owned cache and asynchronous states in new or migrated query flows; use local React state for transient UI state. The current screens primarily use Axios and component state.
+  - *Runtime Validation (Zod)* should validate untrusted API, form, and persisted-browser data at boundaries as those flows are added or changed. Current Zod use is limited to backend URL configuration.
+  - *Client Layer (Axios)* centralizes outbound HTTP behavior. The current JavaScript client does not provide compile-time request/response typing.
 
 ### 2. Full-Stack Reality Matrix & Target Modules
 - **Backend Role:** The backend owns persistent data access, short-lived code exchanges, session signing, and external Google/LinkedIn OAuth callback resolution.
-- **Frontend Role:** The frontend is a substantial, highly interactive product client managing critical candidate workspaces. You must respect the local state lifecycles and browser APIs running inside `VoiceIntake.jsx` (media streams, Web Audio API) and `ResumeEditor.jsx` (rich state manipulation, text parsing layout).
+- **Frontend Role:** The frontend is a substantial, highly interactive product client managing candidate workspaces. Respect the state lifecycles in voice intake and resume editing. Voice intake currently delegates the call lifecycle to the Vapi Web SDK; do not assume the component directly owns `MediaStream` or Web Audio resources unless the implementation adds them.
 
 ### 3. End-to-End Type Rigor & Data Boundary Safety
-- All data entering or exiting a boundary must be explicitly validated. Never allow unchecked objects or dictionaries (`any` in TypeScript/JS, un-typed `dict` or `Any` in Python) to flow through the system.
-- Compile and map types symmetrically between Python and TypeScript to ensure immediate, compile-time detection of broken contracts.
+- Validate untrusted data at relevant runtime boundaries; do not treat JavaScript values as statically typed. The current frontend is JavaScript/JSX with no TypeScript compiler, and current Zod coverage is limited. Add validation at the boundary when creating or changing data flows.
+- Where TypeScript is introduced with an explicit project configuration, map its types to backend contracts and run the configured type check. Do not claim compile-time contract verification for the current JavaScript frontend.
 
 ### 4. Progressive Refactoring Mandate (The Boy Scout Rule)
 - When modifying an existing file or component, evaluate its code quality. If it uses legacy anti-patterns (e.g., synchronous I/O in async paths, unhandled database drops, missing type signatures, or improper spacing), you must refactor that block to match these architectural principles. Update adjacent tests instantly.
@@ -80,17 +98,19 @@ You are instructed to systematically deprecate Create React App (CRA) / CRACO de
 
 ## ⚛️ Frontend Architecture & User Experience (React SPA & Vite)
 
-### 1. Build Pipeline & Hydration Foundations
-- **Vite Lifecycle:** All compilation and bundling configurations must map via `vite.config.js`. Avoid custom fallback bundlers. 
-- **Application Entry Point:** The application mounts purely in the browser environment via `src/index.js` or `src/main.jsx` using `ReactDOM.createRoot()`. Any browser-specific initialization (e.g., token parsing, Axios interceptor setup) must occur here safely before hydration completes.
+### 1. Build Pipeline & Browser Entry Point
+- **Vite Lifecycle:** All compilation and bundling configurations must use `vite.config.js`. Avoid custom fallback bundlers.
+- **Application Entry Point:** The application mounts purely in the browser environment via `src/index.js` or `src/main.jsx` using `ReactDOM.createRoot()`. Any browser-specific initialization (e.g., session initialization or API client setup) must occur here before rendering; this is client rendering, not hydration.
 
 ### 2. Client-Side Routing & Bundle Optimization
-- **Routing Engine:** All navigation paths are strictly runtime controlled using React Router's `BrowserRouter` inside `App.js`. Ensure that fallback wildcard mappings (e.g., `*` routes) are declared to cleanly trap broken paths or show dedicated client 404 views.
-- **Route Splitting & Performance:** To optimize initial load performance and leverage Vite's optimized asset handling, heavy page components (`Dashboard.jsx`, `VoiceIntake.jsx`, `ResumeEditor.jsx`) must be loaded dynamically using `React.lazy` and wrapped in a structured `<Suspense>` boundary layout.
+- **Routing Engine:** All navigation paths are strictly runtime controlled using React Router v7's `BrowserRouter` inside `App.js`. Ensure that fallback wildcard mappings (e.g., `*` routes) are declared to cleanly trap broken paths or show dedicated client 404 views.
+- **Route Splitting & Performance:** Route pages are currently eager imports in `src/App.js`. Do not describe the app as code-split or add complexity without a demonstrated performance need. If implementing route splitting, use `React.lazy` with a deliberate `<Suspense>` fallback and verify navigation/error behavior. Keep `VoiceIntake.jsx` within its existing page/component ownership rather than treating it as a route.
 
 ### 3. Implementation Standards, State & UX Safety
-- **Visual Uniformity:** Build interfaces strictly leveraging Tailwind CSS token rules mapped to a clean `shadcn/ui` foundation. Never hardcode inline colors, padding values, or pixel dimensions.
-- **Feature-Driven Co-location Pattern:** Avoid cluttering the global components directory. Keep domain-specific components, routes, isolated hooks, and feature-only styles contained directly inside self-contained feature folders (e.g., `src/features/auth/`). Global UI directories are strictly reserved for pure, atomic presentation primitives.
+- **Visual Uniformity:** Build interfaces using Tailwind CSS tokens and the shared shadcn/ui component foundation. Use Lucide Icons for interface icons. Avoid one-off styles when an existing design token or shared primitive applies.
+- **Server Data Management:** Use TanStack Query for backend-owned data, including query caching, loading/error states, and mutation invalidation. Keep ephemeral interaction state local to the owning component or feature.
+- **Runtime Validation:** Use Zod or an equivalent explicit runtime guard to validate untrusted API responses, user-controlled form values, and browser storage before relying on them. Current coverage is limited; add validation incrementally at boundaries touched by a change.
+- **Feature-Driven Co-location Pattern:** The current source uses `src/pages/`, `src/components/`, `src/components/ui/`, `src/hooks/`, and `src/lib/`; it is not organized under `src/features/`. Follow the existing structure for focused changes and co-locate feature-only code when introducing or substantially restructuring a feature. Do not move unrelated legacy files solely to enforce a target layout.
 - **Re-render Optimization:** Prevent interface stutters in rich components like `ResumeEditor.jsx`. Derive temporary computed values during render passes; do not store duplicative state variables. Use functional setState updates (`setCount(c => c + 1)`) and implement lazy state initialization (`useState(() => initialize())`) for heavy operational states.
 - **Strict Code Style Layout:**
   - Enforce **exactly 2 spaces** for indentation.
@@ -98,7 +118,7 @@ You are instructed to systematically deprecate Create React App (CRA) / CRACO de
 - **Data Validation Boundary:** Data coming from external network proxy calls or mutable form entries must be verified at the runtime boundary using a strict validation engine like **Zod**.
 
 ### 4. Device & Stream Management Guardrails
-- **Resource Cleanup (`VoiceIntake.jsx`):** Components handling browser media streams, microphones, or audio processors must register explicit teardown cleanup listeners inside their respective `useEffect` unmount hooks. Stop all media tracks (`track.stop()`) and disconnect audio contexts cleanly to avoid devastating browser memory leaks.
+- Components that directly acquire browser media streams, microphones, audio nodes, or contexts must release resources they own during teardown (for example, stop acquired tracks and disconnect/close audio resources). Voice intake currently uses Vapi's SDK and stops its active SDK call from `useVapi` cleanup; do not add duplicate direct-media cleanup unless the frontend itself begins acquiring those resources.
 
 ---
 
@@ -128,7 +148,7 @@ We prioritize user empathy and system security. Technical diagnostics must never
   ```
 
 - **Error Obfuscation Middleware:** Maintain a global catch-all exception handler in FastAPI (`main.py`). If an uncaught exception triggers, trap it, securely log the full traceback to server terminal diagnostics (using Python logging), and send a sanitised 500 Internal Server Error envelope to the client.
-- **Client Interceptor Integration:** The frontend must process all non-2xx status states through a centralized network response interceptor. Parse the standard code string and pass it cleanly into human-centric UI alerts, toast panels, or explicit React ErrorBoundary wrappers surrounding the router components.
+- **Client Interceptor Integration:** Route Axios failures through the shared response interceptor and safe notification helper. The current helper maps status codes and cautiously accepts string `detail`/`message` values; it does not consume a uniform `code` envelope, and there is no app-level React error boundary. Preserve the existing API contract when changing either side; add structured error-code parsing or a render error boundary only together with the corresponding contract/UI change.
 
 ### 🤖 AI Guardrails: Prohibited Anti-Patterns & Code Smells
 
@@ -152,10 +172,10 @@ When reviewing modifications, you must actively reject and rewrite code that exh
 | --- | --- | --- |
 | Introducing `"use client"` blocks | Dead syntax. We are a pure client-side SPA; there are no server components. | Delete the string entirely. Code flows directly inside browser-bound modules. |
 | Hardcoded strings like `process.env.VAR` | Deprecated syntax in Vite. Will evaluate to undefined and crash layouts silently. | Convert explicitly to use `import.meta.env.VITE_VAR`. |
-| Utilizing standard window anchor links (`<a href="...">`) | Breaks React Router context, causing a slow, hard page reload in the browser. | Use React Router's `<Link to="...">` or `useNavigate()` to handle client navigation. |
-| Spreading unknown object properties (`<Comp {...props} />`) | Discards compile-time / runtime protections, leading to unstable layout shifts. | Declare all component properties explicitly. |
-| Catching raw layout errors directly in components | Distorts render flows and risks throwing cascading application white-screens. | Wrap your layout router trees with standard React ErrorBoundary classes. |
-| Floating active event listeners / media streams | Causes cumulative memory leak build-ups, eventually crashing client browsers. | Return complete teardown cleanup operations from your component `useEffect` arrays. |
+| Using full-page navigation for internal SPA routes | Causes unnecessary document reloads and bypasses router state. External OAuth/provider links are not internal routes. | Use React Router `<Link>`/`useNavigate()` for same-app navigation; retain browser navigation where crossing origins or completing an external auth flow requires it. |
+| Spreading unvalidated external data into UI props | In JavaScript there is no compile-time prop checking to make such spreads safe; unexpected data can still create incorrect UI behavior. | Validate external data at its boundary and pass the explicitly needed values to components. Spreading known, locally constructed component props is not categorically prohibited. |
+| Catching render errors ad hoc inside component render logic | Can obscure the original failure and create inconsistent fallback behavior. | Use a deliberate React error boundary for render failures where needed; note that the current app does not yet have an app-level boundary. |
+| Leaving owned event listeners or media/audio resources active after teardown | Can retain component references or hardware resources beyond their intended lifecycle. | Remove listeners and release resources from the lifecycle that created them; use effect cleanup for effect-owned resources. Vapi call cleanup currently lives in `useVapi`. |
 
 
 ### 🧪 Comprehensive Testing & CI Automation Guardrails
@@ -165,14 +185,18 @@ An architectural change is incomplete without valid testing coverage and metadat
 ### 1. Test Automation Imperatives
 
 - **Backend (pytest):** Aim for 80% path coverage across business domains. Use `pytest-asyncio` alongside isolated Docker containers to perform high-fidelity database testing. Mock external OAuth providers cleanly using standard mocking utilities. Test network endpoints using `httpx.AsyncClient` paired with `ASGITransport`.
-- **Frontend (Vitest / React Testing Library):** Build robust test cases confirming component behavior under both success contexts and complex network failures. Verify that error fallback skeletons render correctly without exposing system infrastructure data. Validate that views (`Dashboard.jsx`, `ResumeEditor.jsx`) gracefully handle network drops without crashing.
+- **Frontend (Vitest / React Testing Library):** Run the configured `yarn test` suite and add focused tests for changed behavior, including relevant success and failure states. Vitest uses JSDOM and React Testing Library. As the shared quality pipeline is established, use `pre-commit` to run the selected frontend checks: Biome formatting/linting, `tsc` over an explicitly configured application/test scope, and Vitest. Do not claim coverage thresholds or checks as active until they are configured and runnable.
 
 ### 2. Git Automation & Conventional Commits
 
-All code changes proposed or executed by you must follow the structural format rules tracked by our pre-commit hook architecture (e.g., Husky, lint-staged):
+All code changes proposed or executed by you must follow the repository's documented quality gates:
 
 - **Commit message structure:** Every commit must strictly conform to the Conventional Commits specification:
   - `feat(domain): add LinkedIn OAuth authentication callback handling`
   - `fix(api): resolve transaction pool leakage on error intercept`
   - `refactor(auth): bring legacy user schema into Pydantic v2 compliance`
-- **Hook rules:** You must ensure that code satisfies lint blocks (`ruff check` and ESLint) and types compile cleanly before proposing or checking in files. Never attempt to bypass automation checks (`--no-verify`).
+- **Shared pre-commit hooks:** Use [`pre-commit`](https://pre-commit.com) as the common hook framework for frontend and backend checks; do not introduce Husky/lint-staged. The intended frontend checks are Biome formatting/linting, `tsc` for the configured gradual JavaScript/TypeScript scope, and Vitest. The repository does not yet have a `.pre-commit-config.yaml` or configured Biome/TypeScript checks, so these checks must not be reported as active until implemented. Hooks must fail on errors and avoid changing or staging unrelated files.
+- **Backend checks:** Run the configured Ruff checks and relevant pytest tests for backend changes.
+- **CI parity:** Keep pull-request checks aligned with the selected quality pipeline. Today the frontend defines `yarn build` and `yarn test`; as `pre-commit`, Biome, and TypeScript checks are configured, run the same applicable checks in CI rather than treating local hooks as a replacement.
+- **Incremental type coverage:** The frontend currently has no TypeScript type-check configuration and is JavaScript/JSX. Configure `tsc` with an explicit gradual scope (including checked JavaScript and/or migrated TypeScript as appropriate), then report only the files actually checked. Do not imply current type safety or bypass errors with broad suppressions.
+- **Hook safety:** Hook commands must propagate non-zero exit codes, run without network access after dependencies are installed, and avoid changing or staging unrelated unstaged files. Never bypass required checks with `--no-verify`.
