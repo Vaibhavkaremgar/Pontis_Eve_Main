@@ -1,0 +1,17 @@
+﻿repos:
+  - repo: local
+    hooks:
+      # Backend quality checks — Issue #6
+      - id: backend-ruff
+        name: Ruff backend lint, imports, and formatting
+        entry: python scripts/backend_quality.py ruff
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: true
+
+      - id: backend-mypy
+        name: mypy on staged backend Python files
+        entry: python scripts/backend_quality.py mypy
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: false
