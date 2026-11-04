@@ -1,0 +1,33 @@
+﻿repos:
+  - repo: local
+    hooks:
+      # Frontend quality checks — Issue #5
+      - id: biome-check
+        name: Biome frontend format and lint
+        entry: python scripts/biome_staged.py
+        language: system
+        files: ^frontend/.*\.(js|jsx|ts|tsx|json|css)$
+        pass_filenames: true
+
+      - id: typescript-check
+        name: TypeScript frontend type check
+        entry: python scripts/frontend_quality.py typecheck
+        language: system
+        files: ^frontend/(src/|biome\.json|tsconfig\.json|package\.json|vitest\.config\.js|yarn\.lock)
+        pass_filenames: false
+
+      - id: vitest-check
+        name: Vitest staged frontend tests
+        entry: python scripts/frontend_quality.py staged-test
+        language: system
+        files: ^frontend/(src/|biome\.json|vitest\.config\.js|package\.json|yarn\.lock)
+        pass_filenames: true
+        always_run: false
+
+      # Security check
+      - id: gitleaks
+        name: Gitleaks secret detection
+        entry: python scripts/run_gitleaks.py
+        language: system
+        pass_filenames: false
+        always_run: true

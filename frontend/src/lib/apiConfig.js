@@ -9,6 +9,7 @@ const backendUrlSchema = z
     message: "VITE_BACKEND_URL must use http or https",
   });
 
+/** @param {string | undefined} rawBackendUrl */
 export function createApiConfig(rawBackendUrl) {
   if (rawBackendUrl == null || String(rawBackendUrl).trim() === "") {
     throw new Error("Invalid backend configuration: VITE_BACKEND_URL is required");
@@ -22,13 +23,18 @@ export function createApiConfig(rawBackendUrl) {
   return {
     backendUrl,
     apiUrl: `${backendUrl}/api`,
+    /** @param {string} path */
     buildUrl: (path) => `${backendUrl}/api/${String(path).replace(/^\/+/, "")}`,
   };
 }
 
-export const { backendUrl: BACKEND_URL, apiUrl: API, buildUrl: buildApiUrl } =
-  createApiConfig(import.meta.env.VITE_BACKEND_URL);
+export const {
+  backendUrl: BACKEND_URL,
+  apiUrl: API,
+  buildUrl: buildApiUrl,
+} = createApiConfig(import.meta.env.VITE_BACKEND_URL);
 
+/** @param {string | null | undefined} existingId */
 export function buildResumeParseUrl(existingId) {
   const url = new URL(buildApiUrl("onboarding/parse-resume"));
   if (existingId) url.searchParams.set("existing_id", existingId);

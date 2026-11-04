@@ -1,4 +1,11 @@
 # Here are your Instructions
+
+Contributor setup and repository quality checks are documented in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). The root pre-commit configuration is the
+sole Git-hook manager; frontend checks include staged-file Biome validation,
+the explicitly scoped TypeScript check, Vitest with 80% coverage thresholds,
+and Gitleaks. The TypeScript boundary currently covers only
+`frontend/src/lib/apiConfig.js`.
 # LinkedIn sign-in
 
 The backend implements LinkedIn OpenID Connect at `GET /api/auth/linkedin/login`
